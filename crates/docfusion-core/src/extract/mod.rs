@@ -125,9 +125,35 @@ impl Router {
 
     /// Whether any engine is willing to attempt this input.
     pub fn can_handle(&self, probe: &InputProbe) -> bool {
+        !self.candidates(probe).is_empty()
+    }
+
+    /// The engines that might handle this input, best fit first.
+    ///
+    /// Exposed because a cache lookup has to try each candidate's engine stamp
+    /// in the same order extraction would: whether an engine applies is only
+    /// settled by opening the input, so a caller cannot know which stamp to
+    /// look up without asking.
+    pub fn candidates(&self, probe: &InputProbe) -> Vec<&dyn Extractor> {
+        let mut candidates: Vec<&dyn Extractor> = self
+            .engines
+            .iter()
+            .map(|engine| engine.as_ref())
+            .filter(|engine| engine.accepts(probe) != Fit::No)
+            .collect();
+        candidates.sort_by_key(|engine| engine.accepts(probe));
+        candidates
+    }
+
+    /// The cache identity of the engine with this id, if the router has it.
+    ///
+    /// A document records which engine produced it; this turns that back into
+    /// the stamp the manifest is keyed on.
+    pub fn stamp_of(&self, id: &EngineId) -> Option<EngineStamp> {
         self.engines
             .iter()
-            .any(|engine| engine.accepts(probe) != Fit::No)
+            .find(|engine| engine.id() == *id)
+            .map(|engine| engine.stamp())
     }
 
     pub fn extract(
@@ -136,13 +162,7 @@ impl Router {
         source: &SourceRef,
         bytes: &[u8],
     ) -> Result<Document, ExtractError> {
-        let mut candidates: Vec<&dyn Extractor> = self
-            .engines
-            .iter()
-            .map(|engine| engine.as_ref())
-            .filter(|engine| engine.accepts(probe) != Fit::No)
-            .collect();
-        candidates.sort_by_key(|engine| engine.accepts(probe));
+        let candidates = self.candidates(probe);
 
         let input = Input {
             probe,

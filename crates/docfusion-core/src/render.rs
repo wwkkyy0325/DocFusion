@@ -81,7 +81,7 @@ fn field(out: &mut String, key: &str, value: &str) {
 }
 
 /// A document's title, from metadata if it has any.
-fn title(document: &Document) -> String {
+pub fn title(document: &Document) -> String {
     if let Some(given) = document.meta.title.as_ref().filter(|t| !t.trim().is_empty()) {
         return given.clone();
     }

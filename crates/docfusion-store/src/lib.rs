@@ -1,7 +1,9 @@
-//! Storage for DocFusion.
+//! Everything that touches the outside world.
 //!
-//! Everything that touches the filesystem or a database lives here, keeping
-//! `docfusion-core` free of I/O so it stays trivially testable.
+//! The split between this crate and `docfusion-core` is effects, not domain:
+//! core is pure — bytes in, values out — and this crate is where the filesystem
+//! and the database are read and written, including [`pipeline`], which
+//! sequences the two.
 //!
 //! The Markdown file tree is the external contract. [`manifest`] is a sidecar
 //! index over it that remembers what has been processed; it can always be
@@ -10,3 +12,4 @@
 pub mod atomic;
 pub mod hash;
 pub mod manifest;
+pub mod pipeline;

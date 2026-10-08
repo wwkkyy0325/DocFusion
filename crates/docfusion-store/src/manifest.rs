@@ -13,6 +13,11 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 /// Bumped whenever the schema below changes, tracked in `PRAGMA user_version`.
 const SCHEMA_VERSION: i32 = 1;
 
+/// The columns `row_to_record` expects, in the order it reads them.
+const COLUMNS: &str = "id, source_path, source_size, source_mtime, mime, output_path, \
+                       engine_id, engine_version, model, prompt_version, \
+                       status, verified, conflict_count, created_at, updated_at";
+
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS documents (
   id             TEXT PRIMARY KEY,
@@ -164,15 +169,14 @@ impl Manifest {
         let record = self
             .connection
             .query_row(
-                "SELECT id, source_path, source_size, source_mtime, mime, output_path,
-                        engine_id, engine_version, model, prompt_version,
-                        status, verified, conflict_count, created_at, updated_at
-                 FROM documents
-                 WHERE id = ?1
-                   AND engine_id = ?2
-                   AND engine_version = ?3
-                   AND model IS ?4
-                   AND prompt_version IS ?5",
+                &format!(
+                    "SELECT {COLUMNS} FROM documents
+                     WHERE id = ?1
+                       AND engine_id = ?2
+                       AND engine_version = ?3
+                       AND model IS ?4
+                       AND prompt_version IS ?5"
+                ),
                 params![
                     content_hash,
                     engine.id.as_str(),
@@ -185,6 +189,38 @@ impl Manifest {
             .optional()?;
 
         Ok(record)
+    }
+
+    /// Every document, most recently updated first.
+    pub fn all(&self) -> Result<Vec<DocumentRecord>, StoreError> {
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {COLUMNS} FROM documents ORDER BY updated_at DESC, id"
+        ))?;
+        let rows = statement.query_map([], row_to_record)?;
+
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        Ok(records)
+    }
+
+    /// The document currently written to an output path, if any.
+    ///
+    /// Used to detect two different documents that would claim the same file
+    /// name — silently overwriting one with the other would lose a document
+    /// without saying so.
+    pub fn document_at_output(&self, output_path: &Path) -> Result<Option<String>, StoreError> {
+        let owner = self
+            .connection
+            .query_row(
+                "SELECT id FROM documents WHERE output_path = ?1",
+                params![path_to_string(output_path)],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+
+        Ok(owner)
     }
 
     /// Inserts a record, or replaces the existing one for the same content.
