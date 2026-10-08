@@ -13,7 +13,8 @@
 //! and model files, and core performs no I/O.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, TryLockError};
 
 use docfusion_core::backend::{BackendError, Caps, OcrBackend, PageRequest};
 use docfusion_core::image::PageImage;
@@ -33,16 +34,37 @@ const ENGINE_VERSION: &str = "1.0.0";
 const PARAGRAPH_GAP: f32 = 0.6;
 
 pub struct RapidOcrBackend {
-    /// Built on the first page rather than at construction.
+    /// Several pipelines, each behind its own lock, each built on the first
+    /// page that needs it.
     ///
-    /// Loading the weights takes seconds and several megabytes, and most
-    /// command lines never read a page at all — `list`, `show` and `schema`
-    /// would each pay for a pipeline they do not use.
+    /// Built lazily because loading the weights takes seconds and hundreds of
+    /// megabytes, and most command lines never read a page at all — `list`,
+    /// `show` and `schema` would each pay for a pipeline they do not use.
     ///
-    /// `run_image` also takes `&mut self`, so one pipeline is kept behind a
-    /// lock rather than rebuilt per page.
-    runner: Mutex<Option<RapidOcr>>,
+    /// Several rather than one because `run_image` takes `&mut self`, so a
+    /// single pipeline serialises every page behind it. Widening one page does
+    /// not help — measured, see `build` — so the only way to use more than one
+    /// core is to read more than one page at a time, which needs more than one
+    /// pipeline.
+    runners: Vec<Mutex<Option<RapidOcr>>>,
+    /// Rotates which pipeline a caller tries first, so that pages arriving at
+    /// once spread out instead of all queueing on the same one.
+    next: AtomicUsize,
     source: Source,
+}
+
+/// The most pipelines to keep.
+///
+/// Memory is the binding constraint, not cores: each is about 130 MB resident,
+/// and a machine with sixteen cores does not want sixteen copies of the weights
+/// so that it can read a thousand-page scan four times faster.
+const MAX_PIPELINES: usize = 4;
+
+/// How many pages this machine will read at once.
+fn pipeline_count() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(MAX_PIPELINES)
 }
 
 enum Source {
@@ -59,34 +81,67 @@ impl RapidOcrBackend {
     /// downloaded, nothing is configured, and it is offline from the moment it
     /// is installed.
     pub fn bundled() -> Self {
-        Self {
-            runner: Mutex::new(None),
-            source: Source::Bundled,
-        }
+        Self::with_source(Source::Bundled)
     }
 
     /// Reads pages using weights the caller located itself.
     pub fn from_config(config: RapidOcrConfig) -> Self {
+        Self::with_source(Source::Config(Box::new(config)))
+    }
+
+    fn with_source(source: Source) -> Self {
+        let count = pipeline_count();
         Self {
-            runner: Mutex::new(None),
-            source: Source::Config(Box::new(config)),
+            runners: (0..count).map(|_| Mutex::new(None)).collect(),
+            next: AtomicUsize::new(0),
+            source,
         }
     }
 
+    /// Runs `action` on a free pipeline, building it if this is its first use.
+    ///
+    /// A free one is looked for before any is waited on, starting from a
+    /// rotating offset. Blocking on the first pipeline would serialise pages
+    /// that could have run side by side — the lock is per pipeline, but the
+    /// choice of which to take is what decides whether they collide.
     fn with_runner<T>(
         &self,
         action: impl FnOnce(&mut RapidOcr) -> Result<T, BackendError>,
     ) -> Result<T, BackendError> {
-        let mut runner = self
-            .runner
+        let count = self.runners.len();
+        let start = self.next.fetch_add(1, Ordering::Relaxed) % count;
+
+        for offset in 0..count {
+            match self.runners[(start + offset) % count].try_lock() {
+                Ok(mut runner) => return self.run(&mut runner, action),
+                Err(TryLockError::WouldBlock) => continue,
+                // A thread panicked while holding this pipeline. The weights
+                // are still good; refusing to read another page because of it
+                // would turn one broken page into a broken run.
+                Err(TryLockError::Poisoned(poisoned)) => {
+                    return self.run(&mut poisoned.into_inner(), action);
+                }
+            }
+        }
+
+        // Everything is busy, which is the intended state on a full document.
+        let mut runner = self.runners[start]
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        if runner.is_none() {
-            *runner = Some(self.build()?);
+        self.run(&mut runner, action)
+    }
+
+    fn run<T>(
+        &self,
+        slot: &mut Option<RapidOcr>,
+        action: impl FnOnce(&mut RapidOcr) -> Result<T, BackendError>,
+    ) -> Result<T, BackendError> {
+        if slot.is_none() {
+            *slot = Some(self.build()?);
         }
 
-        action(runner.as_mut().expect("built immediately above"))
+        action(slot.as_mut().expect("built immediately above"))
     }
 
     fn build(&self) -> Result<RapidOcr, BackendError> {
@@ -101,6 +156,13 @@ impl RapidOcrBackend {
                 rapidocr_core::model::ModelCache::new(directory).config_for(model_set)
             }
         };
+
+        // One page is one unit of work, and widening a single inference does
+        // not help: the recogniser runs once per detected line on a crop too
+        // small for threads to pay for themselves. Measured on sixteen cores —
+        // raising `intra_threads` from 1 to 16 changed nothing, three runs each
+        // way. The parallelism that matters is across pages, which is the
+        // extractor's business rather than this configuration's.
 
         RapidOcr::new(config).map_err(|error| {
             BackendError::Unavailable(format!("the OCR models could not be loaded: {error}"))

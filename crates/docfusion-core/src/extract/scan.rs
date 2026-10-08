@@ -4,6 +4,9 @@
 //! PDFs whose pages are scans. It renders or decodes each page and hands it to
 //! the configured backends.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
 use crate::backend::{OcrBackend, PageRequest, VisionBackend};
 use crate::image::PageImage;
 use crate::ir::{
@@ -66,46 +69,25 @@ impl ScanExtractor {
         pdf::render_pages(input.bytes, self.dpi)
     }
 
-    /// Reads one page, and checks it with the other engine when the policy
-    /// asks for it.
+    /// Which pages a second engine should check, in page order.
     ///
-    /// There is deliberately no fallback to OCR when the vision model fails. A
-    /// silent downgrade produces unverified output that is indistinguishable
-    /// from verified output, which is the exact failure this project is
-    /// organised around not making.
-    ///
-    /// `budget` is the number of pages still allowed to be checked. It is spent
-    /// per page rather than per document so that a scan of a thousand pages
-    /// stops at the ceiling instead of running to the end of the batch.
-    fn read(&self, request: &PageRequest<'_>, budget: &mut u32) -> Result<Reading, ExtractError> {
-        let blocks = self.primary(request)?;
-
-        // The check is the expensive half — another recognition pass, or
-        // another billed request — so the ceiling is spent here rather than on
-        // reading, and a page that is not checked says so rather than looking
-        // like one that passed.
-        let unchecked = Reading {
-            blocks,
-            conflicts: Vec::new(),
-            verified: false,
-        };
-
-        let Some(verifier) = self.verifier() else {
-            return Ok(unchecked);
-        };
-
-        if *budget == 0 || !self.policy.should_verify(&unchecked.blocks) {
-            return Ok(unchecked);
+    /// The ceiling is spent here, before any checking, so that it lands on the
+    /// same pages every run. Spending it while the checks were running would
+    /// make the choice depend on which page happened to finish first, and an
+    /// output that differs between runs over the same input is an output nobody
+    /// can diff.
+    fn worth_checking(&self, readings: &[Vec<Block>]) -> Vec<usize> {
+        if self.verifier().is_none() {
+            return Vec::new();
         }
-        *budget -= 1;
 
-        let checked = verifier.recognize(request).map_err(failed)?;
-
-        Ok(Reading {
-            conflicts: verify::compare(request.page, &unchecked.blocks, &checked),
-            verified: true,
-            ..unchecked
-        })
+        readings
+            .iter()
+            .enumerate()
+            .filter(|(_, blocks)| self.policy.should_verify(blocks))
+            .map(|(index, _)| index)
+            .take(self.policy.max_verify_pages as usize)
+            .collect()
     }
 
     /// Reads one page with whichever backend is primary.
@@ -142,19 +124,78 @@ impl ScanExtractor {
     }
 }
 
+/// Runs `action` over `items` on several threads, keeping the input order.
+///
+/// Threads rather than an async runtime. Every backend call in this project
+/// blocks — a native inference, or a synchronous HTTP request — so an async
+/// runtime would be weight carried to schedule work that is already either CPU
+/// bound or waiting on a socket. A handful of threads gets the same overlap.
+///
+/// The first failure in *index* order is the one reported, not the first to
+/// happen. Whichever worker reaches a bad page first depends on scheduling, so
+/// reporting by arrival would make the error message differ between runs over
+/// the same input.
+fn side_by_side<T: Sync, R: Send>(
+    items: &[T],
+    action: impl Fn(&T, usize) -> Result<R, ExtractError> + Sync,
+) -> Result<Vec<R>, ExtractError> {
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // One slot per item, each locked only by the worker filling it, so the
+    // threads never contend except when taking work.
+    let slots: Vec<Mutex<Option<Result<R, ExtractError>>>> =
+        (0..items.len()).map(|_| Mutex::new(None)).collect();
+    let cursor = AtomicUsize::new(0);
+
+    std::thread::scope(|scope| {
+        for _ in 0..items.len().min(THREADS) {
+            scope.spawn(|| {
+                loop {
+                    let index = cursor.fetch_add(1, Ordering::Relaxed);
+                    if index >= items.len() {
+                        break;
+                    }
+
+                    let outcome = action(&items[index], index);
+                    *slots[index]
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(outcome);
+                }
+            });
+        }
+    });
+
+    let outcomes: Vec<Result<R, ExtractError>> = slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                // Every slot is filled before the scope ends, and a panic in a
+                // worker propagates out of the scope rather than reaching here.
+                .expect("every slot is filled")
+        })
+        .collect();
+
+    outcomes.into_iter().collect()
+}
+
+/// How many pages are read at once.
+///
+/// Matched to the pipelines the recognition engine keeps, because beyond that
+/// the threads spend their time queueing rather than working. A recognition
+/// backend with a different shape — a remote endpoint, say — is served just as
+/// well by the same number; this is a bound on concurrency, not a measurement
+/// of any one engine.
+const THREADS: usize = 4;
+
 /// Turns a backend failure into this engine's failure.
 ///
 /// The engine is named rather than left to a generic one, because the message
 /// a person sees should say which part of the pipeline broke.
 fn failed(error: crate::backend::BackendError) -> ExtractError {
     ExtractError::failed(ENGINE_ID, error.to_string())
-}
-
-/// One page's reading, and what is known about how far it can be trusted.
-struct Reading {
-    blocks: Vec<Block>,
-    conflicts: Vec<Conflict>,
-    verified: bool,
 }
 
 impl Extractor for ScanExtractor {
@@ -201,33 +242,59 @@ impl Extractor for ScanExtractor {
             return Err(ExtractError::unsupported("the document has no pages"));
         }
 
-        let mut budget = self.policy.max_verify_pages;
+        // Every page is read first, several at a time, and then the pages worth
+        // checking are checked — also several at a time.
+        //
+        // Two passes rather than one, for the determinism reason above. A page
+        // whose check fails fails the document, which is the same answer the
+        // one-page-at-a-time version gave: a check that did not happen must not
+        // look like a check that passed.
+        let readings = side_by_side(&images, |image, index| {
+            self.primary(&PageRequest {
+                image,
+                page: index as u32,
+            })
+        })?;
+
+        let worth = self.worth_checking(&readings);
+        let checks = side_by_side(&worth, |index, _| {
+            let verifier = self
+                .verifier()
+                .expect("a page is worth checking only when there is a verifier");
+            verifier
+                .recognize(&PageRequest {
+                    image: &images[*index],
+                    page: *index as u32,
+                })
+                .map_err(failed)
+        })?;
+
+        let mut checked: Vec<Option<Vec<Block>>> = (0..images.len()).map(|_| None).collect();
+        for (position, blocks) in checks.into_iter().enumerate() {
+            checked[worth[position]] = Some(blocks);
+        }
+
         let mut pages = Vec::with_capacity(images.len());
         let mut conflicts: Vec<Conflict> = Vec::new();
 
-        for (index, image) in images.iter().enumerate() {
-            let reading = self.read(
-                &PageRequest {
-                    image,
-                    page: index as u32,
-                },
-                &mut budget,
-            )?;
+        for (index, blocks) in readings.into_iter().enumerate() {
+            if let Some(second) = &checked[index] {
+                conflicts.extend(verify::compare(index as u32, &blocks, second));
+            }
 
-            conflicts.extend(reading.conflicts);
             pages.push(Page {
                 index: index as u32,
                 // Pixels, not points: this engine's native unit is the rendered
                 // image, and a backend reports geometry in it.
                 size: Some(Size {
-                    w: image.width as f32,
-                    h: image.height as f32,
+                    w: images[index].width as f32,
+                    h: images[index].height as f32,
                 }),
-                blocks: reading.blocks,
+                blocks,
                 provenance: PageProvenance {
                     primary: self.id(),
                     engines: self.backend_ids(),
-                    verified: reading.verified,
+                    verified: checked[index].is_some(),
                 },
             });
         }
@@ -287,6 +354,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     fn block(text: &str, engine: &str) -> Block {
         Block::text(BlockKind::Paragraph, text, EngineId::from(engine))
@@ -722,5 +790,146 @@ mod tests {
         let _ = extract(&extractor, &image(), "second.png").expect("extract");
 
         assert_eq!(calls.count(), 2, "each document gets its own ceiling");
+    }
+
+    // ── Reading pages at the same time ───────────────────────────────────────
+
+    /// Answers with its own page number, and takes longer over earlier pages so
+    /// that they finish last.
+    struct UnorderedVision {
+        delay: Duration,
+        live: AtomicUsize,
+        most_at_once: AtomicUsize,
+    }
+
+    impl VisionBackend for UnorderedVision {
+        fn id(&self) -> EngineId {
+            EngineId::from("unordered")
+        }
+
+        fn version(&self) -> &str {
+            "1.0.0"
+        }
+
+        fn prompt_version(&self) -> &str {
+            "v1"
+        }
+
+        fn capabilities(&self) -> Caps {
+            Caps::default()
+        }
+
+        fn parse(&self, request: &PageRequest<'_>) -> Result<Vec<Block>, BackendError> {
+            let live = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most_at_once.fetch_max(live, Ordering::SeqCst);
+
+            // Backwards: the last page finishes first.
+            let wait = self.delay * (8 - request.page.min(8));
+            std::thread::sleep(wait);
+
+            self.live.fetch_sub(1, Ordering::SeqCst);
+            Ok(vec![block(
+                &format!("page {}", request.page),
+                "unordered",
+            )])
+        }
+    }
+
+    fn unordered(delay: Duration) -> (Box<dyn VisionBackend>, Arc<UnorderedVision>) {
+        let stub = Arc::new(UnorderedVision {
+            delay,
+            live: AtomicUsize::new(0),
+            most_at_once: AtomicUsize::new(0),
+        });
+
+        // A wrapper would lose the counter, so the same object is handed over
+        // and kept.
+        struct Shared(Arc<UnorderedVision>);
+        impl VisionBackend for Shared {
+            fn id(&self) -> EngineId {
+                self.0.id()
+            }
+            fn version(&self) -> &str {
+                self.0.version()
+            }
+            fn prompt_version(&self) -> &str {
+                self.0.prompt_version()
+            }
+            fn capabilities(&self) -> Caps {
+                self.0.capabilities()
+            }
+            fn parse(&self, request: &PageRequest<'_>) -> Result<Vec<Block>, BackendError> {
+                self.0.parse(request)
+            }
+        }
+
+        (Box::new(Shared(Arc::clone(&stub))), stub)
+    }
+
+    /// Pages finish in whatever order the threads get to them, and the document
+    /// must not. A reading order that depends on scheduling is a document that
+    /// differs between runs over the same input.
+    #[test]
+    fn pages_come_back_in_order_however_they_finish() {
+        let (reader, _) = unordered(Duration::from_millis(1));
+        let extractor = ScanExtractor::new(None, Some(reader));
+
+        let scanned = fixtures::pdf_pages(&[&[], &[], &[]]);
+        let document = extract(&extractor, &scanned, "scan.pdf").expect("extract");
+
+        let texts: Vec<&str> = document.blocks().map(|b| b.text.as_str()).collect();
+        assert_eq!(texts, vec!["page 0", "page 1", "page 2"]);
+        let indexes: Vec<u32> = document.pages.iter().map(|page| page.index).collect();
+        assert_eq!(indexes, vec![0, 1, 2]);
+    }
+
+    /// The point of the change. Asserted loosely — at least two at once rather
+    /// than exactly four — because a loaded machine is allowed to be slow, and
+    /// a test that fails for that reason gets deleted rather than fixed.
+    #[test]
+    fn pages_are_read_at_the_same_time() {
+        let (reader, observed) = unordered(Duration::from_millis(15));
+        let extractor = ScanExtractor::new(None, Some(reader));
+
+        let scanned = fixtures::pdf_pages(&[&[], &[], &[], &[]]);
+        let _ = extract(&extractor, &scanned, "scan.pdf").expect("extract");
+
+        assert!(
+            observed.most_at_once.load(Ordering::SeqCst) >= 2,
+            "pages were read one at a time: {} at once",
+            observed.most_at_once.load(Ordering::SeqCst)
+        );
+    }
+
+    /// A document with more than one bad page must report the same one every
+    /// run, so the first failure is taken in page order rather than by arrival.
+    #[test]
+    fn the_first_failure_in_page_order_is_the_one_reported() {
+        struct Failing;
+
+        impl VisionBackend for Failing {
+            fn id(&self) -> EngineId {
+                EngineId::from("failing")
+            }
+            fn version(&self) -> &str {
+                "1.0.0"
+            }
+            fn prompt_version(&self) -> &str {
+                "v1"
+            }
+            fn capabilities(&self) -> Caps {
+                Caps::default()
+            }
+            fn parse(&self, request: &PageRequest<'_>) -> Result<Vec<Block>, BackendError> {
+                Err(BackendError::Failed(format!("page {} broke", request.page)))
+            }
+        }
+
+        let extractor = ScanExtractor::new(None, Some(Box::new(Failing)));
+        let scanned = fixtures::pdf_pages(&[&[], &[], &[]]);
+
+        let error = extract(&extractor, &scanned, "scan.pdf").expect_err("should fail");
+
+        assert!(error.to_string().contains("page 0"), "{error}");
     }
 }

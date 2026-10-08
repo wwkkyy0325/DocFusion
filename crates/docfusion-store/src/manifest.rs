@@ -13,6 +13,12 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 /// Bumped whenever the schema below changes, tracked in `PRAGMA user_version`.
 const SCHEMA_VERSION: i32 = 2;
 
+/// How long a writer waits for another writer, in milliseconds.
+///
+/// Long enough to cover a batch that is ingesting while another starts, short
+/// enough that a genuinely stuck process is reported rather than waited on.
+const BUSY_TIMEOUT_MS: u32 = 5_000;
+
 /// The columns `row_to_record` expects, in the order it reads them.
 const COLUMNS: &str = "id, source_path, source_size, source_mtime, mime, output_path, \
                        engine_id, engine_version, model, prompt_version, \
@@ -155,6 +161,24 @@ impl Manifest {
     fn prepare(connection: Connection) -> Result<Self, StoreError> {
         // Needed for the alias foreign key to actually cascade.
         connection.pragma_update(None, "foreign_keys", true)?;
+
+        // How long to wait for another process to finish writing before giving
+        // up, in milliseconds. The default is zero, which means a second
+        // process writing to the same knowledge base fails immediately rather
+        // than waiting its turn — the difference between "two runs overlap" and
+        // "one of them errors for no reason a person can see".
+        connection.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
+
+        // A write-ahead log lets readers and a writer work at the same time
+        // instead of taking turns on the whole file. It is a property of the
+        // database rather than of a connection, so setting it on every open is
+        // idempotent and keeps a database made before this honest.
+        //
+        // Deliberately not `synchronous = OFF`: the write-ahead log makes
+        // committing cheaper without giving up durability, and the speed it
+        // would buy is worth less than the index surviving a power cut.
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+
         Self::migrate(&connection)?;
         Ok(Self { connection })
     }
@@ -439,6 +463,40 @@ fn matches_name(path: &Path, query: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two connections writing to one knowledge base is what two runs at once
+    /// look like. Before the write-ahead log and the busy timeout, the second
+    /// writer failed immediately — not corruptly, but for no reason a person
+    /// running two commands could see.
+    ///
+    /// Asserted through the behaviour rather than through a pragma reading,
+    /// because the pragma is the mechanism and the behaviour is the point.
+    #[test]
+    fn a_second_writer_waits_rather_than_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.db");
+
+        let writer = Manifest::open(&path).unwrap();
+        let waiting = Manifest::open(&path).unwrap();
+
+        // The first writer takes the write lock and keeps it.
+        writer.connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        // The second may only succeed if it is willing to wait, and the first
+        // must let go while it does.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            writer.connection.execute_batch("COMMIT").unwrap();
+        });
+
+        waiting
+            .connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("the second writer should wait for the first rather than give up");
+        waiting.connection.execute_batch("COMMIT").unwrap();
+
+        release.join().unwrap();
+    }
 
     fn engine() -> EngineStamp {
         EngineStamp::new("pdfium", "1.0.0")

@@ -4,6 +4,50 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Reading a document's pages at the same time
+
+**What:** pages are read concurrently, and the manifest survives two runs
+overlapping. Measured on eight pages, local OCR only: **75.6 s → 28.1 s**, and
+the output is byte-identical.
+
+**Two things had to change, and only one of them was obvious.** The extractor
+had to stop reading pages one after another — but the recognition backend also
+had a single pipeline behind a `Mutex`, so concurrency above it would have
+queued rather than worked. The backend now keeps up to four, built lazily, so a
+one-page document still pays for one.
+
+**The obvious lever did nothing.** ONNX Runtime defaults to one thread per
+inference, and one page takes about three seconds on one core and about three
+seconds on sixteen. The recogniser runs once per detected text line on a crop
+too small for threads to pay for themselves, so widening a single page is a dead
+end. That change was written, measured, and reverted, and the measurement is
+recorded where the next person will look for it.
+
+**Determinism was the constraint on the design.** The ceiling on verification
+has to land on the same pages every run, so it is spent in page order before any
+checking rather than while checking, where it would depend on which page
+happened to finish first. A document whose contents differ between runs over the
+same input is a document nobody can diff. The first failure is likewise reported
+in page order rather than by arrival, and the parallel output was diffed against
+the serial one to prove it.
+
+**The cost is memory: 923 MB peak** for eight pages, against about 400 MB
+serial. Reading more at once is a straight trade against resident pages, and
+four is where that trade was drawn.
+
+**A measurement that nearly went into the record wrong.** The first A/B showed
+8% and meant nothing: the configuration file supplies a DeepSeek endpoint, so
+both runs were network-bound API calls rather than local OCR. Re-run with no
+endpoint configured, the difference was 2.7×.
+
+**Found while measuring, and not fixed: a large scan will exhaust memory before
+it starts.** `PageImage` is raw RGBA8 — a 200 DPI A4 page is 15.5 MB — and
+`render_pages` renders *every* page of a PDF up front and holds them all. A
+thousand-page scan therefore needs about 15 GB before the first page is read.
+This predates today's change and is unaffected by it; see the task doc.
+
+---
+
 ## 2026-10-08 — The setup guide, and P1 done
 
 **What:** `docs/setup.md` — the document somebody's agent is handed. Every
