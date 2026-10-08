@@ -80,7 +80,7 @@ content is the new content. This test must run on Windows, not just Linux CI.
 - [x] Legacy formats (`.doc`/`.xls`/`.ppt`) detected and rejected with a clear
       "convert first" error
 - [x] `PdfTextLayer`; returns `Unsupported` when there is no text layer
-- [ ] `DocxParser` via `docx-rs`
+- [x] `DocxParser` (hand-rolled over a shared OOXML layer)
 - [ ] `XlsxParser` via `calamine`
 - [ ] `PptxParser` (zip + XML, hand-rolled)
 - [ ] `HtmlParser` for `.html`

@@ -5,6 +5,8 @@
 //! case for a PDF with no text layer — hands control to the next candidate
 //! rather than failing the run.
 
+pub mod docx;
+pub mod ooxml;
 pub mod pdf;
 pub mod text;
 

@@ -167,7 +167,15 @@ pub enum BlockKind {
     Heading { level: u8 },
     Paragraph,
     ListItem,
+    /// A table. Its children are [`BlockKind::TableRow`] blocks.
     Table,
+    /// A table row. Its children are [`BlockKind::TableCell`] blocks.
+    ///
+    /// Rows are explicit rather than flattened into a cell list because a
+    /// renderer cannot lay out a grid without knowing where rows end.
+    TableRow,
+    /// A table cell. Its `text` holds the cell's content.
+    TableCell,
     Figure,
     Formula,
     Code,

@@ -5,9 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+calamine = "0.36.1"
 pdfium-bundled = { version = "0.2.0", features = ["bundled"] }
+quick-xml = "0.42.0"
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
+zip = "8.6.0"
 
 [dev-dependencies]
 serde_json = "1.0.151"
