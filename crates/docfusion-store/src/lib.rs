@@ -13,5 +13,6 @@ pub mod atomic;
 pub mod endpoint;
 pub mod hash;
 pub mod manifest;
+pub mod ocr;
 pub mod pipeline;
 pub mod reconcile;

@@ -79,10 +79,26 @@ PDF that has a text layer is parsed rather than rendered.
 > only ever decline. Step 5 supplies the configuration it is waiting for.
 
 ### Step 4 — Local OCR backend
-- [ ] RapidOCR models on ONNX Runtime; no PaddlePaddle
-- [ ] Emits per-line bounding boxes
+- [x] RapidOCR models on ONNX Runtime; no PaddlePaddle
+- [x] Emits per-line bounding boxes **and** confidence, so this engine can be
+      the verifier rather than only a reader
+- [ ] Model acquisition: where the weights come from
+- [ ] Wire into the CLI once models can be found
+- [ ] Read a generated image of known text back exactly
 
-**Verify:** a generated image of known text is read back exactly.
+> **The pipeline is not ours to write.** `rapidocr-core` (Apache-2.0) implements
+> detection, angle classification, recognition, DBNet post-processing, contour
+> finding and CTC decoding. Writing those by hand would be a large amount of
+> well-trodden work containing no decisions of our own, behind a trait that
+> already makes the choice reversible.
+>
+> **The model call and the decisions are separated.** Ordering, paragraph
+> merging and geometry normalisation are pure functions tested against synthetic
+> recognizer output, so they do not need fifteen megabytes of weights on disk to
+> be checked. A test caught a real fault in the merge rule: it compared vertical
+> distance only, so two lines sitting side by side in different columns were
+> being read as one wrapped sentence. Horizontal overlap is what tells the two
+> apart.
 
 ### Step 5 — Vision backend: the user's OpenAI-compatible endpoint
 - [x] One HTTP client against `/v1/chat/completions`, covering llama-server,

@@ -109,6 +109,20 @@ impl Rect {
         self.w * self.h
     }
 
+    /// Grows to cover `other` as well.
+    ///
+    /// Used when several smaller regions are found to be one thing — the lines
+    /// of a paragraph, say — and the region they were merged into has to
+    /// describe all of them rather than only the first.
+    pub fn union(&mut self, other: &Rect) {
+        let left = self.x.min(other.x);
+        let top = self.y.min(other.y);
+        let right = (self.x + self.w).max(other.x + other.w);
+        let bottom = (self.y + self.h).max(other.y + other.h);
+
+        *self = Rect::new(left, top, right - left, bottom - top);
+    }
+
     /// Intersection over union, in `0.0..=1.0`.
     ///
     /// Returns `0.0` for disjoint and for degenerate (zero-area) rectangles
@@ -366,6 +380,30 @@ mod tests {
         assert_approx(empty.iou(&empty), 0.0);
         assert_approx(empty.iou(&normal), 0.0);
         assert_approx(normal.iou(&empty), 0.0);
+    }
+
+    #[test]
+    fn union_covers_both_rectangles() {
+        let mut a = Rect::new(0.1, 0.1, 0.2, 0.1);
+        let b = Rect::new(0.05, 0.2, 0.4, 0.05);
+
+        a.union(&b);
+
+        assert_approx(a.x, 0.05);
+        assert_approx(a.y, 0.1);
+        assert_approx(a.w, 0.4);
+        assert_approx(a.h, 0.15);
+    }
+
+    #[test]
+    fn union_with_a_contained_rectangle_changes_nothing() {
+        let mut outer = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let inner = Rect::new(0.25, 0.25, 0.5, 0.5);
+
+        outer.union(&inner);
+
+        assert_approx(outer.x, 0.0);
+        assert_approx(outer.w, 1.0);
     }
 
     #[test]
