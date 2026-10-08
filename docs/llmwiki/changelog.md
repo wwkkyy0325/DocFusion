@@ -4,6 +4,44 @@ Append-only record of meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — The command line
+
+**What:** `docfusion add`, `show`, `list` and `schema`, with `--json`,
+`--dry-run` and semantic exit codes. P0 is now usable end to end.
+
+**Decisions and why:**
+
+- **stdout carries results and nothing else.** NDJSON under `--json`, human
+  lines otherwise; progress, warnings and errors always go to stderr. A caller
+  parsing stdout should never have to defend against a log line, which is the
+  most common way a command line tool breaks the agent driving it.
+- **Exit code 3 is separate from 1.** "Nothing can read this input" is a
+  different situation from "the run broke": the file is fine and the tool is
+  missing a backend. A batch that reports 3 says install one; a batch that
+  reports 1 says something is wrong.
+- **One bad file does not abandon the batch.** A run of thirty documents should
+  not be lost to one unreadable scan, so failures are reported per file and the
+  batch exits 2 when only some succeeded.
+- **`--dry-run` does everything except write.** Reporting the real result rather
+  than a prediction of one is worth the extraction cost, and it keeps the dry
+  run from being a second, differently-behaving code path.
+- **`reconcile` and exit code 4 were held back to Step 8.** Publishing a code
+  the tool cannot emit is a contract that lies.
+
+**Three bugs found by running the binary rather than only testing it:**
+
+1. `show` failed on a bare file name — the index stored the absolute path a
+   document was imported from, but a person types the name they remember. Fixed
+   by falling back to matching on the file name, with exact matches tried first
+   so a full path never loses to an unrelated document with the same name.
+2. Timestamps carried nanosecond precision, which distinguishes nothing anyone
+   acts on and made two runs a second apart look as different as two runs a
+   microsecond apart.
+3. **Output files were named after the source file rather than the document's own
+   title**, contradicting the design's own example. `report.pdf` containing
+   "2024 Annual Report" now produces `2024-annual-report.md`.
+
+
 ## 2026-10-08 — Markdown rendering
 
 **What:** IR → GFM Markdown with YAML front matter, filename slugs, and text

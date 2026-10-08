@@ -109,12 +109,18 @@ pub struct DocumentRecord {
     pub updated_at: String,
 }
 
-/// Current UTC time as RFC 3339.
+/// Current UTC time as RFC 3339, to the second.
 ///
-/// Callers stamp records with this rather than the manifest inventing times,
-/// so a batch run can record when it actually did the work.
+/// Callers stamp records with this rather than the manifest inventing times, so
+/// a batch run can record when it actually did the work.
+///
+/// Sub-second precision is dropped deliberately. It carries no information a
+/// knowledge base acts on, and it makes two timestamps taken seconds apart look
+/// as different as two taken microseconds apart.
 pub fn now_iso8601() -> String {
     time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .expect("zero is a valid nanosecond")
         .format(&time::format_description::well_known::Rfc3339)
         .expect("RFC 3339 formatting cannot fail for a valid OffsetDateTime")
 }
@@ -292,6 +298,53 @@ impl Manifest {
         Ok(paths)
     }
 
+    /// Finds a document by content id, source path, output path, or file name.
+    ///
+    /// All of these are accepted because a person thinks in file names while an
+    /// agent holds a content hash, and neither should have to convert to the
+    /// other's idea of an identifier. Exact matches are tried first so that a
+    /// full path never loses to an unrelated document that shares its file name.
+    pub fn find(&self, query: &str) -> Result<Option<DocumentRecord>, StoreError> {
+        if let Some(record) = self.query_one("WHERE id = ?1", query)? {
+            return Ok(Some(record));
+        }
+        // The recorded source path is matched directly as well as through the
+        // alias table: the two normally agree, but a record that has no alias
+        // would otherwise be unreachable by the path it came from.
+        if let Some(record) = self.query_one("WHERE source_path = ?1", query)? {
+            return Ok(Some(record));
+        }
+        if let Some(record) = self.query_one(
+            "WHERE id = (SELECT document_id FROM aliases WHERE path = ?1 LIMIT 1)",
+            query,
+        )? {
+            return Ok(Some(record));
+        }
+        if let Some(record) = self.query_one("WHERE output_path = ?1", query)? {
+            return Ok(Some(record));
+        }
+
+        // Last resort: somebody typed `docfusion show report.pdf` rather than
+        // the directory they imported it from. This scans, which is fine at the
+        // scale a personal knowledge base reaches.
+        Ok(self.all()?.into_iter().find(|record| {
+            matches_name(&record.source_path, query) || matches_name(&record.output_path, query)
+        }))
+    }
+
+    fn query_one(&self, filter: &str, value: &str) -> Result<Option<DocumentRecord>, StoreError> {
+        let record = self
+            .connection
+            .query_row(
+                &format!("SELECT {COLUMNS} FROM documents {filter}"),
+                params![value],
+                row_to_record,
+            )
+            .optional()?;
+
+        Ok(record)
+    }
+
     pub fn document_count(&self) -> Result<u64, StoreError> {
         let count: i64 = self
             .connection
@@ -331,6 +384,11 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<DocumentRecord> {
 /// the only lossy case is a lone surrogate — which cannot name a real file.
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn matches_name(path: &Path, query: &str) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy() == query)
 }
 
 #[cfg(test)]
@@ -461,6 +519,58 @@ mod tests {
         let reopened = Manifest::open(&path).unwrap();
         assert_eq!(reopened.document_count().unwrap(), 1);
         assert!(reopened.lookup("hash-a", &engine()).unwrap().is_some());
+    }
+
+    #[test]
+    fn find_matches_by_file_name() {
+        let manifest = Manifest::open_in_memory().unwrap();
+        let mut stored = record("hash-a", "a");
+        stored.source_path = PathBuf::from("D:/in/reports/annual.pdf");
+        stored.output_path = PathBuf::from("docs/annual.md");
+        manifest.upsert(&stored).unwrap();
+
+        // A person types the file they remember, not the path they imported
+        // it from.
+        assert!(manifest.find("annual.pdf").unwrap().is_some());
+        assert!(manifest.find("annual.md").unwrap().is_some());
+        assert!(manifest.find("missing.pdf").unwrap().is_none());
+    }
+
+    #[test]
+    fn find_still_matches_content_ids() {
+        let manifest = Manifest::open_in_memory().unwrap();
+        manifest.upsert(&record("hash-a", "a")).unwrap();
+
+        assert!(manifest.find("hash-a").unwrap().is_some());
+    }
+
+    /// An exact path must not lose to a different document that happens to
+    /// share its file name.
+    #[test]
+    fn find_prefers_an_exact_match_over_a_file_name() {
+        let manifest = Manifest::open_in_memory().unwrap();
+
+        let mut wanted = record("hash-a", "a");
+        wanted.source_path = PathBuf::from("D:/one/report.pdf");
+        manifest.upsert(&wanted).unwrap();
+
+        let mut decoy = record("hash-b", "b");
+        decoy.source_path = PathBuf::from("D:/two/report.pdf");
+        manifest.upsert(&decoy).unwrap();
+
+        let found = manifest.find("D:/two/report.pdf").unwrap().unwrap();
+        assert_eq!(found.id, "hash-b");
+    }
+
+    /// Sub-second precision carries nothing a knowledge base acts on, and makes
+    /// timestamps taken seconds apart look as different as ones taken
+    /// microseconds apart.
+    #[test]
+    fn timestamps_are_recorded_to_the_second() {
+        let now = now_iso8601();
+
+        assert!(now.ends_with('Z'), "{now}");
+        assert!(!now.contains('.'), "{now}");
     }
 
     #[test]

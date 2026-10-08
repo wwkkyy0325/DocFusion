@@ -549,6 +549,7 @@ dependencies = [
  "docfusion-core",
  "docfusion-store",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

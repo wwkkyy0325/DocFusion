@@ -117,11 +117,21 @@ Fixtures live in `tests/fixtures/`, expected IR as committed snapshots.
 (heading levels, table dimensions, list nesting preserved).
 
 ### Step 7 — CLI
-- [ ] `clap`-based command surface: `add`, `show`, `list`, `reconcile`, `schema`
-- [ ] Global `--json` → NDJSON on stdout, logs on stderr
-- [ ] Semantic exit codes 0/1/2/3/4
-- [ ] `--dry-run` on all mutating commands
-- [ ] `docfusion schema` emits JSON Schema
+- [x] `clap`-based command surface: `add`, `show`, `list`, `schema`
+- [x] `--json` → NDJSON on stdout, everything else on stderr
+- [x] Semantic exit codes 0 (success), 1 (failure), 2 (partial), 3 (no backend)
+- [x] `--dry-run`, which runs everything except the write
+- [x] `docfusion schema` publishes the output contract
+
+> `reconcile` and exit code **4** moved to Step 8. Publishing a code the tool
+> cannot emit would be a contract that lies, and a command that exists only to
+> report "not implemented" is worse than one that is not there yet. A test
+> asserts the schema and the emitted codes stay in step.
+>
+> Verified by running the binary, not only by testing it: the first run through
+> a real knowledge base is what caught `show` failing on a bare file name, a
+> nanosecond timestamp, and — most importantly — output files named after the
+> source file rather than the document's own title.
 
 **Verify:** Scripted test asserting stdout is valid NDJSON with `--json` while
 log lines appear only on stderr; exit code assertions for each failure mode.

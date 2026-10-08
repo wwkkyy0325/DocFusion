@@ -81,20 +81,24 @@ fn field(out: &mut String, key: &str, value: &str) {
 }
 
 /// A document's title, from metadata if it has any.
+///
+/// The document's own first heading is preferred over the source file name,
+/// because "2024 Annual Report" is what the document calls itself while
+/// `report.pdf` is merely what somebody saved it as — and the title is also what
+/// names the output file.
 pub fn title(document: &Document) -> String {
     if let Some(given) = document.meta.title.as_ref().filter(|t| !t.trim().is_empty()) {
         return given.clone();
     }
 
-    if let Some(stem) = document.source.path.file_stem() {
-        return stem.to_string_lossy().into_owned();
+    for block in document.blocks() {
+        if matches!(block.kind, BlockKind::Heading { .. }) && !block.text.trim().is_empty() {
+            return block.text.trim().to_owned();
+        }
     }
 
-    // Most documents state their own title in their first heading.
-    for block in document.blocks() {
-        if matches!(block.kind, BlockKind::Heading { .. }) {
-            return block.text.clone();
-        }
+    if let Some(stem) = document.source.path.file_stem() {
+        return stem.to_string_lossy().into_owned();
     }
 
     String::new()
@@ -528,6 +532,26 @@ mod tests {
     fn the_title_falls_back_to_the_file_stem() {
         let markdown = rendered(vec![block(BlockKind::Paragraph, "x")]);
         assert!(markdown.contains("title: report\n"), "{markdown}");
+    }
+
+    /// The document's own heading beats the name somebody saved it under, and
+    /// the title is also what names the output file.
+    #[test]
+    fn the_title_prefers_the_documents_own_heading() {
+        let markdown = rendered(vec![
+            block(BlockKind::Heading { level: 1 }, "2024 Annual Report"),
+            block(BlockKind::Paragraph, "x"),
+        ]);
+
+        assert!(markdown.contains("title: 2024 Annual Report"), "{markdown}");
+    }
+
+    #[test]
+    fn metadata_title_beats_the_heading() {
+        let mut doc = document(vec![block(BlockKind::Heading { level: 1 }, "Heading")]);
+        doc.meta.title = Some("Given".into());
+
+        assert!(markdown(&doc, CREATED_AT).contains("title: Given"));
     }
 
     /// A title containing a colon would otherwise turn the rest of the line
