@@ -8,7 +8,9 @@
 pub mod docx;
 pub mod ooxml;
 pub mod pdf;
+pub mod pptx;
 pub mod text;
+pub mod xlsx;
 
 use crate::ir::{Document, EngineId, EngineStamp, SourceRef};
 use crate::mime::{Container, sniff};

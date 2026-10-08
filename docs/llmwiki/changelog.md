@@ -4,6 +4,38 @@ Append-only record of meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Spreadsheets and presentations
+
+**What:** `XlsxParser` and `PptxParser` complete the deterministic engine set.
+P0 Step 5 is now done apart from HTML, which stays deferred.
+
+**Decisions and why:**
+
+- **XLSX delegates parsing to `calamine`.** Shared string tables, cell types and
+  date serials are more trouble than they look, and `calamine` is purpose-built
+  for reading. DOCX and PPTX stay hand-rolled over the shared OOXML layer
+  because their structure is simple and the markdown shape is easier to control
+  directly.
+- **`calamine` cannot distinguish "not a spreadsheet" from "corrupt
+  spreadsheet".** It reports both as a read error, and only one of those should
+  let routing continue. The extractor checks for `xl/workbook.xml` in the
+  archive first, so a pptx handed to it declines instead of failing the run.
+- **Slides are ordered numerically, not by name.** A ten-slide deck contains
+  `slide10.xml`, which sorts before `slide2.xml` as text — ordering by name
+  would silently reshuffle the presentation. There is a test for exactly this.
+- **Slide geometry is converted from EMU to points.** DrawingML measures in
+  English Metric Units; reporting raw EMU would make every downstream geometry
+  comparison meaningless.
+- **Whole numbers are not written with a decimal point.** Spreadsheets store
+  every number as a float, so an integer cell arrives as `42.0`; echoing that
+  would be a formatting artefact rather than data.
+
+**A test that was wrong rather than the code:** an assertion expected a sheet's
+short row to stay short, but `calamine` normalises the range to a rectangle.
+The real behaviour is the better one — it is what keeps a value under its own
+column heading — so the test was corrected to assert it.
+
+
 ## 2026-10-08 — Text-layer PDF extraction
 
 **What:** `PdfTextLayer`, backed by PDFium via `pdfium-render` + `pdfium-bundled`.

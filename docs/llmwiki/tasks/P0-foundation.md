@@ -81,8 +81,8 @@ content is the new content. This test must run on Windows, not just Linux CI.
       "convert first" error
 - [x] `PdfTextLayer`; returns `Unsupported` when there is no text layer
 - [x] `DocxParser` (hand-rolled over a shared OOXML layer)
-- [ ] `XlsxParser` via `calamine`
-- [ ] `PptxParser` (zip + XML, hand-rolled)
+- [x] `XlsxParser` via `calamine`
+- [x] `PptxParser` (hand-rolled over the shared OOXML layer)
 - [ ] `HtmlParser` for `.html`
 
 > **Deferred from this step:** HTML needs a real HTML→Markdown conversion

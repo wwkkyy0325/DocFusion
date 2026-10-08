@@ -119,13 +119,14 @@ pub struct Page {
 }
 
 pub struct Block {
-    pub kind:       BlockKind,       // Heading{level} | Paragraph | Table
-                                     // | Figure | Formula | ListItem | Code
+    pub kind:       BlockKind,       // Heading{level} | Paragraph | ListItem
+                                     // | Table > TableRow > TableCell
+                                     // | Figure | Formula | Code
     pub text:       String,
     pub bbox:       Option<Rect>,    // NORMALIZED to 0..1
     pub confidence: Option<f32>,     // 0..1
     pub engine:     EngineId,
-    pub children:   Vec<Block>,      // table cells, list items
+    pub children:   Vec<Block>,      // rows, cells, list items
 }
 
 pub struct Conflict {
@@ -144,6 +145,9 @@ pub struct Conflict {
   alignment is impossible.
 - **`conflicts` lives in the IR, not in a log file.** Disagreements travel with
   the artifact. This implements the governing principle below.
+- **Tables nest three levels: Table → TableRow → TableCell.** An earlier
+  flat cell list was not enough: a renderer cannot lay out a grid without
+  knowing where rows end.
 
 > **Governing principle:** *Specialized parsers fail loudly; general MLLMs fail
 > silently.* For invoices, contracts, and anything where one wrong digit is a
