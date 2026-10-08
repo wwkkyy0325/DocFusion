@@ -75,25 +75,25 @@ router prefers the text-layer engine for a PDF that has one.
 
 **Verify:** a generated image of known text is read back exactly.
 
-### Step 5 — Local VLM backend: llama.cpp as a managed sidecar
-- [ ] Acquire the binary and the model into the tool's own directory, verified
-      against a checksum, with the download size stated before it starts
-- [ ] Sidecar lifecycle: spawn on demand on a free localhost port, wait for
-      health, terminate when the run ends
-- [ ] Put the child in a job object with `KILL_ON_JOB_CLOSE`, so a parent that
-      panics leaves nothing running
-- [ ] Treat an implausible prompt token count as an error: a GGUF model without
-      its `mmproj` does not fail, it emits repeated garbage
+### Step 5 — Vision backend: the user's OpenAI-compatible endpoint
+- [ ] One HTTP client against `/v1/chat/completions`, covering llama-server,
+      Ollama, LM Studio, vLLM and cloud providers alike
+- [ ] Configuration: base URL, model name, optional key, timeout
+- [ ] A request timeout, so an endpoint that accepts a connection and then
+      stalls cannot freeze a batch
+- [ ] Treat an implausible prompt token count as an error: a GGUF model served
+      without its multimodal projector answers 200 with repeated garbage
+- [ ] With nothing configured, say so and point at the guide — OCR-only is a
+      supported mode, not a failure
 
-**Verify:** with the binary absent, the error names what is missing and how
-large it is, without starting a download; with it present, a fixture page
-returns Markdown; killing the parent leaves no process behind.
+**Verify:** against a stub server, a fixture page returns Markdown; with no
+endpoint configured the error names the guide; a server that accepts and then
+stalls fails on the timeout rather than hanging.
 
-> **Changed from Ollama.** The earlier choice optimised for reaching a validated
-> chain fastest, which traded away the requirement that the tool leave nothing
-> on a user's machine beyond its own directory. llama.cpp is not a capability
-> regression: it has dedicated support for the document models this project
-> wants, including PaddleOCR-VL, GLM-OCR and dots.ocr. See design §8.2.
+> **Changed from Ollama, then from a llama.cpp sidecar.** Both made DocFusion a
+> model runtime as well as a document pipeline, which meant owning a downloader,
+> a checksum verifier, a process supervisor, a port allocator and Windows job
+> objects. See design §8.2. The tool now runs no models at all.
 
 ### Step 6 — Verification
 - [ ] Alignment by bounding-box overlap; text comparison after normalization
@@ -112,16 +112,36 @@ conflict and a rendered marker; a policy of `Off` produces neither.
 **Verify:** the chosen default is stated with the scores behind it, and
 swapping it is a one-line change behind the trait.
 
-### Step 8 — Capability detection
-- [ ] GPU, memory, disk, Ollama presence, cloud reachability
-- [ ] `Capability` tiers: `OcrOnly`, `LocalDual`, `CloudEnhanced`
-- [ ] The chosen tier is reported by `docfusion doctor` — hmm, name TBD
+### Step 8 — Probing, not detecting
+- [ ] Probe the configured endpoint rather than inspecting the machine
+- [ ] Report what was found, and what to do about what was not
+- [ ] Check the two things no endpoint can report: free disk space, and the
+      WebView2 runtime for the GUI
 
-**Verify:** on a machine with no GPU the tier is `OcrOnly` and the tool still
-processes text-layer documents.
+**Verify:** with no endpoint, the tool reports `OcrOnly` and still processes
+text-layer documents and scans through OCR.
+
+> **This step shrinks because of §8.2.** GPU vendor, VRAM, whether a daemon is
+> running and which models it holds are questions about somebody else's program,
+> and that program answers them better than any inspection we could write.
+
+### Step 9 — The setup guide
+- [ ] A guide the user's *agent* can execute: exact commands, exact file names,
+      and a check that it worked
+- [ ] Cover `llama-server`, Ollama and LM Studio as interchangeable, since all
+      three expose the same API
+- [ ] State the projector requirement and the download sizes, because a model
+      served without its projector fails silently rather than loudly
+
+**Verify:** following the guide on a clean machine produces an endpoint that
+`docfusion` reports as working, without any step being guessed at.
 
 ---
 
 ## Out of scope for P1
 The GUI, search, cloud provider implementations beyond what is needed to make
 the verifier work, and any semantic enrichment of the output.
+
+**Out of scope permanently, as of this revision:** downloading, verifying,
+installing, supervising or versioning models and inference binaries. That is a
+product category, and it is not this one.

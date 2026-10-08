@@ -4,6 +4,50 @@ Append-only record of meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — DocFusion stops running models
+
+**What:** The vision backend is now the user's OpenAI-compatible HTTP endpoint.
+Sections 7, 8.2, 10 and 14 rewritten; P1 Steps 5 and 8 restated, and a new Step
+9 added for the setup guide.
+
+**Why:** Two successive designs — an Ollama sidecar, then a llama.cpp sidecar —
+made the same mistake. Each turned DocFusion into a model runtime as well as a
+document pipeline, which meant owning a downloader, a checksum verifier, a
+process supervisor, a port allocator and Windows job objects. None of that is
+what this project is for, and model runtimes are a product category with their
+own users and their own maintainers.
+
+The reduction is affordable because **`llama-server`, Ollama, LM Studio and vLLM
+all expose the same OpenAI-compatible API**. One client covers every local
+option and a cloud provider besides, so the choice of runtime stops being ours
+to make and becomes a configuration value.
+
+**What it removes:** binary and model acquisition, checksum verification,
+process lifecycle, orphan prevention, the job object, and GPU detection. An
+entire subsystem and four named risks are gone.
+
+**What it adds:** the tool owes the user clear reporting instead. An
+unconfigured endpoint must name the guide rather than emit a connection error; a
+request must carry a timeout so one bad configuration cannot freeze a batch; and
+an implausibly low prompt token count must be an error, because a model served
+without its multimodal projector answers 200 with repeated garbage rather than
+failing.
+
+**Corrected along the way:** a suggestion that the Doubao desktop application
+could host the model. It is a chat client and exposes no local endpoint. The
+runtimes that do are the three named above.
+
+**What this makes the user's problem, deliberately:** which model is best.
+`docfusion bench` already exists for it, and it now matters more than before —
+the tool will no longer pretend to have an opinion. Setup is a document rather
+than a feature, which is also a smaller thing to keep current when models turn
+over every few months.
+
+**The OCR path is unaffected and still bundled.** Deterministic formats and
+scans work with no configuration at all, which is what makes OCR-only a
+supported mode rather than a degraded one.
+
+
 ## 2026-10-08 — Local inference moves from Ollama to llama.cpp
 
 **What:** Replaced the Ollama sidecar with llama.cpp, managed by the tool.

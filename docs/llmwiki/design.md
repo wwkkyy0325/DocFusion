@@ -291,28 +291,35 @@ Three hard rules:
 
 ---
 
-## 7. Environment detection & capability tiers
+## 7. Capability, and what it now means
 
 ```rust
 pub enum Capability {
-    OcrOnly,        // cannot run a VLM
-    LocalDual,      // can run the ~0.9B VLM locally
-    CloudEnhanced,  // cloud API configured
+    /// No vision endpoint is configured. Deterministic formats and OCR still work.
+    OcrOnly,
+    /// A vision endpoint answered.
+    Vision,
 }
 ```
 
-Detected at install and on demand:
+Decided by **asking rather than detecting**. The configured endpoint is probed
+with a cheap request, and the answer decides the tier.
 
-- GPU vendor / model / VRAM (DXGI + WMI on Windows)
-- System RAM, CPU core count
-- Free disk space
-- Whether the Ollama sidecar is installed, running, and which models are pulled
-- Reachability of the configured cloud endpoint
-- WebView2 runtime version
+Probing replaces inspecting, and that is the point of §8.2 arriving where it
+did: GPU vendor, VRAM, whether a daemon is installed and which models it is
+holding are all questions about *somebody else's program*, and that program
+answers them better than any inspection we could write. What used to be an
+environment-detection subsystem is now one request and an error message.
 
-**The user never chooses a model.** DocFusion ships exactly one recommended
-local stack and selects the tier automatically. Only the cloud provider is a
-configuration item. See §8.
+What is still worth checking locally, because no endpoint can report it:
+
+- Free disk space for the knowledge base.
+- The WebView2 runtime version, for the GUI.
+
+**The user chooses the model; the tool reports what it found.** An earlier
+version of this design had the tool ship one recommended stack and pick a tier
+automatically. That is the right shape for a product that manages inference, and
+the wrong one for a document pipeline that does not.
 
 ---
 
@@ -330,62 +337,55 @@ configuration item. See §8.
   to Windows) and over "use a tiny VLM for everything" (too slow on CPU, and it
   destroys verifier independence).
 
-### 8.2 Local VLM (mid/high tier) — llama.cpp, managed as a sidecar
+### 8.2 The vision backend is the user's endpoint, not ours
 
-**Not Ollama.** Ollama was the earlier choice, made because it was the fastest
-route to a validated end-to-end chain — a product decision traded for
-engineering convenience. It is the wrong shape: a separate application with its
-own daemon, its own login autostart, its own model store, and its own uninstall
-path. The requirement is that the tool leaves nothing of itself on the user's
-machine beyond its own directory, and Ollama cannot meet that.
+**DocFusion does not run models.** It speaks to an OpenAI-compatible HTTP
+endpoint that the user points it at, and works with whatever is behind it.
 
-llama.cpp can, and it is not a compromise on capability. Its multimodal
-documentation lists dedicated support for exactly the models this project wants:
-PaddleOCR-VL, GLM-OCR, DeepSeek-OCR, dots.ocr and HunyuanOCR. PaddleOCR-VL has
-an official GGUF release, and at Q4_K_M it is ~290 MB beside an ~840 MB
-multimodal projector — the vision encoder dominates the download.
+This is a deliberate reduction, taken after two earlier designs — an Ollama
+sidecar, then a llama.cpp sidecar — both made the same mistake. Each turned
+DocFusion into a model runtime as well as a document pipeline, which meant
+writing a downloader, a checksum verifier, a process supervisor, a port
+allocator and Windows job objects. None of that is what this project is for, and
+model runtimes are an entire product category with their own users.
 
-**Candidates for the benchmark to choose between**, in roughly the order the
-evidence currently favours: PaddleOCR-VL (~0.9B, official GGUF, layout analysis),
-GLM-OCR (~0.9B, structured output with bounding boxes — the property dual
-verification needs most), OvisOCR2 (0.8B), dots.ocr (1.7B, heavier but with
-GGUF).
+The reduction is affordable because **`llama-server`, Ollama, LM Studio and vLLM
+all expose the same OpenAI-compatible API**. One client covers every local
+option and a cloud provider besides, so the choice of runtime stops being ours
+to make and starts being a configuration value.
 
-**The projector is not optional.** A GGUF model file without its `mmproj` does
-not fail loudly: the image never becomes vision tokens and the model emits
-repeated garbage. The diagnostic is the prompt token count, which should be in
-the hundreds to thousands for an image and near-zero when the projector failed
-to load. The tool must check this rather than trust a 200 response.
-
-**Lifecycle — the part that decides whether this is well-behaved:**
-
-| Concern | Approach |
+| Configured | What happens |
 |---|---|
-| Binary | Downloaded into the tool's own directory. The user installs nothing. |
-| Models | Downloaded into the tool's own directory on first use, checksum-verified, never into a system-wide store. |
-| Start | Spawned on demand, bound to a free localhost port chosen at start. |
-| Stop | Terminated when the run finishes, not kept warm indefinitely. |
-| Crash | The child is placed in a Windows **job object** with `KILL_ON_JOB_CLOSE`, so it dies with the parent. Relying on a destructor would leave an orphaned process the day the parent panics — which is precisely the "affects my machine" failure this design exists to avoid. |
-| Uninstall | Deleting the directory removes everything. |
+| Nothing | OCR only. Every deterministic format still works, and scans are read by the local OCR engine — so the tool is useful with no setup at all. |
+| An endpoint | The vision backend joins, and dual verification becomes possible in the shape §6.1 describes. |
 
-**Why not link llama.cpp into the binary**, which would remove the subprocess
-entirely: it needs a C++ toolchain and CMake at build time, it fixes the GPU
-backend at compile time, and it adds hundreds of megabytes to the executable.
-The subprocess exists only while documents are being processed, which is a
-smaller imposition than either.
+**Setup is a document, not a feature.** A guide for the user — or, more to the
+point, for their *agent* — is smaller, more durable and more flexible than a
+bundled installer that pins one model forever. It has to be executable rather
+than suggestive: exact commands, exact file names, and a way to check it worked.
+Models turn over every few months; a document can be updated in a paragraph.
 
-**Why not `mistral.rs`**, which is pure Rust and in-process: it runs general
-vision models (Qwen2.5-VL, Gemma 3 and similar) but not the document-OCR
-specialists above, and it has no Vulkan backend. Its purity would be bought with
-the accuracy this project is organised around.
+**What the tool still owes the user**, given it no longer controls the backend:
 
-> **Sizes and capability claims in this section came from web sources of mixed
-> reliability and must be re-verified at implementation time.** Two substantive
-> questions can only be settled by measurement, and the benchmark exists for
-> them: whether PaddleOCR-VL needs a separate layout-detection pass before pages
-> are fed to it, and how much quantization costs accuracy in the body text —
-> one report has Q8_0 matching F16 on table values while reaching only ~73 %
-> text similarity.
+- **Say what is missing, and how to fix it.** An unconfigured endpoint must
+  produce a message naming the guide, not a connection error.
+- **Never hang.** An endpoint that accepts a connection and then stalls has to
+  time out, or one bad configuration freezes a batch.
+- **Watch for the projector failure.** A GGUF model served without its `mmproj`
+  does not fail: the image never becomes vision tokens and the model returns
+  repeated garbage with a 200 status. An implausibly low prompt token count is
+  an error, not a result.
+- **Probe rather than detect.** Whether a backend is usable is answered by
+  asking it, not by inspecting the GPU — which is another thing that stops being
+  our problem.
+
+> **Which model is best remains an open question, and it is now the user's to
+> answer with our benchmark.** The candidates worth measuring, in roughly the
+> order current evidence favours: PaddleOCR-VL (~0.9B, official GGUF, layout
+> analysis), GLM-OCR (~0.9B, structured output with bounding boxes — the
+> property dual verification wants most), OvisOCR2 (0.8B), dots.ocr (1.7B).
+> `docfusion bench` exists so this can be settled on the user's own documents
+> rather than on a leaderboard.
 
 ### 8.3 Cloud (optional, configured by the user)
 
@@ -668,7 +668,7 @@ than duplicates the CLI.
 | DOCX / XLSX | `docx-rs` / `calamine` | Pure Rust |
 | PPTX | hand-rolled (zip + XML) | No mature Rust crate |
 | Local OCR | RapidOCR models + ONNX Runtime | No PaddlePaddle |
-| Local VLM | llama.cpp, managed sidecar | GGUF + `mmproj`; spawned on demand, killed via a job object so it cannot outlive the parent |
+| Vision backend | The user's OpenAI-compatible endpoint | `llama-server`, Ollama, LM Studio, vLLM or a cloud API — one client covers all of them. Not ours to run. |
 | Hashing | BLAKE3 | Fast, content addressing |
 | Manifest | SQLite (`rusqlite`) | Single file, FTS5 available for P4 |
 | CLI | `clap` | Derive API, generated help |
@@ -699,13 +699,14 @@ which engines are available.
 | # | Risk | Mitigation |
 |---|---|---|
 | 1 | Windows `rename` overwrite semantics | `MoveFileExW` — fixed in P0 Step 3 |
-| 2 | The inference binary or model is not downloaded yet | First-run guidance with the size stated up front; explicit error; degrade to OCR-only or cloud |
-| 12 | An orphaned inference process outliving a crashed parent | Job object with `KILL_ON_JOB_CLOSE`; a destructor alone is not enough |
+| 2 | No vision endpoint is configured | Not an error: OCR-only is a supported mode, and the message points at the setup guide |
+| 12 | The endpoint accepts a connection and then stalls | Every request carries a timeout; one bad configuration must not freeze a batch |
 | 3 | Tauri + WebView2 packaging size and CI | Validate early, before P2 is scoped |
 | 4 | Dual verification cost blowout | On-demand triggering + `max_verify_pages` |
 | 5 | Benchmark claims unreliable across sources | `docfusion bench` against the user's own corpus |
 | 6 | Local VLM VRAM footprint | 0.9B Q4 ≈ 600 MB weights, but Ollama's real footprint must be measured |
-| 7 | Models turn over every ~6 months | Everything behind traits; selection re-evaluated by bench |
+| 7 | Models turn over every ~6 months | Everything behind traits; `bench` re-evaluates, and the setup guide is a paragraph to update rather than a release to cut |
+| 13 | A model served without its multimodal projector answers 200 with garbage | An implausible prompt token count is treated as an error; see §8.2 |
 | 8 | Verifier correlation (same lineage on both sides) | Enforced by the role matrix in §6.1 |
 | 9 | PDFium binds only once per process | Process-wide singleton; see §5.2 |
 | 10 | First run extracts 7.4 MB to a cache directory | Bounded and one-off; a read-only cache dir fails with a clear message rather than silently |
