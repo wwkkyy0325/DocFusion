@@ -1,0 +1,236 @@
+/* One page, one column. No framework: the document is rendered to HTML by the
+   pipeline and this only has to put it somewhere readable. */
+
+:root {
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --paper: #ffffff;
+  --wash: #f8fafc;
+  --accent: #1d4ed8;
+  --warn: #b45309;
+  --warn-wash: #fffbeb;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  overflow: hidden;
+}
+
+/* ── header ─────────────────────────────────────────────────────────────── */
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.brand { font-weight: 600; letter-spacing: -0.01em; }
+.spacer { flex: 1; }
+
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+button:hover { background: var(--wash); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+button.primary:hover { filter: brightness(1.08); }
+button.quiet { border-color: transparent; color: var(--muted); }
+
+.banner {
+  margin: 0;
+  padding: 9px 14px;
+  background: var(--warn-wash);
+  border-bottom: 1px solid var(--line);
+  color: var(--warn);
+  font-size: 13px;
+  flex: none;
+}
+
+/* ── the one screen ─────────────────────────────────────────────────────── */
+
+main {
+  flex: 1;
+  overflow: auto;
+  scroll-behavior: smooth;
+}
+
+.empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+  text-align: center;
+  padding: 24px;
+}
+
+/* Bounded so the centring is decided here rather than by however wide the
+   window happens to be, and so a long path has somewhere to wrap. */
+.empty > * { max-width: 34rem; }
+
+.empty .lead { font-size: 17px; color: var(--ink); margin: 0; }
+.empty .hint { margin: 0; }
+
+.empty .where {
+  margin: 10px 0 0;
+  font-size: 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 12px;
+  text-align: left;
+}
+
+.empty dt { color: var(--muted); }
+.empty dd { margin: 0; overflow-wrap: anywhere; }
+
+.working {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--muted);
+}
+
+.pulse {
+  width: 30px;
+  height: 30px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: turn 0.9s linear infinite;
+}
+
+@keyframes turn { to { transform: rotate(360deg); } }
+
+.document { padding: 22px 30px 40px; max-width: 78ch; margin: 0 auto; }
+
+.document h1 { font-size: 1.6em; margin: 0.6em 0 0.4em; }
+.document h2 { font-size: 1.3em; margin: 1.4em 0 0.4em; }
+.document h3 { font-size: 1.1em; margin: 1.3em 0 0.3em; }
+.document p { margin: 0.7em 0; }
+.document img { max-width: 100%; }
+
+.document table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.94em;
+}
+
+.document th, .document td {
+  border: 1px solid var(--line);
+  padding: 5px 9px;
+  text-align: left;
+}
+
+.document th { background: var(--wash); }
+
+.document pre {
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+.document code { font-size: 0.92em; }
+
+.failure {
+  padding: 24px 30px;
+  max-width: 78ch;
+  margin: 0 auto;
+}
+
+.failure h2 { margin-top: 0; font-size: 1.1em; }
+.failure pre { white-space: pre-wrap; color: var(--muted); font-size: 13px; }
+
+/* ── footer ─────────────────────────────────────────────────────────────── */
+
+footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+  flex: none;
+}
+
+footer .warn { color: var(--warn); }
+
+/* ── drawer ─────────────────────────────────────────────────────────────── */
+
+aside {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(420px, 80vw);
+  background: var(--paper);
+  border-left: 1px solid var(--line);
+  box-shadow: -8px 0 24px rgba(15, 23, 42, 0.08);
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+
+#records {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+  flex: 1;
+}
+
+#records li { border-radius: 7px; }
+
+#records button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border-color: transparent;
+  padding: 8px 10px;
+}
+
+#records .name { display: block; }
+
+#records .meta {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+#records .none { color: var(--muted); padding: 12px 10px; font-size: 13px; }

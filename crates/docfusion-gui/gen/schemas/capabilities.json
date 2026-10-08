@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"What the window is allowed to ask for.","local":true,"windows":["main"],"permissions":["core:default"]}}

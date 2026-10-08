@@ -5,7 +5,6 @@
 //! an agent cannot use.
 
 mod bench;
-mod config;
 mod doctor;
 mod output;
 
@@ -13,15 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use docfusion_core::backend::VisionBackend;
-use docfusion_core::extract::pdf::PdfTextLayer;
-use docfusion_core::extract::{
-    ExtractError, Extractor, Router, docx::DocxParser, pptx::PptxParser, scan::ScanExtractor,
-    text::TextPassthrough, xlsx::XlsxParser,
-};
+use docfusion_core::extract::{ExtractError, Extractor, Router};
 use docfusion_core::verify::{DEFAULT_MAX_VERIFY_PAGES, VerifyMode, VerifyPolicy};
 use docfusion_store::endpoint::{EndpointConfig, OpenAiEndpoint};
-use docfusion_store::ocr::RapidOcrBackend;
 use docfusion_store::manifest::StoreError;
 use docfusion_store::pipeline::{Mode, Pipeline, PipelineError};
 use serde_json::{Value, json};
@@ -38,7 +31,8 @@ use output::{FAILED, INDEX_INCONSISTENT, NO_BACKEND, OK, PARTIAL, Reporter};
 )]
 struct Cli {
     /// The knowledge base directory. Created if it does not exist.
-    /// Default: `knowledge`.
+    /// Default: `Documents/DocFusion` under your home directory — the same
+    /// place the window uses, so both open one library.
     #[arg(long, global = true, env = "DOCFUSION_ROOT")]
     root: Option<PathBuf>,
 
@@ -110,15 +104,12 @@ impl From<VerifyChoice> for VerifyMode {
     }
 }
 
-/// Where documents go when nothing says otherwise.
-const DEFAULT_ROOT: &str = "knowledge";
-
 impl Cli {
     /// The knowledge base, once nothing else is going to supply one.
     fn root(&self) -> PathBuf {
         self.root
             .clone()
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT))
+            .unwrap_or_else(docfusion_store::dirs::default_knowledge_base)
     }
 
     /// The command line with the configuration file filled in behind it.
@@ -129,14 +120,14 @@ impl Cli {
     /// to supply — which is why the fields with defaults are `Option` here
     /// rather than carrying those defaults in an attribute.
     fn resolved(self) -> Result<Self, CliError> {
-        self.with_config(config::Config::load()?)
+        self.with_config(docfusion_store::config::Config::load()?)
     }
 
     /// The same, with the file already in hand.
     ///
     /// Separated from reading it so that precedence can be tested without a
     /// file and without touching the environment a parallel test is reading.
-    fn with_config(mut self, config: config::Config) -> Result<Self, CliError> {
+    fn with_config(mut self, config: docfusion_store::config::Config) -> Result<Self, CliError> {
         self.root = self.root.or(config.root);
         self.endpoint = self.endpoint.or(config.endpoint);
         self.model = self.model.or(config.model);
@@ -156,7 +147,7 @@ impl Cli {
             self.verify = Some(VerifyChoice::from_str(name, true).map_err(|_| {
                 CliError::Usage(format!(
                     "`verify = \"{name}\"` in {} is not one of: {}",
-                    config::path().display(),
+                    docfusion_store::config::path().display(),
                     choices()
                 ))
             })?);
@@ -232,7 +223,7 @@ enum CliError {
     Store(#[from] StoreError),
 
     #[error(transparent)]
-    Config(#[from] config::ConfigError),
+    Config(#[from] docfusion_store::config::ConfigError),
 
     #[error("{0}")]
     NotFound(String),
@@ -507,10 +498,6 @@ fn endpoint(cli: &Cli) -> Result<Option<OpenAiEndpoint>, CliError> {
     Ok(Some(OpenAiEndpoint::new(config)))
 }
 
-fn vision(cli: &Cli) -> Result<Option<Box<dyn VisionBackend>>, CliError> {
-    Ok(endpoint(cli)?.map(|endpoint| Box::new(endpoint) as Box<dyn VisionBackend>))
-}
-
 /// The engines the router is holding, named.
 ///
 /// Built rather than hard-coded so that anything describing the installation
@@ -529,33 +516,13 @@ fn engine_ids(cli: &Cli) -> Result<Vec<String>, CliError> {
 /// which can be parsed is parsed rather than rendered into images and sent to a
 /// model.
 fn engines(cli: &Cli, policy: VerifyPolicy) -> Result<Vec<Box<dyn Extractor>>, CliError> {
-    let mut engines: Vec<Box<dyn Extractor>> = vec![
-        Box::new(PdfTextLayer::new()),
-        Box::new(DocxParser),
-        Box::new(XlsxParser),
-        Box::new(PptxParser),
-        Box::new(TextPassthrough),
-    ];
+    let config = endpoint(cli)?.map(OpenAiEndpoint::into_config);
 
-    // The local OCR engine always joins, and costs nothing until a page
-    // actually needs reading. It is what makes a scan readable with no setup:
-    // the weights are in the binary, so there is nothing to configure and
-    // nothing to download.
-    // One number, used twice. Threads beyond pipelines queue, and pipelines
-    // beyond threads are memory nobody reads a page with, so a mismatch wastes
-    // whichever is larger.
-    let readers = readers(cli);
-
-    engines.push(Box::new(
-        ScanExtractor::new(
-            Some(Box::new(RapidOcrBackend::bundled().with_pipelines(readers))),
-            vision(cli)?,
-        )
-        .with_policy(policy)
-        .with_concurrency(readers),
-    ));
-
-    Ok(engines)
+    Ok(docfusion_store::engines::standard(
+        config,
+        policy,
+        readers(cli),
+    ))
 }
 
 /// How many pages this run will read at once.
@@ -631,7 +598,7 @@ fn schema() -> Value {
             "paths": "absolute source paths; output paths are relative to --root",
         },
         "config": {
-            "path": config::path().display().to_string(),
+            "path": docfusion_store::config::path().display().to_string(),
             "format": "TOML; a misspelt key is an error rather than a setting quietly ignored",
             "keys": ["root", "endpoint", "model", "api_key", "verify", "max_verify_pages", "max_ocr_pipelines"],
             "precedence": "flag, then environment variable, then this file, then the built-in default",
@@ -712,12 +679,12 @@ mod tests {
 
     // ── Configuration file ───────────────────────────────────────────────────
 
-    fn file(endpoint: &str, model: &str) -> config::Config {
-        config::Config {
+    fn file(endpoint: &str, model: &str) -> docfusion_store::config::Config {
+        docfusion_store::config::Config {
             endpoint: Some(endpoint.to_owned()),
             model: Some(model.to_owned()),
             api_key: Some("sk-from-the-file".to_owned()),
-            ..config::Config::default()
+            ..docfusion_store::config::Config::default()
         }
     }
 
@@ -749,11 +716,11 @@ mod tests {
     #[test]
     fn the_file_can_carry_the_settings_that_have_defaults() {
         let cli = configured(&[])
-            .with_config(config::Config {
+            .with_config(docfusion_store::config::Config {
                 root: Some(PathBuf::from("elsewhere")),
                 verify: Some("always".into()),
                 max_verify_pages: Some(3),
-                ..config::Config::default()
+                ..docfusion_store::config::Config::default()
             })
             .expect("valid");
 
@@ -765,10 +732,10 @@ mod tests {
     #[test]
     fn with_nothing_configured_every_setting_falls_back() {
         let cli = configured(&[])
-            .with_config(config::Config::default())
+            .with_config(docfusion_store::config::Config::default())
             .expect("valid");
 
-        assert_eq!(cli.root(), PathBuf::from(DEFAULT_ROOT));
+        assert_eq!(cli.root(), docfusion_store::dirs::default_knowledge_base());
         assert_eq!(policy(&cli).mode, VerifyMode::OnDoubt);
         assert_eq!(policy(&cli).max_verify_pages, DEFAULT_MAX_VERIFY_PAGES);
     }
@@ -777,9 +744,9 @@ mod tests {
     /// worth saying out loud — and worth saying what the choices are.
     #[test]
     fn an_unknown_policy_in_the_file_names_the_valid_ones() {
-        let error = match configured(&[]).with_config(config::Config {
+        let error = match configured(&[]).with_config(docfusion_store::config::Config {
             verify: Some("sometimes".into()),
-            ..config::Config::default()
+            ..docfusion_store::config::Config::default()
         }) {
             Ok(_) => panic!("a policy the tool does not have should be refused"),
             Err(error) => error,
@@ -795,9 +762,9 @@ mod tests {
     #[test]
     fn a_flag_beats_an_unusable_file_policy() {
         let cli = configured(&["--verify", "off"])
-            .with_config(config::Config {
+            .with_config(docfusion_store::config::Config {
                 verify: Some("sometimes".into()),
-                ..config::Config::default()
+                ..docfusion_store::config::Config::default()
             })
             .expect("the file's value is never reached");
 
@@ -841,7 +808,7 @@ mod tests {
     /// produce whatever it happened to pick.
     #[test]
     fn an_endpoint_without_a_model_is_refused() {
-        let Err(error) = vision(&configured(&["--endpoint", "http://127.0.0.1:1"])) else {
+        let Err(error) = endpoint(&configured(&["--endpoint", "http://127.0.0.1:1"])) else {
             panic!("an endpoint without a model should be refused");
         };
 
@@ -850,7 +817,7 @@ mod tests {
 
     #[test]
     fn a_model_without_an_endpoint_is_refused() {
-        let Err(error) = vision(&configured(&["--model", "m"])) else {
+        let Err(error) = endpoint(&configured(&["--model", "m"])) else {
             panic!("a model without an endpoint should be refused");
         };
 

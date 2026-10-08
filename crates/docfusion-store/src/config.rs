@@ -1,12 +1,17 @@
-//! Where the tool is set up, when no flag says otherwise.
+//! Where the tool is set up, when nothing says otherwise.
+//!
+//! Read here rather than in the command line because the window reads it too,
+//! and one file with two readers needs one definition. The settings are the
+//! same whatever is asking: they describe the tool, not the interface.
 
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use docfusion_store::dirs;
 use serde::Deserialize;
+
+use crate::dirs;
 
 /// The settings a run can inherit from a file.
 ///

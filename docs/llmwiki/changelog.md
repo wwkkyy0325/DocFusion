@@ -4,6 +4,50 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — The window
+
+**What:** `docfusion-gui`, a Tauri v2 application with a static frontend and no
+build chain. Drop or choose a document, read it, see it rendered, copy it as
+plain text. A records drawer lists what is in the knowledge base.
+
+**No bundler, and that held up.** The `ui/` folder is three files loaded as
+they are. The design chose that before there was code; building it confirmed it,
+because the only hard part of this interface is rendering Markdown and that is
+`comrak` in Rust — `render::html`, which the command line wanted anyway. What is
+left for JavaScript is a view over a JSON value, plus the two things a webview
+does better than Rust: the clipboard and knowing what is selected.
+
+**Raw HTML in extracted text is escaped, not passed through.** The renderer says
+so explicitly and has a test for it, because this output goes into a webview
+where markup that passes through is script that runs.
+
+**The engines are built by one function now.** `docfusion_store::engines` is
+what both the command line and the window call. Two lists that agree today are
+two lists that disagree after the next change, and a window that reads a
+document differently from the command line is two products with one name.
+
+**The configuration file moved out of the command line** and into the store, for
+the same reason: it now has two readers.
+
+**One knowledge base, one place.** The default was `knowledge`, relative, which
+is right in a shell and wrong for an application started from a shortcut — it
+would resolve somewhere different every launch, and the window and the command
+line would open two libraries. Both now default to `Documents/DocFusion`, and
+`--root` still overrides it.
+
+**A wrong first diagnosis, worth recording.** The window appeared to clip its
+content about two thirds of the way across: the heading cut mid-word, the
+buttons overflowing an invisible edge. It was the screenshot. My capture took
+the window's *position* from a call that returned the wrong origin while taking
+its *size* from the window, so every image was a slice of the desktop with the
+window's left portion in it. Asking for a 1400-pixel window settled it in one
+look: everything renders, and the layout was never wrong. Two fixes were made
+along the way that were worth making anyway — the empty state no longer crams
+two forty-character paths into a centred sentence — but the bug was in the
+instrument, not the thing being measured.
+
+---
+
 ## 2026-10-08 — The machine decides how many pages to read at once
 
 **What:** the reader count is no longer a constant. `docfusion-store::memory`

@@ -19,6 +19,36 @@ const RESERVED_NAMES: [&str; 22] = [
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
+/// Renders Markdown as HTML, for a viewer.
+///
+/// The other half of the renderer: the command line writes Markdown because a
+/// knowledge base is files, and a window shows HTML because a webview is a
+/// browser. Both start from the same text and neither owns the document.
+///
+/// **Raw HTML in the source is escaped rather than passed through.** Extracted
+/// text is not trusted markup — it is whatever was on a page, which for a
+/// hostile document is whatever its author put there — and this output is
+/// handed to a webview, where passed-through markup is script. `comrak`'s
+/// default is to escape it, and the default is right.
+///
+/// The front matter is dropped rather than shown. It is a machine's record of
+/// where the document came from, not something the document says.
+pub fn html(markdown: &str) -> String {
+    let mut options = comrak::Options::default();
+    options.extension.table = true;
+    options.extension.strikethrough = true;
+    options.extension.autolink = true;
+    options.extension.tasklist = true;
+    options.extension.front_matter_delimiter = Some("---".to_owned());
+    // Raw HTML in the source is escaped rather than passed through. This is
+    // `comrak`'s default, said out loud because it is the one setting here that
+    // is a security property rather than a preference: the output goes into a
+    // webview, where markup that passes through is script that runs.
+    options.render.escape = true;
+
+    comrak::markdown_to_html(markdown, &options)
+}
+
 /// Renders a document as Markdown with YAML front matter.
 ///
 /// `created_at` is supplied rather than read from the clock, because the
@@ -1044,6 +1074,44 @@ mod tests {
             "paragraphs: {:?}",
             parsed.paragraphs
         );
+    }
+
+    // ── HTML ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn html_renders_the_structure_a_reader_would_see() {
+        let html = html(&markdown(
+            &document(vec![
+                block(BlockKind::Heading { level: 1 }, "Title"),
+                block(BlockKind::Paragraph, "Body"),
+                two_by_two_table(),
+            ]),
+            CREATED_AT,
+        ));
+
+        assert!(html.contains("<h1>Title</h1>"), "{html}");
+        assert!(html.contains("<p>Body</p>"), "{html}");
+        assert!(html.contains("<table>"), "{html}");
+    }
+
+    /// The front matter is the tool's record of where a document came from. A
+    /// reader opening the document should not be shown the plumbing.
+    #[test]
+    fn html_leaves_the_front_matter_out() {
+        let html = html(&markdown(&document(vec![block(BlockKind::Paragraph, "Body")]), CREATED_AT));
+
+        assert!(!html.contains("sha256"), "{html}");
+        assert!(!html.contains("showing"), "{html}");
+    }
+
+    /// Extracted text is not trusted markup. This output goes into a webview,
+    /// where markup that passes through is script that runs.
+    #[test]
+    fn html_escapes_raw_markup_in_the_document() {
+        let html = html("<script>alert(1)</script>");
+
+        assert!(!html.contains("<script>"), "{html}");
+        assert!(html.contains("&lt;script&gt;"), "{html}");
     }
 
     /// Front matter is metadata, not content. If a reader saw it as body text

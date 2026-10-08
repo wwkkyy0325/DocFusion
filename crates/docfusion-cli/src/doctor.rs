@@ -133,12 +133,12 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
             Some(_) => format!(
                 "The endpoint comes from {}. Fix it there, or override it for one run \
                  with --endpoint and --model.",
-                crate::config::path().display()
+                docfusion_store::config::path().display()
             ),
             None => format!(
                 "To read pages with a vision model as well, put an endpoint in {}. \
                  See the setup guide.",
-                crate::config::path().display()
+                docfusion_store::config::path().display()
             ),
         });
     }
@@ -158,7 +158,7 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
             "tier": tier,
             "notes": notes,
             "problems": problems,
-            "config": crate::config::path().display().to_string(),
+            "config": docfusion_store::config::path().display().to_string(),
         }),
         lines.join("\n"),
     );

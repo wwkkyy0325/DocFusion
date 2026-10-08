@@ -4,6 +4,7 @@ members = [
     "crates/docfusion-core",
     "crates/docfusion-store",
     "crates/docfusion-cli",
+    "crates/docfusion-gui",
 ]
 
 [workspace.package]

@@ -876,6 +876,26 @@ Empty state                    After processing
 - The GUI is a shell over the same `docfusion-core`; feature work belongs in core
   and CLI. The GUI must not become the only place a capability lives.
 
+**`docfusion-gui` is Tauri v2 with a static frontend and no build chain.** The
+`ui/` folder is HTML, CSS and one JavaScript file, loaded directly — no bundler,
+no `node_modules`, no npm step in the build. The design chose that before there
+was any code, and building it confirmed the choice: the only genuinely hard part
+of this interface is rendering Markdown, and that is `comrak` in Rust
+(`render::html`), because the command line needs it anyway. What is left for the
+frontend is a view over a JSON value and two things a webview is better at than
+Rust — the clipboard and knowing what is selected.
+
+**`state.rs` is plain data with no window types in it**, and it is where the
+tests are. `bridge.rs`'s job — the two directions between the window and the
+pipeline — lives in `lib.rs`. This is the shape `verse-app` uses, and it is the
+right one: the part that decides what the interface looks like can be checked
+without starting a window.
+
+**The engines come from `docfusion_store::engines::standard`**, the same call
+the command line makes. Two lists that agree today are two lists that disagree
+after the next change, and a window that reads a document differently from the
+command line is two products with one name.
+
 **The GUI links the crates, and there is no server behind it.** Tauri is a Rust
 application whose webview is a view over the same process: the interface calls
 into `docfusion-core` and `docfusion-store` directly, as the command line does.
@@ -928,7 +948,7 @@ than duplicates the CLI.
 | Manifest | SQLite (`rusqlite`) | Single file, FTS5 available for P4 |
 | CLI | `clap` | Derive API, generated help |
 | Field trigger | `regex` | The critical-field patterns. Four hand-rolled matchers would be more code, less capable, and harder to extend; the comparison itself folds width and case by hand, because a regex per character would be absurd. |
-| GUI | Tauri v2 + static frontend | No Node build chain |
+| GUI | Tauri v2 + static frontend | No Node build chain. The `ui/` folder is loaded as it is; Markdown becomes HTML in Rust, so there is nothing for a bundler to do. |
 | Async | `tokio` | Needed for concurrent backend calls |
 
 ---

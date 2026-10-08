@@ -121,6 +121,12 @@ impl OpenAiEndpoint {
         &self.config
     }
 
+    /// The configuration, for a caller that wants to hand it to whoever builds
+    /// the engines rather than hold the client itself.
+    pub fn into_config(self) -> EndpointConfig {
+        self.config
+    }
+
     /// Asks the endpoint which models it is serving.
     ///
     /// Probing replaces detecting. Whether a backend is usable is a question
