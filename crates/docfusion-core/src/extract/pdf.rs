@@ -12,8 +12,9 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use pdfium_bundled::bind_bundled;
-use pdfium_bundled::pdfium_render::prelude::{PdfPageText, Pdfium};
+use pdfium_bundled::pdfium_render::prelude::{PdfPageText, PdfRenderConfig, Pdfium};
 
+use crate::image::PageImage;
 use crate::ir::{
     Block, BlockKind, DocMeta, Document, EngineId, EngineStamp, Page, PageProvenance, Rect, Size,
 };
@@ -154,6 +155,42 @@ impl Extractor for PdfTextLayer {
             })
         })
     }
+}
+
+/// Renders every page of a PDF to pixels.
+///
+/// This is how a document with no text layer is read at all: its pages become
+/// images and go to an OCR or vision backend. Rendering happens at a chosen
+/// resolution rather than the PDF's own units, because recognition quality
+/// depends on how many pixels each character covers.
+pub fn render_pages(bytes: &[u8], dpi: f32) -> Result<Vec<PageImage>, ExtractError> {
+    with_engine(|pdfium| {
+        let pdf = pdfium
+            .load_pdf_from_byte_slice(bytes, None)
+            .map_err(|error| {
+                ExtractError::failed(ENGINE_ID, format!("could not open the PDF: {error}"))
+            })?;
+
+        // PDF units are points: 72 to the inch. The pixel format is left at
+        // PDFium's own BGRA; `as_rgba_bytes` normalises it, and there is no
+        // RGBA format to ask for in the first place.
+        let config = PdfRenderConfig::new().scale_page_by_factor(dpi / 72.0);
+
+        let mut images = Vec::new();
+        for page in pdf.pages().iter() {
+            let bitmap = page.render_with_config(&config).map_err(|error| {
+                ExtractError::failed(ENGINE_ID, format!("could not render a page: {error}"))
+            })?;
+
+            images.push(PageImage {
+                width: bitmap.width() as u32,
+                height: bitmap.height() as u32,
+                pixels: bitmap.as_rgba_bytes(),
+            });
+        }
+
+        Ok(images)
+    })
 }
 
 /// One text fragment as PDFium reports it.
@@ -668,6 +705,44 @@ mod tests {
         let mut paragraph = String::from("first line");
         join_line(&mut paragraph, "second line");
         assert_eq!(paragraph, "first line second line");
+    }
+
+    #[test]
+    fn renders_a_page_to_pixels_at_the_requested_resolution() {
+        let bytes = fixture(&[(12.0, "Hello")]);
+
+        // The fixture page is 612×792 points, and points are 72 to the inch.
+        let at_72_dpi = render_pages(&bytes, 72.0).expect("render");
+        assert_eq!(at_72_dpi.len(), 1);
+        assert_eq!((at_72_dpi[0].width, at_72_dpi[0].height), (612, 792));
+
+        let at_144_dpi = render_pages(&bytes, 144.0).expect("render");
+        assert_eq!((at_144_dpi[0].width, at_144_dpi[0].height), (1224, 1584));
+    }
+
+    #[test]
+    fn rendered_pixels_are_rgba() {
+        let images = render_pages(&fixture(&[(12.0, "Hello")]), 72.0).expect("render");
+        let image = &images[0];
+
+        assert_eq!(
+            image.pixels.len(),
+            (image.width * image.height * 4) as usize,
+            "the buffer must be four bytes per pixel"
+        );
+    }
+
+    /// Rendering is how a scan becomes readable at all, so it must work on a
+    /// PDF that has no text to extract.
+    #[test]
+    fn a_pdf_without_a_text_layer_still_renders() {
+        let bytes = fixture(&[]);
+
+        assert!(matches!(
+            extract(&bytes),
+            Err(ExtractError::Unsupported { .. })
+        ));
+        assert_eq!(render_pages(&bytes, 72.0).expect("render").len(), 1);
     }
 
     #[test]

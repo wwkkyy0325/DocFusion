@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 calamine = "0.36.1"
 comrak = "0.56.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tiff", "webp"] }
 pdfium-bundled = { version = "0.2.0", features = ["bundled"] }
 quick-xml = "0.42.0"
 serde = { version = "1.0.229", features = ["derive"] }
