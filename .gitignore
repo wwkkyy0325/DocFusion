@@ -14,3 +14,6 @@
 Thumbs.db
 .idea/
 .vscode/
+
+# Tauri generates these from the capabilities at build time.
+crates/docfusion-gui/gen/
