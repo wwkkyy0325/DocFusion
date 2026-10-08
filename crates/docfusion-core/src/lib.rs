@@ -9,3 +9,4 @@
 pub mod extract;
 pub mod ir;
 pub mod mime;
+pub mod render;

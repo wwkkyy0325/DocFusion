@@ -408,6 +408,9 @@ knowledge/
 The knowledge base is directly consumable by Obsidian, any editor, and `git`, and
 is immediately usable by an agent with no adapter.
 
+`_assets/` is empty until P1: no deterministic engine produces figure blocks, so
+there is nothing to write there yet.
+
 ### 9.2 Manifest schema
 
 ```sql

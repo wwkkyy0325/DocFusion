@@ -13,4 +13,5 @@ thiserror = "2.0.21"
 zip = "8.6.0"
 
 [dev-dependencies]
+comrak = "0.56.0"
 serde_json = "1.0.151"

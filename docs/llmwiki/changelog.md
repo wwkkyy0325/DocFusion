@@ -4,6 +4,49 @@ Append-only record of meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Markdown rendering
+
+**What:** IR → GFM Markdown with YAML front matter, filename slugs, and text
+escaping. Verified by reading the output back with a real CommonMark parser.
+
+**Decisions and why:**
+
+- **Extracted text is escaped, but only where it changes meaning.** A paragraph
+  lifted from a Word file is plain text that was never Markdown; if it begins
+  with `#` or `-` it would silently become a heading or a list. Only the start
+  of a line is escaped, though — escaping inline punctuation too would turn
+  `5 * 3` into `5 \* 3`, noise that changes nothing because an unpaired `*`
+  already renders literally. A leading `2024.` is handled by escaping the
+  period, since a backslash only escapes punctuation and `\1` would render as
+  `\1`.
+- **The slug allows only alphanumeric characters and collapses everything else
+  into `-`.** An earlier attempt excluded the characters Windows forbids, which
+  got the platform question right and the slug wrong: a dash is legal in a
+  filename but is a separator here, so `Q1 - 2024` came out as `q1---2024`. The
+  allow-list makes platform safety fall out for free.
+- **CJK is kept rather than transliterated.** Those characters are alphanumeric
+  and legal in filenames, and a transliterated Chinese title is unrecognisable
+  to the person who wrote it.
+- **YAML scalars are quoted conservatively.** YAML's plain-scalar rules are
+  subtle, and over-quoting costs two characters while under-quoting produces a
+  field a parser reads as something else. A quoted value also keeps a stable
+  type: a bare timestamp may be read back as a date rather than the string it
+  was written as.
+- **No page separators between pages.** A knowledge base is read as continuous
+  prose; a horizontal rule between every page of a long PDF is noise. Page
+  structure stays in the IR.
+- **Front-matter timestamps are supplied by the caller, not read from the
+  clock.** A renderer that reads the clock cannot produce the same bytes for the
+  same input, so every re-render would look like a change to anything comparing
+  the output.
+
+**Verification:** four round-trip tests parse the rendered Markdown with
+`comrak` and assert on the resulting tree — heading levels, list items, and
+table dimensions — rather than on substrings. The one that matters most checks
+that text which *looks* like structure does not become structure, and that front
+matter is not read as document body.
+
+
 ## 2026-10-08 — Spreadsheets and presentations
 
 **What:** `XlsxParser` and `PptxParser` complete the deterministic engine set.

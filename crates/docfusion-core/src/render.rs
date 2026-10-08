@@ -1,0 +1,761 @@
+//! Rendering the IR as Markdown.
+//!
+//! Extracted text is plain text that was never meant to be Markdown. A
+//! paragraph that happens to begin with `#` or `-` would be reinterpreted as
+//! structure the document never had, so text is escaped before it is written.
+
+use crate::ir::{Block, BlockKind, Document};
+
+/// Characters that change the meaning of a line when they begin one.
+const BLOCK_MARKERS: [char; 8] = ['#', '>', '-', '+', '*', '=', '~', '`'];
+
+/// Upper bound on a slug, leaving room for a directory and an extension inside
+/// the Windows path limit.
+const MAX_SLUG_LENGTH: usize = 100;
+
+/// Names Windows refuses to use for a file, whatever the extension.
+const RESERVED_NAMES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Renders a document as Markdown with YAML front matter.
+///
+/// `created_at` is supplied rather than read from the clock, because the
+/// renderer must produce the same bytes for the same input — otherwise a
+/// re-render would look like a change to anything comparing the output.
+pub fn markdown(document: &Document, created_at: &str) -> String {
+    let mut markdown = frontmatter(document, created_at);
+
+    let mut first = true;
+    for page in &document.pages {
+        for block in &page.blocks {
+            if !first {
+                markdown.push('\n');
+            }
+            first = false;
+            block_markdown(&mut markdown, block);
+        }
+    }
+
+    markdown
+}
+
+/// No page separators: a knowledge base is read as continuous prose, and a
+/// horizontal rule between every page of a long PDF is noise. Page structure
+/// stays available in the IR for anything that needs it.
+fn frontmatter(document: &Document, created_at: &str) -> String {
+    let mut out = String::from("---\n");
+
+    field(&mut out, "source", &document.source.path.to_string_lossy());
+    field(&mut out, "sha256", &document.source.content_hash);
+    field(&mut out, "title", &title(document));
+    field(&mut out, "mime", &document.source.mime);
+    field(&mut out, "created_at", created_at);
+
+    let engines = engines(document);
+    out.push_str("engines: [");
+    for (index, engine) in engines.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&yaml_scalar(engine));
+    }
+    out.push_str("]\n");
+
+    field(
+        &mut out,
+        "conflict_count",
+        &document.conflicts.len().to_string(),
+    );
+
+    out.push_str("---\n");
+    out
+}
+
+fn field(out: &mut String, key: &str, value: &str) {
+    out.push_str(key);
+    out.push_str(": ");
+    out.push_str(&yaml_scalar(value));
+    out.push('\n');
+}
+
+/// A document's title, from metadata if it has any.
+fn title(document: &Document) -> String {
+    if let Some(given) = document.meta.title.as_ref().filter(|t| !t.trim().is_empty()) {
+        return given.clone();
+    }
+
+    if let Some(stem) = document.source.path.file_stem() {
+        return stem.to_string_lossy().into_owned();
+    }
+
+    // Most documents state their own title in their first heading.
+    for block in document.blocks() {
+        if matches!(block.kind, BlockKind::Heading { .. }) {
+            return block.text.clone();
+        }
+    }
+
+    String::new()
+}
+
+fn engines(document: &Document) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for page in &document.pages {
+        for engine in &page.provenance.engines {
+            let name = engine.to_string();
+            if !found.contains(&name) {
+                found.push(name);
+            }
+        }
+    }
+    found
+}
+
+fn block_markdown(out: &mut String, block: &Block) {
+    match block.kind {
+        BlockKind::Heading { level } => {
+            for _ in 0..level.clamp(1, 6) {
+                out.push('#');
+            }
+            out.push(' ');
+            out.push_str(&escape(&block.text));
+            out.push('\n');
+        }
+        BlockKind::Paragraph => {
+            out.push_str(&escape(&block.text));
+            out.push('\n');
+        }
+        BlockKind::ListItem => {
+            out.push_str("- ");
+            out.push_str(&escape(&block.text));
+            out.push('\n');
+        }
+        BlockKind::Table => table_markdown(out, block),
+        BlockKind::Code => {
+            out.push_str("```\n");
+            out.push_str(&block.text);
+            out.push_str("\n```\n");
+        }
+        BlockKind::Formula => {
+            out.push_str("$$\n");
+            out.push_str(&block.text);
+            out.push_str("\n$$\n");
+        }
+        // Figures carry a caption until asset extraction lands; an image with
+        // no path would be broken Markdown.
+        BlockKind::Figure => {
+            if !block.text.trim().is_empty() {
+                out.push_str(&escape(&block.text));
+                out.push('\n');
+            }
+        }
+        // Rendered by the table that owns them.
+        BlockKind::TableRow | BlockKind::TableCell => {}
+    }
+}
+
+fn table_markdown(out: &mut String, table: &Block) {
+    let rows: Vec<&Block> = table
+        .children
+        .iter()
+        .filter(|child| child.kind == BlockKind::TableRow)
+        .collect();
+
+    if rows.is_empty() {
+        return;
+    }
+
+    // GFM requires every row to have the same number of columns, so the grid is
+    // as wide as its widest row and short rows are padded.
+    let columns = rows
+        .iter()
+        .map(|row| row.children.len())
+        .max()
+        .unwrap_or(0);
+    if columns == 0 {
+        return;
+    }
+
+    table_row(out, rows[0], columns);
+    out.push('|');
+    for _ in 0..columns {
+        out.push_str(" --- |");
+    }
+    out.push('\n');
+
+    for row in &rows[1..] {
+        table_row(out, row, columns);
+    }
+}
+
+fn table_row(out: &mut String, row: &Block, columns: usize) {
+    out.push('|');
+    for index in 0..columns {
+        let text = row
+            .children
+            .get(index)
+            .map(|cell| cell.text.as_str())
+            .unwrap_or_default();
+        out.push(' ');
+        out.push_str(&escape_cell(text));
+        out.push_str(" |");
+    }
+    out.push('\n');
+}
+
+/// Escapes text so it renders as written rather than as Markdown structure.
+///
+/// Only characters that would change the meaning of a line are escaped, and
+/// only at the start of one. Escaping inline punctuation too would turn
+/// ordinary text such as `5 * 3` into `5 \* 3` — noise that changes nothing,
+/// because an unpaired `*` already renders literally.
+fn escape(text: &str) -> String {
+    text.split('\n')
+        .map(escape_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn escape_line(line: &str) -> String {
+    let Some(first) = line.chars().next() else {
+        return String::new();
+    };
+
+    if BLOCK_MARKERS.contains(&first) {
+        return format!("\\{line}");
+    }
+
+    // A leading number followed by `.` or `)` opens an ordered list, which is
+    // almost always a false positive for prose such as "2024. Revenue grew".
+    // The period is escaped rather than the digit, because a backslash only
+    // escapes punctuation.
+    if first.is_ascii_digit() {
+        let digits = line.chars().take_while(char::is_ascii_digit).count();
+        let rest: Vec<char> = line.chars().skip(digits).collect();
+
+        if matches!(rest.first(), Some('.') | Some(')'))
+            && rest.get(1).is_none_or(|next| next.is_whitespace())
+        {
+            return format!("{}\\{}", &line[..digits], &line[digits..]);
+        }
+    }
+
+    line.to_owned()
+}
+
+/// A pipe ends a cell and a newline ends a row, so both must go. GFM has no way
+/// to express a line break inside a cell, so it becomes a `<br>`.
+fn escape_cell(text: &str) -> String {
+    escape(text).replace('|', "\\|").replace('\n', "<br>")
+}
+
+/// Quotes a YAML scalar when leaving it bare could change its meaning.
+///
+/// Deliberately conservative. YAML's plain-scalar rules are subtle — a colon
+/// only introduces a mapping when followed by a space, a `#` only starts a
+/// comment after one — and quoting something that did not need it costs a pair
+/// of quote marks, while missing one costs a field that a parser reads as
+/// something else. A quoted value also keeps a stable type: a bare timestamp
+/// may be read back as a date rather than the string it was written as.
+fn yaml_scalar(value: &str) -> String {
+    let needs_quotes = value.is_empty()
+        || value
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_whitespace())
+        || value.chars().last().is_some_and(|last| last.is_whitespace())
+        || value.contains([
+            ':', '#', '"', '\'', '\n', '[', ']', '{', '}', ',', '&', '*', '!', '|', '>', '%', '@',
+            '`',
+        ]);
+
+    if needs_quotes {
+        format!(
+            "\"{}\"",
+            value.replace('\\', "\\\\").replace('"', "\\\"")
+        )
+    } else {
+        value.to_owned()
+    }
+}
+
+/// Builds a filename-safe slug from a title.
+///
+/// Only alphanumeric characters survive; everything else — spaces, punctuation,
+/// path separators — collapses into a single `-`. Deriving safety from an
+/// allow-list rather than by enumerating the characters Windows happens to
+/// forbid today also fixes a subtler problem: a dash is legal in a filename but
+/// is a word separator here, so treating it as content would leave `Q1 - 2024`
+/// as `q1---2024`.
+///
+/// CJK characters are kept rather than transliterated. They are alphanumeric
+/// and legal in filenames, and transliterating would make a Chinese title
+/// unrecognisable to the person who wrote it.
+///
+/// Collisions are not resolved here. Two documents with the same title produce
+/// the same slug, and it is the pipeline that decides to disambiguate, because
+/// only it knows whether the existing file is the same document.
+pub fn slug(title: &str) -> String {
+    let mut slug = String::with_capacity(title.len());
+    let mut separator_wanted = false;
+
+    for character in title.chars() {
+        if character.is_alphanumeric() {
+            if separator_wanted && !slug.is_empty() {
+                slug.push('-');
+            }
+            separator_wanted = false;
+            slug.push(character.to_ascii_lowercase());
+        } else {
+            // Runs of separators collapse, and leading or trailing ones produce
+            // nothing at all.
+            separator_wanted = true;
+        }
+    }
+
+    let slug: String = slug.chars().take(MAX_SLUG_LENGTH).collect();
+    let slug = slug.trim_end_matches('-').to_owned();
+
+    if slug.is_empty() {
+        return "untitled".to_owned();
+    }
+
+    // A reserved name is reserved whatever the extension, so it is prefixed
+    // rather than rejected.
+    if RESERVED_NAMES.contains(&slug.as_str()) {
+        return format!("_{slug}");
+    }
+
+    slug
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{DocMeta, EngineId, Page, PageProvenance, SourceRef};
+    use comrak::nodes::NodeValue;
+    use comrak::{Arena, Options, parse_document};
+    use std::path::PathBuf;
+
+    const CREATED_AT: &str = "2026-10-08T12:00:00Z";
+
+    fn block(kind: BlockKind, text: &str) -> Block {
+        Block::text(kind, text, EngineId::from("test"))
+    }
+
+    fn document(blocks: Vec<Block>) -> Document {
+        Document {
+            source: SourceRef {
+                path: PathBuf::from("report.pdf"),
+                content_hash: "a".repeat(64),
+                mime: "application/pdf".into(),
+                size: 10,
+                mtime: None,
+            },
+            pages: vec![Page {
+                index: 0,
+                size: None,
+                blocks,
+                provenance: PageProvenance {
+                    primary: EngineId::from("pdfium"),
+                    engines: vec![EngineId::from("pdfium")],
+                    verified: false,
+                },
+            }],
+            meta: DocMeta::default(),
+            conflicts: Vec::new(),
+        }
+    }
+
+    fn rendered(blocks: Vec<Block>) -> String {
+        markdown(&document(blocks), CREATED_AT)
+    }
+
+    fn body(markdown: &str) -> &str {
+        markdown
+            .split_once("\n---\n")
+            .expect("front matter")
+            .1
+            .trim_start_matches('\n')
+    }
+
+    #[test]
+    fn renders_headings_at_their_level() {
+        let markdown = rendered(vec![
+            block(BlockKind::Heading { level: 1 }, "Title"),
+            block(BlockKind::Heading { level: 3 }, "Section"),
+        ]);
+
+        assert!(body(&markdown).contains("# Title"));
+        assert!(body(&markdown).contains("### Section"));
+    }
+
+    #[test]
+    fn heading_levels_above_six_are_clamped() {
+        let markdown = rendered(vec![block(BlockKind::Heading { level: 9 }, "Deep")]);
+        assert!(body(&markdown).contains("###### Deep"));
+        assert!(!body(&markdown).contains("#######"));
+    }
+
+    /// Extracted text is not Markdown. A paragraph that happens to start with
+    /// `#` must not become a heading.
+    #[test]
+    fn a_paragraph_beginning_with_a_hash_is_escaped() {
+        let markdown = rendered(vec![block(BlockKind::Paragraph, "# not a heading")]);
+        assert!(body(&markdown).contains("\\# not a heading"));
+    }
+
+    #[test]
+    fn a_paragraph_beginning_with_a_dash_is_escaped() {
+        let markdown = rendered(vec![block(BlockKind::Paragraph, "- not a list")]);
+        assert!(body(&markdown).contains("\\- not a list"));
+    }
+
+    /// "2024. Revenue grew" would otherwise open an ordered list.
+    #[test]
+    fn a_paragraph_beginning_with_a_number_is_escaped() {
+        let markdown = rendered(vec![block(BlockKind::Paragraph, "2024. Revenue grew")]);
+        assert!(body(&markdown).contains("2024\\. Revenue grew"));
+    }
+
+    #[test]
+    fn a_number_without_a_separator_is_left_alone() {
+        assert_eq!(escape_line("2024 was a good year"), "2024 was a good year");
+        assert_eq!(escape_line("version 2.5 released"), "version 2.5 released");
+    }
+
+    /// Only line starts are escaped: an unpaired `*` already renders literally,
+    /// so escaping it would only add noise.
+    #[test]
+    fn inline_punctuation_is_left_alone() {
+        assert_eq!(escape_line("5 * 3 = 15"), "5 * 3 = 15");
+    }
+
+    #[test]
+    fn list_items_are_rendered_as_bullets() {
+        let markdown = rendered(vec![block(BlockKind::ListItem, "First")]);
+        assert!(body(&markdown).contains("- First"));
+    }
+
+    #[test]
+    fn a_table_becomes_a_grid_with_a_delimiter_row() {
+        let mut table = block(BlockKind::Table, "");
+        for cells in [["A1", "B1"], ["A2", "B2"]] {
+            table.children.push(Block {
+                kind: BlockKind::TableRow,
+                text: String::new(),
+                bbox: None,
+                confidence: None,
+                engine: EngineId::from("test"),
+                children: cells
+                    .iter()
+                    .map(|cell| block(BlockKind::TableCell, cell))
+                    .collect(),
+            });
+        }
+
+        let markdown = rendered(vec![table]);
+        let table_markdown: Vec<&str> = body(&markdown)
+            .lines()
+            .filter(|line| line.starts_with('|'))
+            .collect();
+
+        assert_eq!(table_markdown.len(), 3, "header, delimiter and one body row");
+        assert_eq!(table_markdown[0], "| A1 | B1 |");
+        assert_eq!(table_markdown[1], "| --- | --- |");
+        assert_eq!(table_markdown[2], "| A2 | B2 |");
+    }
+
+    /// A short row would otherwise shift every later cell one column left.
+    #[test]
+    fn short_rows_are_padded_to_the_widest_row() {
+        let mut table = block(BlockKind::Table, "");
+        for cells in [&["A", "B", "C"][..], &["D"][..]] {
+            table.children.push(Block {
+                kind: BlockKind::TableRow,
+                text: String::new(),
+                bbox: None,
+                confidence: None,
+                engine: EngineId::from("test"),
+                children: cells
+                    .iter()
+                    .map(|cell| block(BlockKind::TableCell, cell))
+                    .collect(),
+            });
+        }
+
+        let markdown = rendered(vec![table]);
+        assert!(
+            body(&markdown).lines().any(|line| line == "| D |  |  |"),
+            "{}",
+            body(&markdown)
+        );
+    }
+
+    #[test]
+    fn a_pipe_inside_a_cell_is_escaped() {
+        let mut table = block(BlockKind::Table, "");
+        table.children.push(Block {
+            kind: BlockKind::TableRow,
+            text: String::new(),
+            bbox: None,
+            confidence: None,
+            engine: EngineId::from("test"),
+            children: vec![block(BlockKind::TableCell, "a|b")],
+        });
+
+        let markdown = rendered(vec![table]);
+        assert!(body(&markdown).contains("| a\\|b |"), "{}", body(&markdown));
+    }
+
+    #[test]
+    fn frontmatter_records_provenance() {
+        let markdown = rendered(vec![block(BlockKind::Paragraph, "x")]);
+
+        assert!(markdown.starts_with("---\n"));
+        assert!(markdown.contains("source: report.pdf"));
+        assert!(markdown.contains(&format!("sha256: {}", "a".repeat(64))));
+        assert!(markdown.contains("mime: application/pdf"));
+        // Quoted deliberately: see `yaml_scalar`.
+        assert!(markdown.contains(&format!("created_at: \"{CREATED_AT}\"")));
+        assert!(markdown.contains("engines: [pdfium]"));
+        assert!(markdown.contains("conflict_count: 0"));
+    }
+
+    #[test]
+    fn the_title_falls_back_to_the_file_stem() {
+        let markdown = rendered(vec![block(BlockKind::Paragraph, "x")]);
+        assert!(markdown.contains("title: report\n"), "{markdown}");
+    }
+
+    /// A title containing a colon would otherwise turn the rest of the line
+    /// into a nested mapping.
+    #[test]
+    fn a_title_with_a_colon_is_quoted() {
+        let mut doc = document(vec![block(BlockKind::Paragraph, "x")]);
+        doc.meta.title = Some("Report: 2024".into());
+
+        let markdown = markdown(&doc, CREATED_AT);
+        assert!(markdown.contains("title: \"Report: 2024\""), "{markdown}");
+    }
+
+    #[test]
+    fn a_title_with_a_quote_is_escaped() {
+        let mut doc = document(vec![block(BlockKind::Paragraph, "x")]);
+        doc.meta.title = Some("The \"big\" report".into());
+
+        let markdown = markdown(&doc, CREATED_AT);
+        assert!(
+            markdown.contains(r#"title: "The \"big\" report""#),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn blocks_are_separated_by_a_blank_line() {
+        let markdown = rendered(vec![
+            block(BlockKind::Paragraph, "one"),
+            block(BlockKind::Paragraph, "two"),
+        ]);
+        assert!(body(&markdown).contains("one\n\ntwo"));
+    }
+
+    #[test]
+    fn slug_is_lowercase_kebab() {
+        assert_eq!(slug("2024 Annual Report"), "2024-annual-report");
+    }
+
+    #[test]
+    fn slug_keeps_cjk_rather_than_transliterating() {
+        assert_eq!(slug("2024 年度报告"), "2024-年度报告");
+    }
+
+    #[test]
+    fn slug_removes_characters_windows_forbids() {
+        assert_eq!(slug("a:b/c\\d?e*f\"g<h>i|j"), "a-b-c-d-e-f-g-h-i-j");
+    }
+
+    #[test]
+    fn slug_collapses_runs_of_separators() {
+        assert_eq!(slug("a   ---   b"), "a-b");
+    }
+
+    /// A dash is legal in a filename, but it is a word separator here. Treating
+    /// it as content would keep it and then add more around it.
+    #[test]
+    fn slug_does_not_multiply_dashes() {
+        assert_eq!(slug("Q1 - 2024"), "q1-2024");
+        assert_eq!(slug("well-known"), "well-known");
+    }
+
+    #[test]
+    fn slug_drops_leading_and_trailing_separators() {
+        assert_eq!(slug("  spaced  "), "spaced");
+        assert_eq!(slug("::leading"), "leading");
+    }
+
+    #[test]
+    fn an_empty_slug_falls_back_to_untitled() {
+        assert_eq!(slug(""), "untitled");
+        assert_eq!(slug("///"), "untitled");
+    }
+
+    /// Windows refuses these names whatever the extension, so the failure
+    /// would appear when the file is written rather than when it is named.
+    #[test]
+    fn a_reserved_windows_name_is_prefixed() {
+        assert_eq!(slug("CON"), "_con");
+        assert_eq!(slug("LPT1"), "_lpt1");
+        assert_eq!(slug("console"), "console");
+    }
+
+    #[test]
+    fn a_long_slug_is_truncated_on_a_character_boundary() {
+        let slug = slug(&"年".repeat(300));
+        assert_eq!(slug.chars().count(), MAX_SLUG_LENGTH);
+    }
+
+    // ── Round trip ───────────────────────────────────────────────────────────
+    //
+    // Rendering is only correct if a Markdown reader sees the structure the IR
+    // held. These tests read the output back with a real parser rather than
+    // asserting on substrings, because the failures that matter are the ones
+    // where the text looks right and means something else.
+
+    #[derive(Debug, Default, PartialEq)]
+    struct Structure {
+        headings: Vec<(u8, String)>,
+        paragraphs: Vec<String>,
+        list_items: usize,
+        table_columns: Vec<usize>,
+        table_rows: usize,
+    }
+
+    fn reparse(markdown: &str) -> Structure {
+        let arena = Arena::new();
+        let mut options = Options::default();
+        options.extension.table = true;
+        // Without this the front matter is read as a thematic break followed by
+        // paragraphs of YAML.
+        options.extension.front_matter_delimiter = Some("---".to_owned());
+
+        let root = parse_document(&arena, markdown, &options);
+        let mut structure = Structure::default();
+
+        for node in root.descendants() {
+            match node.data.borrow().value {
+                NodeValue::Heading(ref heading) => {
+                    structure.headings.push((heading.level, node_text(&node)));
+                }
+                NodeValue::Paragraph => structure.paragraphs.push(node_text(&node)),
+                NodeValue::Item(..) => structure.list_items += 1,
+                NodeValue::Table(ref table) => {
+                    structure.table_columns.push(table.alignments.len());
+                }
+                NodeValue::TableRow(..) => structure.table_rows += 1,
+                _ => {}
+            }
+        }
+
+        structure
+    }
+
+    fn node_text(node: &comrak::Node<'_>) -> String {
+        let mut text = String::new();
+        for descendant in node.descendants() {
+            if let NodeValue::Text(ref value) = descendant.data.borrow().value {
+                text.push_str(value);
+            }
+        }
+        text
+    }
+
+    fn two_by_two_table() -> Block {
+        let mut table = block(BlockKind::Table, "");
+        for cells in [["A1", "B1"], ["A2", "B2"]] {
+            table.children.push(Block {
+                kind: BlockKind::TableRow,
+                text: String::new(),
+                bbox: None,
+                confidence: None,
+                engine: EngineId::from("test"),
+                children: cells
+                    .iter()
+                    .map(|cell| block(BlockKind::TableCell, cell))
+                    .collect(),
+            });
+        }
+        table
+    }
+
+    #[test]
+    fn structure_survives_a_round_trip_through_a_markdown_parser() {
+        let source = document(vec![
+            block(BlockKind::Heading { level: 1 }, "Title"),
+            block(BlockKind::Paragraph, "Body text"),
+            block(BlockKind::ListItem, "First"),
+            block(BlockKind::ListItem, "Second"),
+            two_by_two_table(),
+            block(BlockKind::Heading { level: 3 }, "Section"),
+        ]);
+
+        let parsed = reparse(&markdown(&source, CREATED_AT));
+
+        assert_eq!(
+            parsed.headings,
+            vec![(1, "Title".to_owned()), (3, "Section".to_owned())]
+        );
+        assert_eq!(parsed.list_items, 2);
+        assert!(parsed.paragraphs.contains(&"Body text".to_owned()));
+    }
+
+    #[test]
+    fn a_table_survives_a_round_trip_with_its_dimensions() {
+        let parsed = reparse(&markdown(&document(vec![two_by_two_table()]), CREATED_AT));
+
+        assert_eq!(parsed.table_columns, vec![2]);
+        assert_eq!(parsed.table_rows, 2);
+    }
+
+    /// The whole point of escaping: text that looks like structure must not
+    /// become structure when a reader looks at it.
+    #[test]
+    fn escaped_text_does_not_become_structure_when_reparsed() {
+        let source = document(vec![
+            block(BlockKind::Paragraph, "# not a heading"),
+            block(BlockKind::Paragraph, "- not a list"),
+            block(BlockKind::Paragraph, "2024. not a list either"),
+        ]);
+
+        let parsed = reparse(&markdown(&source, CREATED_AT));
+
+        assert!(parsed.headings.is_empty(), "headings: {:?}", parsed.headings);
+        assert_eq!(parsed.list_items, 0, "a bulleted line became a list item");
+        assert!(
+            parsed.paragraphs.contains(&"# not a heading".to_owned()),
+            "paragraphs: {:?}",
+            parsed.paragraphs
+        );
+        assert!(
+            parsed
+                .paragraphs
+                .contains(&"2024. not a list either".to_owned()),
+            "paragraphs: {:?}",
+            parsed.paragraphs
+        );
+    }
+
+    /// Front matter is metadata, not content. If a reader saw it as body text
+    /// it would be indexed and searched as if it were part of the document.
+    #[test]
+    fn front_matter_is_not_part_of_the_body() {
+        let parsed = reparse(&markdown(
+            &document(vec![block(BlockKind::Paragraph, "Body")]),
+            CREATED_AT,
+        ));
+
+        assert_eq!(parsed.paragraphs, vec!["Body".to_owned()]);
+    }
+}

@@ -98,11 +98,20 @@ content is the new content. This test must run on Windows, not just Linux CI.
 Fixtures live in `tests/fixtures/`, expected IR as committed snapshots.
 
 ### Step 6 — Renderer: IR → Markdown
-- [ ] IR → GFM Markdown with frontmatter (`source`, `sha256`, `title`, `mime`,
+- [x] IR → GFM Markdown with frontmatter (`source`, `sha256`, `title`, `mime`,
       `created_at`, `engines`, `conflict_count`)
+- [x] Slug generation for output filenames
+- [x] Escaping of Markdown metacharacters in extracted text
 - [ ] Assets extracted and written content-addressed under `_assets/`
-- [ ] Slug generation for output filenames, collision handling
-- [ ] Escaping of Markdown metacharacters in extracted text
+
+> **Assets are deferred on purpose.** No engine produces figure blocks yet —
+> images arrive with the vision backends in P1 — so there is nothing to write
+> into `_assets/`. Building the extraction and link-rewriting machinery now
+> would be scaffolding with no caller to prove it against.
+>
+> **Collision handling belongs to the pipeline, not the renderer.** The renderer
+> produces a slug; only the pipeline knows whether an existing file with that
+> slug is the same document or a different one.
 
 **Verify:** For each fixture, rendered Markdown re-parses to an equivalent IR
 (heading levels, table dimensions, list nesting preserved).
