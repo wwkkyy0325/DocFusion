@@ -10,6 +10,7 @@
 //! rebuilt from the tree, so it is never the only copy of anything.
 
 pub mod atomic;
+pub mod dirs;
 pub mod endpoint;
 pub mod hash;
 pub mod manifest;

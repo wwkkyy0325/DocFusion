@@ -22,7 +22,7 @@ const DEFAULT_CONFIDENCE: f32 = 0.85;
 /// Verification is the expensive half of the work — another recognition pass,
 /// or another billed request — so a thousand-page scan must not be able to run
 /// up an unbounded bill.
-const DEFAULT_MAX_VERIFY_PAGES: u32 = 50;
+pub const DEFAULT_MAX_VERIFY_PAGES: u32 = 50;
 
 /// How much two rectangles must overlap before they are called one region.
 ///

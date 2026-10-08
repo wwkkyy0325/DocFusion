@@ -5,6 +5,7 @@
 //! an agent cannot use.
 
 mod bench;
+mod config;
 mod output;
 
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ use docfusion_core::extract::{
     ExtractError, Extractor, Router, docx::DocxParser, pptx::PptxParser, scan::ScanExtractor,
     text::TextPassthrough, xlsx::XlsxParser,
 };
-use docfusion_core::verify::{VerifyMode, VerifyPolicy};
+use docfusion_core::verify::{DEFAULT_MAX_VERIFY_PAGES, VerifyMode, VerifyPolicy};
 use docfusion_store::endpoint::{EndpointConfig, OpenAiEndpoint};
 use docfusion_store::ocr::RapidOcrBackend;
 use docfusion_store::manifest::StoreError;
@@ -36,8 +37,9 @@ use output::{FAILED, INDEX_INCONSISTENT, NO_BACKEND, OK, PARTIAL, Reporter};
 )]
 struct Cli {
     /// The knowledge base directory. Created if it does not exist.
-    #[arg(long, global = true, default_value = "knowledge", env = "DOCFUSION_ROOT")]
-    root: PathBuf,
+    /// Default: `knowledge`.
+    #[arg(long, global = true, env = "DOCFUSION_ROOT")]
+    root: Option<PathBuf>,
 
     /// Write results as NDJSON on stdout. Everything else goes to stderr.
     #[arg(long, global = true)]
@@ -65,17 +67,13 @@ struct Cli {
     /// When a second engine should check the first. `doubt` buys a second
     /// opinion only where the first was unsure of itself or read a value whose
     /// exactness matters; `always` doubles the cost of every page.
-    #[arg(long, global = true, value_enum, default_value_t = VerifyChoice::Doubt, env = "DOCFUSION_VERIFY")]
-    verify: VerifyChoice,
+    #[arg(long, global = true, value_enum, env = "DOCFUSION_VERIFY")]
+    verify: Option<VerifyChoice>,
 
     /// The most pages of one document a second engine may be asked to read.
-    #[arg(
-        long,
-        global = true,
-        default_value_t = 50,
-        env = "DOCFUSION_MAX_VERIFY_PAGES"
-    )]
-    max_verify_pages: u32,
+    /// Default: 50.
+    #[arg(long, global = true, env = "DOCFUSION_MAX_VERIFY_PAGES")]
+    max_verify_pages: Option<u32>,
 
     #[command(subcommand)]
     command: Command,
@@ -103,6 +101,71 @@ impl From<VerifyChoice> for VerifyMode {
             VerifyChoice::Off => VerifyMode::Off,
         }
     }
+}
+
+/// Where documents go when nothing says otherwise.
+const DEFAULT_ROOT: &str = "knowledge";
+
+impl Cli {
+    /// The knowledge base, once nothing else is going to supply one.
+    fn root(&self) -> PathBuf {
+        self.root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT))
+    }
+
+    /// The command line with the configuration file filled in behind it.
+    ///
+    /// A flag beats an environment variable, which beats the file, which beats
+    /// the built-in default. Clap resolves the first two into a single
+    /// `Option`, so whatever it left unset is exactly what the file is allowed
+    /// to supply — which is why the fields with defaults are `Option` here
+    /// rather than carrying those defaults in an attribute.
+    fn resolved(self) -> Result<Self, CliError> {
+        self.with_config(config::Config::load()?)
+    }
+
+    /// The same, with the file already in hand.
+    ///
+    /// Separated from reading it so that precedence can be tested without a
+    /// file and without touching the environment a parallel test is reading.
+    fn with_config(mut self, config: config::Config) -> Result<Self, CliError> {
+        self.root = self.root.or(config.root);
+        self.endpoint = self.endpoint.or(config.endpoint);
+        self.model = self.model.or(config.model);
+        // An empty value is what a template line looks like before somebody
+        // fills it in, and it is not a key. Treating it as one sends a bare
+        // `Bearer ` and turns a blank line into an authentication failure.
+        self.api_key = self
+            .api_key
+            .or(config.api_key)
+            .filter(|key| !key.trim().is_empty());
+        self.max_verify_pages = self.max_verify_pages.or(config.max_verify_pages);
+
+        if self.verify.is_none()
+            && let Some(name) = config.verify.as_deref()
+        {
+            self.verify = Some(VerifyChoice::from_str(name, true).map_err(|_| {
+                CliError::Usage(format!(
+                    "`verify = \"{name}\"` in {} is not one of: {}",
+                    config::path().display(),
+                    choices()
+                ))
+            })?);
+        }
+
+        Ok(self)
+    }
+}
+
+/// The verification policies, as a person would write them.
+fn choices() -> String {
+    VerifyChoice::value_variants()
+        .iter()
+        .filter_map(|choice| choice.to_possible_value())
+        .map(|value| value.get_name().to_owned())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Subcommand)]
@@ -157,6 +220,9 @@ enum CliError {
     #[error(transparent)]
     Store(#[from] StoreError),
 
+    #[error(transparent)]
+    Config(#[from] config::ConfigError),
+
     #[error("{0}")]
     NotFound(String),
 
@@ -168,6 +234,14 @@ enum CliError {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let reporter = Reporter::new(cli.json);
+
+    let cli = match cli.resolved() {
+        Ok(cli) => cli,
+        Err(error) => {
+            reporter.note(format!("error: {error}"));
+            return ExitCode::from(exit_code(&error));
+        }
+    };
 
     match run(&cli, &reporter) {
         Ok(code) => ExitCode::from(code),
@@ -361,7 +435,7 @@ fn list(cli: &Cli, reporter: &Reporter, status: Option<&str>) -> Result<u8, CliE
 }
 
 fn open(cli: &Cli) -> Result<Pipeline, CliError> {
-    Ok(Pipeline::open(&cli.root, router(cli, policy(cli))?)?)
+    Ok(Pipeline::open(&cli.root(), router(cli, policy(cli))?)?)
 }
 
 /// Measures engines against a corpus. Reads only: nothing is written and the
@@ -447,8 +521,8 @@ fn engines(cli: &Cli, policy: VerifyPolicy) -> Result<Vec<Box<dyn Extractor>>, C
 /// The verification policy the command line asked for.
 fn policy(cli: &Cli) -> VerifyPolicy {
     VerifyPolicy {
-        mode: cli.verify.into(),
-        max_verify_pages: cli.max_verify_pages,
+        mode: cli.verify.unwrap_or(VerifyChoice::Doubt).into(),
+        max_verify_pages: cli.max_verify_pages.unwrap_or(DEFAULT_MAX_VERIFY_PAGES),
         ..VerifyPolicy::default()
     }
 }
@@ -507,6 +581,13 @@ fn schema() -> Value {
             "stdout": "results only: NDJSON under --json, human lines otherwise",
             "stderr": "progress, warnings and errors, in every mode",
             "paths": "absolute source paths; output paths are relative to --root",
+        },
+        "config": {
+            "path": config::path().display().to_string(),
+            "format": "TOML; a misspelt key is an error rather than a setting quietly ignored",
+            "keys": ["root", "endpoint", "model", "api_key", "verify", "max_verify_pages"],
+            "precedence": "flag, then environment variable, then this file, then the built-in default",
+            "override": "DOCFUSION_CONFIG"
         },
         "exit_codes": {
             "0": "success",
@@ -574,6 +655,100 @@ mod tests {
         args.extend_from_slice(extra);
         args.push("schema");
         Cli::parse_from(args)
+    }
+
+    // ── Configuration file ───────────────────────────────────────────────────
+
+    fn file(endpoint: &str, model: &str) -> config::Config {
+        config::Config {
+            endpoint: Some(endpoint.to_owned()),
+            model: Some(model.to_owned()),
+            api_key: Some("sk-from-the-file".to_owned()),
+            ..config::Config::default()
+        }
+    }
+
+    #[test]
+    fn the_file_supplies_what_the_command_line_left_out() {
+        let cli = configured(&[])
+            .with_config(file("http://file:1", "from-file"))
+            .expect("valid");
+
+        assert_eq!(cli.endpoint.as_deref(), Some("http://file:1"));
+        assert_eq!(cli.model.as_deref(), Some("from-file"));
+        assert_eq!(cli.api_key.as_deref(), Some("sk-from-the-file"));
+    }
+
+    /// The whole point of a precedence order: a one-off run has to be able to
+    /// override what is written down.
+    #[test]
+    fn a_flag_beats_the_file() {
+        let cli = configured(&["--endpoint", "http://flag:2", "--model", "from-flag"])
+            .with_config(file("http://file:1", "from-file"))
+            .expect("valid");
+
+        assert_eq!(cli.endpoint.as_deref(), Some("http://flag:2"));
+        assert_eq!(cli.model.as_deref(), Some("from-flag"));
+        // But a setting the flag did not mention still comes from the file.
+        assert_eq!(cli.api_key.as_deref(), Some("sk-from-the-file"));
+    }
+
+    #[test]
+    fn the_file_can_carry_the_settings_that_have_defaults() {
+        let cli = configured(&[])
+            .with_config(config::Config {
+                root: Some(PathBuf::from("elsewhere")),
+                verify: Some("always".into()),
+                max_verify_pages: Some(3),
+                ..config::Config::default()
+            })
+            .expect("valid");
+
+        assert_eq!(cli.root(), PathBuf::from("elsewhere"));
+        assert!(matches!(cli.verify, Some(VerifyChoice::Always)));
+        assert_eq!(cli.max_verify_pages, Some(3));
+    }
+
+    #[test]
+    fn with_nothing_configured_every_setting_falls_back() {
+        let cli = configured(&[])
+            .with_config(config::Config::default())
+            .expect("valid");
+
+        assert_eq!(cli.root(), PathBuf::from(DEFAULT_ROOT));
+        assert_eq!(policy(&cli).mode, VerifyMode::OnDoubt);
+        assert_eq!(policy(&cli).max_verify_pages, DEFAULT_MAX_VERIFY_PAGES);
+    }
+
+    /// A policy the tool does not have, written in a file nobody re-reads, is
+    /// worth saying out loud — and worth saying what the choices are.
+    #[test]
+    fn an_unknown_policy_in_the_file_names_the_valid_ones() {
+        let error = match configured(&[]).with_config(config::Config {
+            verify: Some("sometimes".into()),
+            ..config::Config::default()
+        }) {
+            Ok(_) => panic!("a policy the tool does not have should be refused"),
+            Err(error) => error,
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("sometimes"), "{message}");
+        assert!(message.contains("always") && message.contains("off"), "{message}");
+    }
+
+    /// `--verify` on the command line is already validated by clap, so the file
+    /// must not be able to override a value that was given.
+    #[test]
+    fn a_flag_beats_an_unusable_file_policy() {
+        let cli = configured(&["--verify", "off"])
+            .with_config(config::Config {
+                verify: Some("sometimes".into()),
+                ..config::Config::default()
+            })
+            .expect("the file's value is never reached");
+
+        assert!(matches!(cli.verify, Some(VerifyChoice::Off)));
     }
 
     fn png_probe() -> InputProbe {

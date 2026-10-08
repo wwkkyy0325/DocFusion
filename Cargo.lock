@@ -851,9 +851,11 @@ dependencies = [
  "clap",
  "docfusion-core",
  "docfusion-store",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

@@ -4,6 +4,35 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — One place to put the key
+
+**What:** `%LOCALAPPDATA%\DocFusion\config.toml` holds the settings that would
+otherwise be retyped on every run. Precedence is flag → environment variable →
+file → built-in default. `docfusion schema` publishes the path and the keys.
+Design §10.2.
+
+**Per user and outside any repository**, because it holds an API key. A config
+file beside the documents is a config file that eventually gets committed. It
+shares a directory with the extracted weights, so "where does DocFusion put
+things" now has one answer rather than two — `dirs::user_dir` is the single
+definition, and the model cache defers to it.
+
+**A misspelt key is an error.** `deny_unknown_fields` turns `api_ky = "..."`
+into a failure naming the file, the line and the valid keys. Silently ignoring
+it would mean running against the wrong endpoint with nothing to say why.
+
+**The settings that have defaults had to become `Option`.** A default applied by
+the argument parser can never be overridden by a file, so `root`, `verify` and
+`max_verify_pages` are now resolved in one place after the file is read. That is
+a small improvement on its own: the defaults are stated once instead of being
+scattered through attributes.
+
+**`--json` and `--dry-run` are deliberately not settable.** They describe what
+this run should do rather than how the tool is set up, and a file that quietly
+made every run a dry run would be a trap rather than a convenience.
+
+---
+
 ## 2026-10-08 — A real corpus, and the metric it broke
 
 **What:** 24 pages sampled from OmniDocBench v1.5, converted into a `bench`

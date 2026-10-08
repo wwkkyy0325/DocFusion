@@ -12,7 +12,7 @@
 //! Lives here rather than in the core crate because it loads native libraries
 //! and model files, and core performs no I/O.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use docfusion_core::backend::{BackendError, Caps, OcrBackend, PageRequest};
@@ -183,20 +183,14 @@ fn ensure_models_on_disk() -> Result<PathBuf, BackendError> {
 
 /// Where extracted weights live.
 ///
-/// A per-user location rather than beside the knowledge base, because the
-/// weights are the same for every knowledge base and extracting them per
-/// document store would multiply the 6.9 MB by however many there are.
+/// Under the tool's own per-user directory unless something says otherwise.
+/// The override exists because the weights are the one thing here large enough
+/// that somebody may want them on a different disk.
 fn model_cache_dir() -> PathBuf {
-    if let Ok(explicit) = std::env::var("DOCFUSION_MODEL_CACHE") {
-        return PathBuf::from(explicit);
+    match std::env::var("DOCFUSION_MODEL_CACHE") {
+        Ok(explicit) => PathBuf::from(explicit),
+        Err(_) => crate::dirs::user_dir(),
     }
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        return Path::new(&local).join("DocFusion");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return Path::new(&home).join(".cache").join("docfusion");
-    }
-    std::env::temp_dir().join("docfusion")
 }
 
 impl OcrBackend for RapidOcrBackend {

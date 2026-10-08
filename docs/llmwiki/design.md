@@ -706,7 +706,46 @@ docfusion serve                Local HTTP surface (agent-facing)
 docfusion mcp                  MCP server (P4, thin wrapper)
 ```
 
-### 10.2 Agent contract
+### 10.2 Configuration
+
+Settings that would otherwise be retyped on every invocation live in one file,
+per user and outside any repository:
+
+```
+%LOCALAPPDATA%\DocFusion\config.toml      # or $HOME/.cache/docfusion on unix
+```
+
+```toml
+endpoint = "https://api.deepseek.com"
+model    = "deepseek-flash"
+api_key  = "sk-..."
+```
+
+**Precedence: flag → environment variable → file → built-in default.** Clap
+resolves the first two into one `Option`, so whatever it left unset is exactly
+what the file is allowed to supply. That is why the settings with defaults
+(`root`, `verify`, `max_verify_pages`) are `Option` in the parser rather than
+carrying their defaults in an attribute — a default applied by the parser could
+never be overridden by the file.
+
+**Three deliberate choices:**
+
+- **Per user, not per knowledge base.** It holds an API key. A file beside the
+  documents is a file that eventually gets committed. It also shares a directory
+  with the extracted weights, so "where does DocFusion put things" has one
+  answer.
+- **A misspelt key is an error, not a shrug.** `deny_unknown_fields` makes
+  `api_ky = "..."` fail with the file, the line and the list of valid keys. A
+  setting silently ignored means running against the wrong endpoint with nothing
+  to say why — the quiet wrong answer this project exists to avoid.
+- **`--json` and `--dry-run` are not settable here.** They describe what *this
+  run* should do rather than how the tool is set up, and a file that quietly
+  made every run a dry run would be a trap rather than a convenience.
+
+`docfusion schema` publishes the path along with the keys, because an agent
+should not have to guess where the settings are.
+
+### 10.3 Agent contract
 
 Agents get the **complete** feature set. Four rules make the CLI safe to drive
 programmatically:
