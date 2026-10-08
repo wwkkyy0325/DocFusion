@@ -20,3 +20,6 @@ ureq = { version = "3.4.2", features = ["json"] }
 [dev-dependencies]
 docfusion-core = { path = "../docfusion-core", features = ["test-support"] }
 tempfile = "3.27.0"
+
+[build-dependencies]
+sha2 = "0.11.0"

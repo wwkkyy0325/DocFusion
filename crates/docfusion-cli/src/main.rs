@@ -18,6 +18,7 @@ use docfusion_core::extract::{
     text::TextPassthrough, xlsx::XlsxParser,
 };
 use docfusion_store::endpoint::{EndpointConfig, OpenAiEndpoint};
+use docfusion_store::ocr::RapidOcrBackend;
 use docfusion_store::manifest::StoreError;
 use docfusion_store::pipeline::{Mode, Pipeline, PipelineError};
 use serde_json::{Value, json};
@@ -391,9 +392,14 @@ fn engines(cli: &Cli) -> Result<Vec<Box<dyn Extractor>>, CliError> {
         Box::new(TextPassthrough),
     ];
 
-    if let Some(vision) = vision(cli)? {
-        engines.push(Box::new(ScanExtractor::new(None, Some(vision))));
-    }
+    // The local OCR engine always joins, and costs nothing until a page
+    // actually needs reading. It is what makes a scan readable with no setup:
+    // the weights are in the binary, so there is nothing to configure and
+    // nothing to download.
+    engines.push(Box::new(ScanExtractor::new(
+        Some(Box::new(RapidOcrBackend::bundled())),
+        vision(cli)?,
+    )));
 
     Ok(engines)
 }
@@ -520,24 +526,33 @@ mod tests {
         InputProbe::new(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A], None, 8)
     }
 
+    /// The promise that makes the tool useful with no setup at all.
     #[test]
-    fn an_endpoint_adds_the_scan_engine() {
-        let cli = configured(&["--endpoint", "http://127.0.0.1:1", "--model", "m"]);
-        let router = router(&cli).unwrap();
+    fn an_image_is_readable_with_nothing_configured() {
+        let router = router(&configured(&[])).unwrap();
 
         assert!(
             router.can_handle(&png_probe()),
-            "an image should be readable once an endpoint exists"
+            "the bundled OCR engine should be there without configuration"
         );
     }
 
-    /// Without a backend, an image is not something the tool claims it can
-    /// read, and the router's error says so rather than failing obscurely.
+    /// Pointing the tool at a vision endpoint changes what will read a scanned
+    /// page, so it has to change what the cache is keyed on — otherwise the
+    /// documents read by the previous configuration are served as if they had
+    /// been read by this one.
     #[test]
-    fn without_an_endpoint_an_image_is_not_claimed() {
-        let router = router(&configured(&[])).unwrap();
+    fn an_endpoint_changes_what_the_scan_engine_is_keyed_on() {
+        let without = router(&configured(&[])).unwrap();
+        let with = router(&configured(&["--endpoint", "http://127.0.0.1:1", "--model", "m"]))
+            .unwrap();
 
-        assert!(!router.can_handle(&png_probe()));
+        let scan = docfusion_core::ir::EngineId::from("scan");
+
+        assert_ne!(
+            without.stamp_of(&scan).unwrap().model,
+            with.stamp_of(&scan).unwrap().model
+        );
     }
 
     /// An endpoint may serve several models, so guessing which would silently

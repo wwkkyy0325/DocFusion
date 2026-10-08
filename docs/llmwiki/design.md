@@ -325,17 +325,37 @@ the wrong one for a document pipeline that does not.
 
 ## 8. Engine stack
 
-### 8.1 Local OCR (all tiers) — RapidOCR
+### 8.1 Local OCR (all tiers) — RapidOCR on ONNX Runtime
 
 - **Runtime:** ONNX Runtime. **No PaddlePaddle dependency at all.**
-- **Models:** PP-OCRv5 detection + recognition (~15 MB total).
+- **Models:** PP-OCRv6 tiny — detector, recogniser, angle classifier and
+  dictionary. **Measured at 6.9 MB**, which is less than half the earlier
+  estimate and settles the question of whether to ship them.
 - **Why:** the reported Paddle problems (deployment pain, operator bugs, poor
   Windows support) live in the *PaddlePaddle runtime*, not in the recognition
   models, which are genuinely strong for Chinese. Swapping the runtime to ONNX
   retains the accuracy and removes the pain. CPU-only, no Python.
-- Chosen over Windows.Media.Ocr (too weak on layout/tables, and locks the project
-  to Windows) and over "use a tiny VLM for everything" (too slow on CPU, and it
-  destroys verifier independence).
+- Chosen over Windows.Media.Ocr (too weak on layout/tables, and locks the
+  project to Windows) and over "use a tiny VLM for everything" (too slow on
+  CPU, and it destroys verifier independence).
+
+**This engine reports geometry and confidence**, unlike a general vision model,
+which is what qualifies it to be the verifier in §6.1.
+
+**The weights are embedded in the binary.** They are fetched and digest-verified
+at build time and `include_bytes!`d, then written to a per-user location on the
+first page that needs them. That makes "works with no setup" true in the strong
+sense — offline from install, nothing to configure, nothing to download at run
+time — and it is affordable precisely because the set measured small.
+
+Two details that only matter because they were measured rather than assumed:
+
+- **Extraction is lazy.** Loading the weights takes seconds; `list`, `show` and
+  `schema` never read a page and so must not pay for a pipeline they do not use.
+- **The pins live in two places** — the build script and `rapidocr-core` —
+  because a build script cannot depend on the crate it is embedding for. A test
+  compares them, so an upstream update fails loudly instead of silently
+  embedding weights the crate no longer expects.
 
 ### 8.2 The vision backend is the user's endpoint, not ours
 
@@ -680,6 +700,7 @@ than duplicates the CLI.
 | Local OCR | RapidOCR models + ONNX Runtime | No PaddlePaddle |
 | Vision backend | The user's OpenAI-compatible endpoint | `llama-server`, Ollama, LM Studio, vLLM or a cloud API — one client covers all of them. Not ours to run. |
 | HTTP client | `ureq` | Blocking and small. The pipeline is synchronous, so an async runtime would be weight carried for nothing. |
+| OCR pipeline | `rapidocr-core` on ONNX Runtime | Detection, classification, recognition and their post-processing. Writing DBNet contour finding and CTC decoding by hand would be well-trodden work containing no decision of ours. |
 | Hashing | BLAKE3 | Fast, content addressing |
 | Manifest | SQLite (`rusqlite`) | Single file, FTS5 available for P4 |
 | CLI | `clap` | Derive API, generated help |

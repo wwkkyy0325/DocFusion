@@ -83,18 +83,30 @@ PDF that has a text layer is parsed rather than rendered.
 - [x] Emits per-line bounding boxes **and** confidence, so this engine can be
       the verifier rather than only a reader
 - [x] Read a generated image of known text back exactly
-- [ ] Model acquisition: bundle the weights, measured at ~6.9 MB
-- [ ] Wire into the CLI once models can be found
+- [x] Model acquisition: the weights are embedded in the binary, measured at
+      6.9 MB
+- [x] Wire into the CLI, loaded lazily so commands that read no pages pay
+      nothing
 
 > **Measured, rather than estimated.** The `ppocrv6-tiny` set is 1.8 MB of
 > detector, 4.5 MB of recogniser, 0.6 MB of angle classifier and 27 KB of
-> dictionary — about 6.9 MB in total, less than half what the design assumed.
-> At that size bundling is not a trade-off.
+> dictionary — 6.9 MB in total, less than half what the design assumed. At that
+> size bundling is not a trade-off to weigh.
 >
-> Verified end to end: a PDF whose text is known is rendered at 200 DPI, read
-> through the real models, and comes back with its own words and geometry. The
-> test is `#[ignore]`d because it needs weights on disk, which a unit test has
-> no business fetching.
+> Verified end to end, with nothing configured: an image reading "Quarterly
+> Review" and "Revenue increased by 12%" is written into the knowledge base with
+> those words and `engines: [rapidocr]`. A second run is a cache hit in 36 ms,
+> and `list` neither loads the weights nor extracts them.
+
+### Step 4b — Model acquisition
+- [x] Fetch and digest-verify at build time; `include_bytes!` into the binary
+- [x] Write to a per-user location on the first page that needs them
+- [x] Lazy, so `list`, `show` and `schema` never load a pipeline they do not use
+- [x] A test holding the build script's pins against the ones `rapidocr-core`
+      expects, since a build script cannot depend on the crate it embeds for
+
+**Verify:** building from a clean tree downloads and verifies the weights once;
+thereafter a build reuses the cache and the tools work with no network at all.
 
 > **The pipeline is not ours to write.** `rapidocr-core` (Apache-2.0) implements
 > detection, angle classification, recognition, DBNet post-processing, contour

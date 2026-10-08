@@ -12,6 +12,7 @@
 //! Lives here rather than in the core crate because it loads native libraries
 //! and model files, and core performs no I/O.
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use docfusion_core::backend::{BackendError, Caps, OcrBackend, PageRequest};
@@ -32,22 +33,170 @@ const ENGINE_VERSION: &str = "1.0.0";
 const PARAGRAPH_GAP: f32 = 0.6;
 
 pub struct RapidOcrBackend {
-    /// `run_image` takes `&mut self` and a pipeline is expensive to build, so
-    /// one is kept behind a lock rather than rebuilt per page.
-    runner: Mutex<RapidOcr>,
+    /// Built on the first page rather than at construction.
+    ///
+    /// Loading the weights takes seconds and several megabytes, and most
+    /// command lines never read a page at all — `list`, `show` and `schema`
+    /// would each pay for a pipeline they do not use.
+    ///
+    /// `run_image` also takes `&mut self`, so one pipeline is kept behind a
+    /// lock rather than rebuilt per page.
+    runner: Mutex<Option<RapidOcr>>,
+    source: Source,
+}
+
+enum Source {
+    /// Weights embedded in the binary. See `build.rs`.
+    Bundled,
+    /// Weights found by a caller that knows where they are.
+    Config(Box<RapidOcrConfig>),
 }
 
 impl RapidOcrBackend {
-    /// Builds the pipeline from a configuration naming where its models are.
-    pub fn from_config(config: RapidOcrConfig) -> Result<Self, BackendError> {
-        let runner = RapidOcr::new(config).map_err(|error| {
-            BackendError::Unavailable(format!("the OCR models could not be loaded: {error}"))
-        })?;
+    /// Reads pages using the weights embedded in the binary.
+    ///
+    /// This is the path that makes the tool work with no setup: nothing is
+    /// downloaded, nothing is configured, and it is offline from the moment it
+    /// is installed.
+    pub fn bundled() -> Self {
+        Self {
+            runner: Mutex::new(None),
+            source: Source::Bundled,
+        }
+    }
 
-        Ok(Self {
-            runner: Mutex::new(runner),
+    /// Reads pages using weights the caller located itself.
+    pub fn from_config(config: RapidOcrConfig) -> Self {
+        Self {
+            runner: Mutex::new(None),
+            source: Source::Config(Box::new(config)),
+        }
+    }
+
+    fn with_runner<T>(
+        &self,
+        action: impl FnOnce(&mut RapidOcr) -> Result<T, BackendError>,
+    ) -> Result<T, BackendError> {
+        let mut runner = self
+            .runner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if runner.is_none() {
+            *runner = Some(self.build()?);
+        }
+
+        action(runner.as_mut().expect("built immediately above"))
+    }
+
+    fn build(&self) -> Result<RapidOcr, BackendError> {
+        let config = match &self.source {
+            Source::Config(config) => (**config).clone(),
+            Source::Bundled => {
+                let directory = ensure_models_on_disk()?;
+                let model_set = rapidocr_core::model::model_set_by_name(MODEL_SET).ok_or_else(
+                    || BackendError::Unavailable(format!("no model set named {MODEL_SET}")),
+                )?;
+
+                rapidocr_core::model::ModelCache::new(directory).config_for(model_set)
+            }
+        };
+
+        RapidOcr::new(config).map_err(|error| {
+            BackendError::Unavailable(format!("the OCR models could not be loaded: {error}"))
         })
     }
+}
+
+/// The model set the embedded weights belong to.
+const MODEL_SET: &str = "ppocrv6-tiny";
+
+/// What `build.rs` actually downloaded, so that a test can hold it against what
+/// the pipeline expects.
+#[cfg(test)]
+mod model_pins {
+    include!(concat!(env!("OUT_DIR"), "/model_pins.rs"));
+}
+
+/// The weights, embedded at build time. See `build.rs`.
+mod weights {
+    pub const DET: &[u8] = include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/ocr-models/PP-OCRv6_det_tiny.onnx"
+    ));
+    pub const REC: &[u8] = include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/ocr-models/PP-OCRv6_rec_tiny.onnx"
+    ));
+    pub const CLS: &[u8] = include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/ocr-models/ch_ppocr_mobile_v2.0_cls_mobile.onnx"
+    ));
+    pub const DICT: &[u8] = include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/ocr-models/ppocrv6_tiny_dict.txt"
+    ));
+
+    pub const ALL: &[(&str, &[u8])] = &[
+        ("PP-OCRv6_det_tiny.onnx", DET),
+        ("PP-OCRv6_rec_tiny.onnx", REC),
+        ("ch_ppocr_mobile_v2.0_cls_mobile.onnx", CLS),
+        ("ppocrv6_tiny_dict.txt", DICT),
+    ];
+}
+
+/// Writes the embedded weights out, once, and returns where they went.
+///
+/// ONNX Runtime loads from a path, so bytes in the binary have to become files
+/// somewhere. Each is skipped when a file of the right size is already there,
+/// which makes this cheap on every run after the first.
+fn ensure_models_on_disk() -> Result<PathBuf, BackendError> {
+    let directory = model_cache_dir().join(MODEL_SET);
+
+    std::fs::create_dir_all(&directory).map_err(|error| {
+        BackendError::Unavailable(format!(
+            "could not create {}: {error}",
+            directory.display()
+        ))
+    })?;
+
+    for (filename, bytes) in weights::ALL {
+        let path = directory.join(filename);
+
+        if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == bytes.len() as u64) {
+            continue;
+        }
+
+        // Written through a temporary file so that a run interrupted half way
+        // does not leave a short file that looks complete to the size check.
+        let temporary = directory.join(format!("{filename}.part"));
+        std::fs::write(&temporary, bytes).map_err(|error| {
+            BackendError::Unavailable(format!("could not write {}: {error}", temporary.display()))
+        })?;
+        std::fs::rename(&temporary, &path).map_err(|error| {
+            BackendError::Unavailable(format!("could not place {}: {error}", path.display()))
+        })?;
+    }
+
+    Ok(directory)
+}
+
+/// Where extracted weights live.
+///
+/// A per-user location rather than beside the knowledge base, because the
+/// weights are the same for every knowledge base and extracting them per
+/// document store would multiply the 6.9 MB by however many there are.
+fn model_cache_dir() -> PathBuf {
+    if let Ok(explicit) = std::env::var("DOCFUSION_MODEL_CACHE") {
+        return PathBuf::from(explicit);
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        return Path::new(&local).join("DocFusion");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Path::new(&home).join(".cache").join("docfusion");
+    }
+    std::env::temp_dir().join("docfusion")
 }
 
 impl OcrBackend for RapidOcrBackend {
@@ -73,25 +222,20 @@ impl OcrBackend for RapidOcrBackend {
 
     fn recognize(&self, request: &PageRequest<'_>) -> Result<Vec<Block>, BackendError> {
         let rgb = to_rgb(request.image);
+        let page = request.page;
 
-        let mut runner = self
-            .runner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.with_runner(|runner| {
+            let output = runner.run_image(&rgb).map_err(|error| {
+                BackendError::Failed(format!("the OCR pipeline failed on page {page}: {error}"))
+            })?;
 
-        let output = runner.run_image(&rgb).map_err(|error| {
-            BackendError::Failed(format!(
-                "the OCR pipeline failed on page {}: {error}",
-                request.page
+            Ok(lines_to_blocks(
+                &output,
+                request.image.width,
+                request.image.height,
+                &self.id(),
             ))
-        })?;
-
-        Ok(lines_to_blocks(
-            &output,
-            request.image.width,
-            request.image.height,
-            &self.id(),
-        ))
+        })
     }
 }
 
@@ -365,30 +509,55 @@ mod tests {
         assert_eq!(blocks[0].engine.as_str(), ENGINE_ID);
     }
 
+    /// The embedded weights have to be the ones the pipeline is looking for.
+    ///
+    /// They are pinned in two places — here and in `rapidocr-core` — because a
+    /// build script cannot depend on the crate it is embedding for. Without
+    /// this test an upstream update would leave the crate expecting weights
+    /// that are no longer the ones embedded, and the symptom would be a model
+    /// that reads nothing rather than a build that fails.
+    #[test]
+    fn the_embedded_weights_are_the_ones_the_pipeline_pins() {
+        let model_set = rapidocr_core::model::model_set_by_name(MODEL_SET).expect("model set");
+        let expected: Vec<(&str, &str)> = model_set
+            .assets()
+            .iter()
+            .filter_map(|asset| asset.sha256.map(|digest| (asset.filename, digest)))
+            .collect();
+
+        assert_eq!(
+            super::model_pins::PINS.len(),
+            expected.len(),
+            "a weight the pipeline needs is not embedded"
+        );
+
+        for &(filename, digest) in super::model_pins::PINS {
+            assert!(
+                expected
+                    .iter()
+                    .any(|(name, hash)| *name == filename && *hash == digest),
+                "{filename} is not the weight the pipeline pins"
+            );
+        }
+    }
+
     /// Reads a page through the real models.
     ///
-    /// Ignored by default because it needs weights on disk, which a unit test
-    /// has no business fetching. Run it with a model directory:
+    /// Ignored by default because it loads several megabytes of weights and
+    /// takes seconds. It needs no setup beyond that: the weights come from the
+    /// binary, which is the point of embedding them.
     ///
-    /// ```text
-    /// DOCFUSION_OCR_MODELS=<dir> cargo test -p docfusion-store -- --ignored
-    /// ```
-    ///
-    /// It renders a PDF whose text is known rather than shipping a test image,
-    /// so the expected answer is stated in the test instead of trusted to a
-    /// binary that nobody can read.
+    /// It renders a PDF whose text the test states rather than shipping a test
+    /// image, so the expected answer is in the test rather than inside a binary
+    /// nobody can read.
     #[test]
-    #[ignore = "needs OCR models; set DOCFUSION_OCR_MODELS to a directory holding them"]
+    #[ignore = "loads the embedded weights and takes seconds"]
     fn reads_text_from_a_rendered_page() {
         use docfusion_core::extract::fixtures;
-        use rapidocr_core::model::{ModelCache, model_set_by_name};
 
-        let directory = std::env::var("DOCFUSION_OCR_MODELS").expect("DOCFUSION_OCR_MODELS");
-        let model_set = model_set_by_name("ppocrv6-tiny").expect("a registered model set");
-        let backend = RapidOcrBackend::from_config(ModelCache::new(&directory).config_for(model_set))
-            .expect("the models should load");
+        let backend = RapidOcrBackend::bundled();
 
-        // Large type, so that what is being tested is the pipeline rather than
+        // Large type, so that what is under test is the pipeline rather than
         // the resolution a page happens to be rendered at.
         let pdf = fixtures::pdf(&[(48.0, "Hello world")]);
         let page = docfusion_core::extract::pdf::render_pages(&pdf, 200.0)

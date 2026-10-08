@@ -4,6 +4,52 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — The OCR weights ship with the tool
+
+**What:** PP-OCRv6 tiny is fetched and digest-verified at build time, embedded
+with `include_bytes!`, and written to a per-user location the first time a page
+needs reading. P1 Step 4 is done.
+
+**Measured, not estimated.** The set is 1.8 MB of detector, 4.5 MB of
+recogniser, 0.6 MB of angle classifier and 27 KB of dictionary — **6.9 MB**,
+less than half what the design assumed. At that size there is no trade-off to
+weigh between shipping the weights and downloading them on first use, so the
+strong form of "works with no setup" is affordable: offline from install,
+nothing to configure, nothing fetched at run time.
+
+**Decisions and why:**
+
+- **Extraction is lazy.** Loading the weights takes seconds. `list`, `show` and
+  `schema` never read a page, and paying for a pipeline they do not use would be
+  a visible cost on every command line.
+- **The pins live in two places, and a test holds them together.** A build
+  script cannot depend on the crate it is embedding for, so the filenames and
+  digests appear both in `build.rs` and in `rapidocr-core`. A test compares the
+  two lists: without it, an upstream update would leave the crate looking for
+  weights that are no longer embedded, and the symptom would be a model that
+  reads nothing rather than a build that fails.
+- **Extraction writes through a temporary file.** A run interrupted half way
+  would otherwise leave a short file that the size check accepts as complete.
+- **The weights go in a per-user location, not beside the knowledge base.** They
+  are the same for every knowledge base, and extracting 6.9 MB into each one
+  multiplies the cost by however many there are.
+
+**Verified end to end with nothing configured:** an image reading "Quarterly
+Review" and "Revenue increased by 12%" is written into the knowledge base with
+those words and `engines: [rapidocr]`. A second run is a cache hit in 36 ms;
+`list` neither loads the weights nor extracts them.
+
+**The pipeline is not ours.** `rapidocr-core` implements detection, angle
+classification, recognition, DBNet post-processing, contour finding and CTC
+decoding. Writing those by hand would be a large amount of well-trodden work
+containing none of our own decisions — and it sits behind the `OcrBackend`
+trait, which is what makes the choice reversible if it disappoints.
+
+A test caught a real fault in the paragraph merge rule along the way: it
+compared vertical distance only, so two lines side by side in different columns
+were being read as one wrapped sentence.
+
+
 ## 2026-10-08 — The endpoint reached from the command line
 
 **What:** `--endpoint`, `--model` and `--api-key`, with matching environment
