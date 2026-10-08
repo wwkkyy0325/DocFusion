@@ -611,6 +611,11 @@ programmatically:
 3. **`docfusion schema`** emits a self-describing JSON Schema so an agent does
    not need to parse help text.
 4. **Every mutating command supports `--dry-run`.**
+5. **Configuration is flags or environment variables**, and both are documented
+   by `docfusion schema`: `--endpoint`, `--model`, `--api-key`, and
+   `DOCFUSION_ENDPOINT`, `DOCFUSION_MODEL`, `DOCFUSION_API_KEY` for the same.
+   An agent driving the tool should never have to read a file to find out how it
+   is configured, because it cannot guess where that file is.
 
 ---
 

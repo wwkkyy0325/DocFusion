@@ -94,11 +94,20 @@ PDF that has a text layer is parsed rather than rendered.
       its multimodal projector answers 200 with repeated garbage
 - [x] `probe()`, which asks the endpoint what it serves rather than inspecting
       the machine
-- [ ] Wire the endpoint into the CLI: flags, environment variables, and
-      registering `ScanExtractor` once a backend exists
+- [x] Wire the endpoint into the CLI: `--endpoint`, `--model`, `--api-key`, the
+      matching environment variables, and `ScanExtractor` registered once a
+      backend exists
 
 **Verify:** a stub HTTP server, not a mocked transport — the client is the thing
 under test, and mocking below it would test the mock.
+
+> Verified end to end against a stub endpoint: without one, a scan exits 3 with
+> a message naming the setup guide; with one, the page is read and written. That
+> run also caught a rendering fault the benchmark had missed — adjacent list
+> items were being separated by a blank line, which makes a *loose* list and
+> renders each item wrapped in a paragraph. The benchmark could not have caught
+> it: its scoring compares headings, tables and text, and a loose list has all
+> three right. Metric design has gaps, and the gap is worth naming.
 
 **Verify:** against a stub server, a fixture page returns Markdown; with no
 endpoint configured the error names the guide; a server that accepts and then

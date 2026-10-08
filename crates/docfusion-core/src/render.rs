@@ -27,18 +27,35 @@ const RESERVED_NAMES: [&str; 22] = [
 pub fn markdown(document: &Document, created_at: &str) -> String {
     let mut markdown = frontmatter(document, created_at);
 
-    let mut first = true;
+    let mut previous: Option<BlockKind> = None;
     for page in &document.pages {
         for block in &page.blocks {
-            if !first {
+            if let Some(previous) = &previous
+                && !adjacent_within_one_block(previous, &block.kind)
+            {
                 markdown.push('\n');
             }
-            first = false;
+            previous = Some(block.kind.clone());
             block_markdown(&mut markdown, block);
         }
     }
 
     markdown
+}
+
+/// Whether two neighbouring blocks belong to the same construct, and so must
+/// not be separated by a blank line.
+///
+/// Adjacent list items are one list. A blank line between them makes it a
+/// *loose* list, which a reader renders with each item wrapped in a paragraph —
+/// the same words, presented as something else. Every other pair is genuinely
+/// separate and wants the blank line, which is what stops two paragraphs from
+/// running together.
+fn adjacent_within_one_block(previous: &BlockKind, current: &BlockKind) -> bool {
+    matches!(
+        (previous, current),
+        (BlockKind::ListItem, BlockKind::ListItem)
+    )
 }
 
 /// No page separators: a knowledge base is read as continuous prose, and a
@@ -601,6 +618,30 @@ mod tests {
             markdown.contains(r#"title: "The \"big\" report""#),
             "{markdown}"
         );
+    }
+
+    /// A blank line between list items makes a loose list, which a reader
+    /// renders with each item wrapped in a paragraph — the same words,
+    /// presented as something else.
+    #[test]
+    fn adjacent_list_items_are_not_separated_by_a_blank_line() {
+        let markdown = rendered(vec![
+            block(BlockKind::ListItem, "first"),
+            block(BlockKind::ListItem, "second"),
+        ]);
+
+        assert!(body(&markdown).contains("- first\n- second"), "{}", body(&markdown));
+        assert!(!body(&markdown).contains("- first\n\n- second"));
+    }
+
+    #[test]
+    fn a_list_is_separated_from_what_follows_it() {
+        let markdown = rendered(vec![
+            block(BlockKind::ListItem, "item"),
+            block(BlockKind::Paragraph, "after"),
+        ]);
+
+        assert!(body(&markdown).contains("- item\n\nafter"), "{}", body(&markdown));
     }
 
     #[test]

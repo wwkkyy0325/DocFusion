@@ -4,6 +4,43 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — The endpoint reached from the command line
+
+**What:** `--endpoint`, `--model` and `--api-key`, with matching environment
+variables, and `ScanExtractor` registered once a backend exists. Scanned
+documents now go in and Markdown comes out.
+
+**Decisions and why:**
+
+- **A missing model name is refused at parse time.** An endpoint may serve
+  several, so guessing would silently produce whatever it happened to pick, and
+  the failure would surface as bad output rather than as a configuration error.
+- **The text-layer engine stays registered first.** Engines that are equally
+  plausible keep their registration order, and parsing a PDF is free and exact
+  while rendering it costs an image and a model.
+- **Configuration is flags and environment variables, not a file.** An agent
+  driving the tool cannot guess where a configuration file is; `docfusion schema`
+  publishes both forms.
+
+**A rendering fault the benchmark had missed.** Running the scan path end to end
+produced list items separated by blank lines:
+
+```
+- first
+
+- second
+```
+
+In Markdown that is a *loose* list, which a reader renders with each item
+wrapped in a paragraph — the same words presented as something else. Adjacent
+list items are now written without a separator, because they are one list.
+
+The benchmark could not have caught this, and that is worth recording. Its
+scoring compares headings, tables and text; a loose list has all three right.
+Metrics have gaps, and this was one — the fault was found by looking at output
+rather than at a score.
+
+
 ## 2026-10-08 — The vision endpoint client
 
 **What:** The OpenAI-compatible client that reaches `llama-server`, Ollama,

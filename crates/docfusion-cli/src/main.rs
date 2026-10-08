@@ -11,11 +11,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use docfusion_core::backend::VisionBackend;
 use docfusion_core::extract::pdf::PdfTextLayer;
 use docfusion_core::extract::{
-    ExtractError, Extractor, Router, docx::DocxParser, pptx::PptxParser, text::TextPassthrough,
-    xlsx::XlsxParser,
+    ExtractError, Extractor, Router, docx::DocxParser, pptx::PptxParser, scan::ScanExtractor,
+    text::TextPassthrough, xlsx::XlsxParser,
 };
+use docfusion_store::endpoint::{EndpointConfig, OpenAiEndpoint};
 use docfusion_store::manifest::StoreError;
 use docfusion_store::pipeline::{Mode, Pipeline, PipelineError};
 use serde_json::{Value, json};
@@ -42,6 +44,21 @@ struct Cli {
     /// Do everything except writing.
     #[arg(long, global = true)]
     dry_run: bool,
+
+    /// An OpenAI-compatible endpoint for reading scanned pages, such as
+    /// `http://127.0.0.1:8080`. Without one, only documents with a text layer
+    /// can be read. See the setup guide.
+    #[arg(long, global = true, env = "DOCFUSION_ENDPOINT")]
+    endpoint: Option<String>,
+
+    /// The model the endpoint should serve. Required with `--endpoint`, because
+    /// an endpoint may host several.
+    #[arg(long, global = true, env = "DOCFUSION_MODEL")]
+    model: Option<String>,
+
+    /// Sent as a bearer token, for endpoints that require one.
+    #[arg(long, global = true, env = "DOCFUSION_API_KEY")]
+    api_key: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -101,6 +118,10 @@ enum CliError {
 
     #[error("{0}")]
     NotFound(String),
+
+    /// The command line asks for something that cannot be honoured as given.
+    #[error("{0}")]
+    Usage(String),
 }
 
 fn main() -> ExitCode {
@@ -122,7 +143,7 @@ fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
         Command::Show { document } => show(cli, reporter, document),
         Command::List { status } => list(cli, reporter, status.as_deref()),
         Command::Reconcile { fix } => reconcile(cli, reporter, *fix),
-        Command::Bench { set, engine } => run_bench(reporter, set, engine.as_deref()),
+        Command::Bench { set, engine } => run_bench(cli, reporter, set, engine.as_deref()),
         Command::Schema => {
             println!("{}", schema());
             Ok(OK)
@@ -135,7 +156,7 @@ fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
 /// Drift is reported as it is found even when repairing, because what was
 /// relinked or forgotten is the part a person wants to check.
 fn reconcile(cli: &Cli, reporter: &Reporter, fix: bool) -> Result<u8, CliError> {
-    let pipeline = open(&cli.root)?;
+    let pipeline = open(cli)?;
     let drift = docfusion_store::reconcile::scan(&pipeline)?;
 
     for (record, path) in &drift.relinked {
@@ -194,7 +215,7 @@ fn reconcile(cli: &Cli, reporter: &Reporter, fix: bool) -> Result<u8, CliError> 
 }
 
 fn add(cli: &Cli, reporter: &Reporter, paths: &[PathBuf]) -> Result<u8, CliError> {
-    let mut pipeline = open(&cli.root)?;
+    let mut pipeline = open(cli)?;
     let mode = if cli.dry_run { Mode::DryRun } else { Mode::Apply };
 
     let mut failures: Vec<CliError> = Vec::new();
@@ -243,7 +264,7 @@ fn add(cli: &Cli, reporter: &Reporter, paths: &[PathBuf]) -> Result<u8, CliError
 }
 
 fn show(cli: &Cli, reporter: &Reporter, document: &str) -> Result<u8, CliError> {
-    let pipeline = open(&cli.root)?;
+    let pipeline = open(cli)?;
     let record = pipeline
         .manifest()
         .find(document)?
@@ -268,7 +289,7 @@ fn show(cli: &Cli, reporter: &Reporter, document: &str) -> Result<u8, CliError> 
 }
 
 fn list(cli: &Cli, reporter: &Reporter, status: Option<&str>) -> Result<u8, CliError> {
-    let pipeline = open(&cli.root)?;
+    let pipeline = open(cli)?;
 
     for record in pipeline.manifest().all()? {
         if status.is_some_and(|wanted| wanted != record.status.as_str()) {
@@ -298,13 +319,18 @@ fn list(cli: &Cli, reporter: &Reporter, status: Option<&str>) -> Result<u8, CliE
     Ok(OK)
 }
 
-fn open(root: &Path) -> Result<Pipeline, CliError> {
-    Ok(Pipeline::open(root, router())?)
+fn open(cli: &Cli) -> Result<Pipeline, CliError> {
+    Ok(Pipeline::open(&cli.root, router(cli)?)?)
 }
 
 /// Measures engines against a corpus. Reads only: nothing is written and the
 /// knowledge base is not involved.
-fn run_bench(reporter: &Reporter, set: &Path, engine: Option<&str>) -> Result<u8, CliError> {
+fn run_bench(
+    cli: &Cli,
+    reporter: &Reporter,
+    set: &Path,
+    engine: Option<&str>,
+) -> Result<u8, CliError> {
     let cases = bench::load(set)?;
     if cases.is_empty() {
         return Err(CliError::NotFound(format!(
@@ -314,26 +340,66 @@ fn run_bench(reporter: &Reporter, set: &Path, engine: Option<&str>) -> Result<u8
         )));
     }
 
-    let router = router_for(engine)?;
+    let router = router_for(cli, engine)?;
     let report = bench::run(&cases, &router, engine.unwrap_or("router"));
     bench::report(reporter, &report);
 
     Ok(OK)
 }
 
+/// Builds the vision backend the command line asked for, if any.
+///
+/// An endpoint without a model name is a configuration mistake worth naming
+/// now, rather than a request that fails later with something vaguer.
+fn vision(cli: &Cli) -> Result<Option<Box<dyn VisionBackend>>, CliError> {
+    let Some(url) = cli.endpoint.as_deref() else {
+        if cli.model.is_some() || cli.api_key.is_some() {
+            return Err(CliError::Usage(
+                "--model and --api-key only mean something with --endpoint".into(),
+            ));
+        }
+        return Ok(None);
+    };
+
+    let model = cli.model.clone().ok_or_else(|| {
+        CliError::Usage(format!(
+            "--endpoint {url} needs --model: an endpoint may serve several, and guessing \
+             which one would silently produce whatever it happened to pick"
+        ))
+    })?;
+
+    let mut config = EndpointConfig::new(url, model);
+    if let Some(key) = &cli.api_key {
+        config = config.with_api_key(key.clone());
+    }
+
+    Ok(Some(Box::new(OpenAiEndpoint::new(config))))
+}
+
 /// Every engine the tool knows about, best fit first.
-fn engines() -> Vec<Box<dyn Extractor>> {
-    vec![
+///
+/// The order is load-bearing: engines that are equally plausible keep their
+/// registration order, and the text-layer engine comes first so that a PDF
+/// which can be parsed is parsed rather than rendered into images and sent to a
+/// model.
+fn engines(cli: &Cli) -> Result<Vec<Box<dyn Extractor>>, CliError> {
+    let mut engines: Vec<Box<dyn Extractor>> = vec![
         Box::new(PdfTextLayer::new()),
         Box::new(DocxParser),
         Box::new(XlsxParser),
         Box::new(PptxParser),
         Box::new(TextPassthrough),
-    ]
+    ];
+
+    if let Some(vision) = vision(cli)? {
+        engines.push(Box::new(ScanExtractor::new(None, Some(vision))));
+    }
+
+    Ok(engines)
 }
 
-fn router() -> Router {
-    Router::new(engines())
+fn router(cli: &Cli) -> Result<Router, CliError> {
+    Ok(Router::new(engines(cli)?))
 }
 
 /// A router holding one named engine, or all of them.
@@ -341,18 +407,20 @@ fn router() -> Router {
 /// Selecting a single engine is what makes a comparison meaningful: with the
 /// whole router in place, each case is handled by whichever engine happens to
 /// fit, and the run measures the router rather than the engine.
-fn router_for(engine: Option<&str>) -> Result<Router, CliError> {
+fn router_for(cli: &Cli, engine: Option<&str>) -> Result<Router, CliError> {
+    let available = engines(cli)?;
+
     let Some(wanted) = engine else {
-        return Ok(router());
+        return Ok(Router::new(available));
     };
 
-    let selected: Vec<Box<dyn Extractor>> = engines()
+    let known: Vec<String> = available.iter().map(|c| c.id().to_string()).collect();
+    let selected: Vec<Box<dyn Extractor>> = available
         .into_iter()
         .filter(|candidate| candidate.id().as_str() == wanted)
         .collect();
 
     if selected.is_empty() {
-        let known: Vec<String> = engines().iter().map(|c| c.id().to_string()).collect();
         return Err(CliError::NotFound(format!(
             "no engine named `{wanted}`; there is: {}",
             known.join(", ")
@@ -437,9 +505,64 @@ mod tests {
         }
     }
 
+    /// A command line with whatever global options a test cares about.
+    ///
+    /// A subcommand is mandatory, so one is appended that the caller cannot
+    /// mean: these tests are about building the engine list, not running it.
+    fn configured(extra: &[&str]) -> Cli {
+        let mut args = vec!["docfusion"];
+        args.extend_from_slice(extra);
+        args.push("schema");
+        Cli::parse_from(args)
+    }
+
+    fn png_probe() -> InputProbe {
+        InputProbe::new(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A], None, 8)
+    }
+
+    #[test]
+    fn an_endpoint_adds_the_scan_engine() {
+        let cli = configured(&["--endpoint", "http://127.0.0.1:1", "--model", "m"]);
+        let router = router(&cli).unwrap();
+
+        assert!(
+            router.can_handle(&png_probe()),
+            "an image should be readable once an endpoint exists"
+        );
+    }
+
+    /// Without a backend, an image is not something the tool claims it can
+    /// read, and the router's error says so rather than failing obscurely.
+    #[test]
+    fn without_an_endpoint_an_image_is_not_claimed() {
+        let router = router(&configured(&[])).unwrap();
+
+        assert!(!router.can_handle(&png_probe()));
+    }
+
+    /// An endpoint may serve several models, so guessing which would silently
+    /// produce whatever it happened to pick.
+    #[test]
+    fn an_endpoint_without_a_model_is_refused() {
+        let Err(error) = vision(&configured(&["--endpoint", "http://127.0.0.1:1"])) else {
+            panic!("an endpoint without a model should be refused");
+        };
+
+        assert!(error.to_string().contains("--model"), "{error}");
+    }
+
+    #[test]
+    fn a_model_without_an_endpoint_is_refused() {
+        let Err(error) = vision(&configured(&["--model", "m"])) else {
+            panic!("a model without an endpoint should be refused");
+        };
+
+        assert!(error.to_string().contains("--endpoint"), "{error}");
+    }
+
     #[test]
     fn choosing_an_unknown_engine_names_the_ones_that_exist() {
-        let Err(error) = router_for(Some("nope")) else {
+        let Err(error) = router_for(&configured(&[]), Some("nope")) else {
             panic!("an unknown engine should be rejected rather than ignored");
         };
         let error = error.to_string();
@@ -450,7 +573,7 @@ mod tests {
 
     #[test]
     fn choosing_a_known_engine_selects_only_it() {
-        let router = router_for(Some("pdfium")).unwrap();
+        let router = router_for(&configured(&[]), Some("pdfium")).unwrap();
         let pdf = docfusion_core::extract::InputProbe::new(b"%PDF-1.7", None, 8);
         let text = docfusion_core::extract::InputProbe::new(b"hello", None, 5);
 
@@ -584,7 +707,7 @@ mod tests {
 
     #[test]
     fn the_router_covers_every_deterministic_format() {
-        let router = router();
+        let router = router(&configured(&[])).unwrap();
         for probe in [
             InputProbe::new(b"%PDF-1.7", None, 8),
             InputProbe::new(b"PK\x03\x04", None, 4),
