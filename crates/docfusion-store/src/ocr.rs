@@ -290,6 +290,15 @@ fn lines_to_blocks(output: &OcrOutput, width: u32, height: u32, engine: &EngineI
                 covered.union(&current);
                 previous.bbox = Some(covered);
             }
+
+            // And its confidence falls to the least confident line in it. A
+            // paragraph that is only as sure as its first line would let an
+            // uncertain line hide behind a confident one, which is exactly what
+            // a policy reading confidence to decide whether to check the page
+            // must not be told.
+            let score = line.score.clamp(0.0, 1.0);
+            previous.confidence = Some(previous.confidence.unwrap_or(score).min(score));
+
             continue;
         }
 
