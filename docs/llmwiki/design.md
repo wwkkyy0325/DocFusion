@@ -362,10 +362,31 @@ What is still worth checking locally, because no endpoint can report it:
 - Free disk space for the knowledge base.
 - The WebView2 runtime version, for the GUI.
 
+**Both are deliberately not checked yet**, and each belongs with the thing that
+needs it. Free space guards against a risk that markdown output — kilobytes per
+document, against a 6.9 MB one-time extraction — does not pose, and would cost a
+platform-specific dependency to report. WebView2 is for a GUI that does not
+exist. A health check that reports everything it *could* measure is longer than
+one that reports what matters.
+
+**The `Capability` enum was not needed.** It was designed as a type, but nothing
+branches on it: the answer is a report, and the tier is a field in it. `doctor`
+reports `vision` only when a configured endpoint answered *and* listed the
+configured model, and `ocr-only` otherwise — including when the endpoint is
+configured but unconfirmed, because "vision" would then be a promise the run
+just failed to verify. The reason is printed beside it either way.
+
 **The user chooses the model; the tool reports what it found.** An earlier
 version of this design had the tool ship one recommended stack and pick a tier
 automatically. That is the right shape for a product that manages inference, and
 the wrong one for a document pipeline that does not.
+
+**A missing model listing is not a fault.** Nothing requires an endpoint to
+implement `/v1/models`, and one that reads pages perfectly well without it must
+not be reported as broken. `Probe` therefore separates "answered, has no
+listing" from "did not answer": the first is a note, the second a problem and a
+non-zero exit. An answer that always says "fine" is not an answer, and an answer
+that always says "broken" is not one either.
 
 ---
 
@@ -750,6 +771,7 @@ docfusion list [--status]      List documents
 docfusion reconcile            Repair the index against the file tree
 docfusion reindex --stale      Reprocess after an engine/model/prompt change
 docfusion bench --set <dir>    Compare backends on a golden corpus
+docfusion doctor               What this installation can read, and what is missing
 docfusion export <id> --to <fmt>   md | html | docx | pdf | txt | json(IR)
 docfusion serve                Local HTTP surface (agent-facing)
 docfusion mcp                  MCP server (P4, thin wrapper)

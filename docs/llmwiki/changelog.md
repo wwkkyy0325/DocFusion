@@ -4,6 +4,49 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — `docfusion doctor`
+
+**What:** one command that answers "what can this installation read, and what is
+missing to read more". Probes the configured endpoint rather than inspecting the
+machine. P1 Step 8.
+
+```
+knowledge base  D:\...\knowledge  (not created yet)
+engines         pdfium, docx, xlsx, pptx, text-passthrough, scan
+endpoint        https://api.deepseek.com
+  serves        deepseek-flash, deepseek-v4-pro
+  selected      deepseek-flash  (listed)
+capability      vision
+```
+
+**A missing model listing is not a fault.** Nothing requires an endpoint to
+implement `/v1/models`, so `Probe` now separates "answered, has no listing" from
+"did not answer". The first is a note and exit 0; the second a problem and exit
+1. Folding them together would report a working setup as broken — the mirror
+image of the failure this project is organised against, and just as misleading.
+
+**No endpoint is a supported configuration, not a problem.** Exit 0, tier
+`ocr-only`, and a line saying so. Verified end to end: with no endpoint
+configured, a scanned page still goes in through the bundled engine and a text
+document through the pass-through.
+
+**`Capability` was designed as a type and did not become one.** Nothing branches
+on it; the answer is a report and the tier is a field in it. §7 updated rather
+than left describing a type that does not exist.
+
+**The two local checks are deferred with reasons** rather than done for
+completeness: free disk space would cost a platform-specific dependency to guard
+against a risk that kilobyte markdown does not pose, and the WebView2 runtime is
+for a GUI that is P2. A health check that reports everything it *could* measure
+is longer than one that reports what matters.
+
+**One test was costing the suite three minutes.** The "endpoint says nothing"
+case used the stalled-server helper, which waits out the real 180-second
+timeout. A closed port fails identically and instantly. A test suite people stop
+running is a test suite that stops finding things.
+
+---
+
 ## 2026-10-08 — The first real baseline, and the bug that made it a lie
 
 **What:** both engines run over the 24-page corpus. DeepSeek-V4.1-Flash against

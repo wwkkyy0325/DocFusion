@@ -88,6 +88,19 @@ impl EndpointConfig {
     }
 }
 
+/// What asking the endpoint what it serves turned up.
+///
+/// Two outcomes rather than a list, because "it does not offer a listing" and
+/// "it does not answer" are different findings with different responses: one is
+/// nothing to act on, the other needs looking at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Probe {
+    /// The models the endpoint says it is serving.
+    Models(Vec<String>),
+    /// The endpoint answered, and does not list its models.
+    Unlisted(String),
+}
+
 pub struct OpenAiEndpoint {
     config: EndpointConfig,
     agent: ureq::Agent,
@@ -113,22 +126,36 @@ impl OpenAiEndpoint {
     /// Probing replaces detecting. Whether a backend is usable is a question
     /// about somebody else's program, and that program answers it better than
     /// any inspection of the machine we could write.
-    pub fn probe(&self) -> Result<Vec<String>, BackendError> {
+    pub fn probe(&self) -> Result<Probe, BackendError> {
         let mut request = self.agent.get(&self.url("/v1/models"));
         if let Some(key) = &self.config.api_key {
             request = request.header("Authorization", format!("Bearer {key}"));
         }
 
-        let mut response = request
-            .call()
-            .map_err(|error| self.describe(error, "list its models"))?;
+        let mut response = match request.call() {
+            Ok(response) => response,
+            // An endpoint that does not implement the listing is not broken,
+            // and nothing requires it to implement one. Calling that a fault
+            // would send somebody to repair something that reads pages
+            // perfectly well — which is why this is separated from the
+            // connection failures below rather than folded in with them.
+            Err(ureq::Error::StatusCode(code)) if matches!(code, 404 | 405 | 501) => {
+                return Ok(Probe::Unlisted(format!(
+                    "{} answered {code} when asked to list its models",
+                    self.config.base_url
+                )));
+            }
+            Err(error) => return Err(self.describe(error, "list its models")),
+        };
 
         let listing: ModelList = response
             .body_mut()
             .read_json()
             .map_err(|error| self.unreadable(error))?;
 
-        Ok(listing.data.into_iter().map(|model| model.id).collect())
+        Ok(Probe::Models(
+            listing.data.into_iter().map(|model| model.id).collect(),
+        ))
     }
 
     fn url(&self, path: &str) -> String {
@@ -596,9 +623,50 @@ mod tests {
     fn probing_lists_the_models_the_endpoint_serves() {
         let address = serving(r#"{"data":[{"id":"paddleocr-vl"},{"id":"glm-ocr"}]}"#);
 
-        let models = endpoint(&address).probe().expect("probe");
+        let probe = endpoint(&address).probe().expect("probe");
 
-        assert_eq!(models, vec!["paddleocr-vl", "glm-ocr"]);
+        assert_eq!(
+            probe,
+            Probe::Models(vec!["paddleocr-vl".to_owned(), "glm-ocr".to_owned()])
+        );
+    }
+
+    /// Nothing requires an endpoint to implement the listing, and a server that
+    /// reads pages perfectly well without one must not be reported as broken.
+    #[test]
+    fn an_endpoint_without_a_listing_is_not_a_fault() {
+        let address = spawn(|mut stream| {
+            let _ = read_request(&mut stream);
+            let body = "not found";
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        });
+
+        assert!(matches!(
+            endpoint(&address).probe().expect("probe"),
+            Probe::Unlisted(_)
+        ));
+    }
+
+    /// An endpoint that does not answer is the case worth failing on. A closed
+    /// port rather than a stalled server, because the timeout is a hundred and
+    /// eighty seconds and a test suite that waits for it is a test suite people
+    /// stop running.
+    #[test]
+    fn an_endpoint_that_does_not_answer_is_a_failure() {
+        let error = endpoint("http://127.0.0.1:1")
+            .probe()
+            .expect_err("nothing is listening there");
+
+        assert!(
+            error.to_string().contains("127.0.0.1:1"),
+            "the message should name the endpoint: {error}"
+        );
     }
 
     /// Editing a prompt changes the output while everything else stays the

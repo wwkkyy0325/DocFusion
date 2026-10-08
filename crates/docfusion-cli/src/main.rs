@@ -6,6 +6,7 @@
 
 mod bench;
 mod config;
+mod doctor;
 mod output;
 
 use std::path::{Path, PathBuf};
@@ -208,6 +209,9 @@ enum Command {
         engine: Option<String>,
     },
 
+    /// Report what this installation can read, and what is missing to read more.
+    Doctor,
+
     /// Publish the output contract: commands, fields and exit codes.
     Schema,
 }
@@ -259,6 +263,7 @@ fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
         Command::List { status } => list(cli, reporter, status.as_deref()),
         Command::Reconcile { fix } => reconcile(cli, reporter, *fix),
         Command::Bench { set, engine } => run_bench(cli, reporter, set, engine.as_deref()),
+        Command::Doctor => doctor::run(cli, reporter),
         Command::Schema => {
             println!("{}", schema());
             Ok(OK)
@@ -462,11 +467,15 @@ fn run_bench(
     Ok(OK)
 }
 
-/// Builds the vision backend the command line asked for, if any.
+/// Builds the endpoint the command line asked for, if any.
 ///
 /// An endpoint without a model name is a configuration mistake worth naming
 /// now, rather than a request that fails later with something vaguer.
-fn vision(cli: &Cli) -> Result<Option<Box<dyn VisionBackend>>, CliError> {
+///
+/// Concrete rather than the trait object the router takes, because asking the
+/// endpoint what it serves is a question only this type can answer, and
+/// `doctor` has to ask it.
+fn endpoint(cli: &Cli) -> Result<Option<OpenAiEndpoint>, CliError> {
     let Some(url) = cli.endpoint.as_deref() else {
         if cli.model.is_some() || cli.api_key.is_some() {
             return Err(CliError::Usage(
@@ -488,7 +497,22 @@ fn vision(cli: &Cli) -> Result<Option<Box<dyn VisionBackend>>, CliError> {
         config = config.with_api_key(key.clone());
     }
 
-    Ok(Some(Box::new(OpenAiEndpoint::new(config))))
+    Ok(Some(OpenAiEndpoint::new(config)))
+}
+
+fn vision(cli: &Cli) -> Result<Option<Box<dyn VisionBackend>>, CliError> {
+    Ok(endpoint(cli)?.map(|endpoint| Box::new(endpoint) as Box<dyn VisionBackend>))
+}
+
+/// The engines the router is holding, named.
+///
+/// Built rather than hard-coded so that anything describing the installation
+/// describes the one that is actually running.
+fn engine_ids(cli: &Cli) -> Result<Vec<String>, CliError> {
+    Ok(engines(cli, policy(cli))?
+        .iter()
+        .map(|engine| engine.id().to_string())
+        .collect())
 }
 
 /// Every engine the tool knows about, best fit first.
@@ -620,6 +644,11 @@ fn schema() -> Value {
                 "arguments": ["--set <dir>", "--engine <id>"],
                 "emits": ["command", "case", "engine", "loss", "character_error_rate", "headings", "tables", "duration_ms", "error"],
                 "note": "reads only; one subdirectory per case, each holding `expected.md` beside the source document. Verification is always off: a benchmark measures what one engine reads, and a second engine's opinion is not part of a reading"
+            },
+            "doctor": {
+                "arguments": [],
+                "emits": ["command", "root", "root_exists", "engines", "endpoint", "model", "serves", "model_listed", "tier", "notes", "problems", "config"],
+                "note": "reports what this installation can read; `tier` is `vision` only when a configured endpoint answered and listed the model. Exits 1 when a configured endpoint could not be confirmed; exits 0 with no endpoint at all, which is a supported configuration"
             },
             "schema": {
                 "arguments": [],

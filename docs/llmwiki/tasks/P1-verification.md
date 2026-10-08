@@ -231,10 +231,9 @@ swapping it is a one-line change behind the trait.
 > pages is not a plausible reading of two different documents.
 
 ### Step 8 — Probing, not detecting
-- [ ] Probe the configured endpoint rather than inspecting the machine
-- [ ] Report what was found, and what to do about what was not
-- [ ] Check the two things no endpoint can report: free disk space, and the
-      WebView2 runtime for the GUI
+- [x] Probe the configured endpoint rather than inspecting the machine
+- [x] Report what was found, and what to do about what was not
+- [ ] Check the two things no endpoint can report — **deferred, with reasons**
 
 **Verify:** with no endpoint, the tool reports `OcrOnly` and still processes
 text-layer documents and scans through OCR.
@@ -242,6 +241,31 @@ text-layer documents and scans through OCR.
 > **This step shrinks because of §8.2.** GPU vendor, VRAM, whether a daemon is
 > running and which models it holds are questions about somebody else's program,
 > and that program answers them better than any inspection we could write.
+
+> **Verified both halves, end to end.** With the endpoint set: `capability
+> vision`, the endpoint's models listed, the selected one found, exit 0. With
+> `DOCFUSION_CONFIG` pointing at a file holding nothing but a comment:
+> `capability ocr-only`, exit 0 — and a scanned page still went in through the
+> bundled engine, and a text document through the pass-through, with no endpoint
+> anywhere. With the endpoint pointed at a dead port: `capability ocr-only`,
+> the problem and what to do about it, exit 1.
+
+> **The listing is not a requirement.** `/v1/models` is not part of what an
+> endpoint must implement to read a page, so `Probe` separates "answered, has no
+> listing" from "did not answer". The first is a note and exit 0; the second is
+> a problem and exit 1. Folding them together would report a working setup as
+> broken, which is the mirror image of the failure this project is organised
+> against.
+>
+> **`Capability` was designed as a type and did not become one.** Nothing
+> branches on it — the answer is a report, and the tier is a field in it. See
+> §7.
+
+> **The two local checks are deferred rather than forgotten.** Free disk space
+> costs a platform-specific dependency to guard against a risk that kilobyte
+> markdown does not pose, and the WebView2 runtime is for a GUI that is P2. A
+> health check that reports everything it *could* measure is longer than one
+> that reports what matters.
 
 ### Step 9 — The setup guide
 - [ ] A guide the user's *agent* can execute: exact commands, exact file names,
