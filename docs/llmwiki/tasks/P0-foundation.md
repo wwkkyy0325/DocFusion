@@ -57,12 +57,17 @@ content is the new content. This test must run on Windows, not just Linux CI.
 > `MoveFileExW` handles both cases in one step.
 
 ### Step 4 — Store: hashing, manifest, dedup
-- [ ] BLAKE3 hashing of input content
-- [ ] SQLite schema for `documents`, `aliases`, `runs` (see design §9.2)
-- [ ] `lookup(content_hash, engine_id, engine_version, model, prompt_version)`
-- [ ] Cache-hit path: return existing record without re-extraction
-- [ ] Alias handling for the same content at multiple paths
-- [ ] `rusqlite` migrations or versioned schema setup
+- [x] BLAKE3 hashing of input content
+- [x] SQLite schema for `documents`, `aliases`, `runs` (see design §9.2)
+- [x] `lookup(content_hash, engine_id, engine_version, model, prompt_version)`
+- [x] Cache-hit path: return existing record without re-extraction
+- [x] Alias handling for the same content at multiple paths
+- [x] `rusqlite` migrations or versioned schema setup
+
+> `runs` is created but has no accessors yet — nothing writes to it until the
+> CLI records pipeline history in Step 7. Hashing streams through a fixed buffer
+> rather than loading the file, since documents routinely run to hundreds of
+> megabytes.
 
 **Verify:** Integration test — ingest the same file from two paths; assert one
 `documents` row, two `aliases` rows, and that the extractor was called once

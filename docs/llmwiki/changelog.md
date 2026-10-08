@@ -4,6 +4,34 @@ Append-only record of meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Storage layer
+
+**What:** BLAKE3 hashing (streamed, so large documents are never buffered whole),
+a SQLite manifest with a versioned schema, and the dedup lookups the pipeline
+depends on.
+
+**Decisions and why:**
+
+- **A cache hit requires the whole engine stamp to match, not just the content.**
+  `model` and `prompt_version` participate in the comparison via SQL `IS`, so a
+  NULL never compares equal to a value. Leaving `prompt_version` out would mean
+  that editing a prompt silently serves stale output — the failure would look
+  like a mysterious quality regression rather than a bug.
+- **`aliases` records every path a content has been seen at, including the
+  first.** A single complete table lets `reconcile` answer "which document does
+  this file belong to?" without unioning two sources.
+- **Editing a source file leaves a stale row behind.** Rows are keyed by content
+  hash, so changed content produces a new row while the old row keeps pointing at
+  an output path that now holds different content. This is now an explicit
+  `reconcile` responsibility (design §9.4), safe because `runs` keeps history.
+- **`runs` is created but unused.** Nothing writes pipeline history until the CLI
+  lands in Step 7; adding accessors before a caller exists would be speculation.
+
+**Timestamps** are RFC 3339 text so the database stays readable when inspected
+directly, with the clock owned by the caller rather than the manifest inventing
+times.
+
+
 ## 2026-10-08 — Model selection becomes measurement-driven
 
 **What:** Added design §8.5 (evaluation corpus) and a sequencing requirement in

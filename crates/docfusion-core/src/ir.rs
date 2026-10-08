@@ -44,6 +44,41 @@ impl From<String> for EngineId {
     }
 }
 
+/// The full identity of an engine configuration.
+///
+/// Together with the content hash this forms the cache key. Every component
+/// must participate: re-running an unchanged model with an edited prompt
+/// produces different output, so `prompt_version` cannot be omitted without
+/// silently serving stale results.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineStamp {
+    pub id: EngineId,
+    pub version: String,
+    pub model: Option<String>,
+    pub prompt_version: Option<String>,
+}
+
+impl EngineStamp {
+    pub fn new(id: impl Into<EngineId>, version: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            version: version.into(),
+            model: None,
+            prompt_version: None,
+        }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    pub fn with_prompt_version(mut self, prompt_version: impl Into<String>) -> Self {
+        self.prompt_version = Some(prompt_version.into());
+        self
+    }
+}
+
 /// A rectangle in normalized page coordinates.
 ///
 /// Both axes run from `0.0` to `1.0`, with the origin at the top-left. Engines

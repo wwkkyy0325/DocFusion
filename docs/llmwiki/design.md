@@ -410,9 +410,14 @@ CREATE TABLE runs (                  -- append-only audit log
 
 | Situation | Behavior |
 |---|---|
-| Same content, different path | Same `id`; processed **once**; extra path recorded as an alias |
+| Same content, different path | Same `id`; processed **once**; both paths recorded in `aliases` |
 | Same path, content changed | mtime/size differ → reprocess; output overwritten; `runs` keeps history |
 | Engine / model / prompt version changed | `docfusion reindex --stale` reprocesses affected documents |
+
+`aliases` holds **every** path a given content has been seen at, including the
+one in `documents.source_path`. Keeping one complete table is what lets
+`reconcile` answer "which document does this file belong to?" with a single
+lookup, instead of unioning two sources.
 
 **Cache key = `blake3 + engine_id + engine_version + model + prompt_version`.**
 `prompt_version` must be in the key: without it, editing a prompt silently reuses
@@ -423,6 +428,12 @@ stale results.
 Because the file tree is authoritative and users may edit or move files, the
 index can drift. `docfusion reconcile` rehashes the tree and repairs the
 manifest. This is a designed-for condition, not an error state.
+
+Drift includes one case that is easy to miss: **editing a source file leaves the
+old row behind.** Because rows are keyed by content hash, a changed file gets a
+new row while the previous row keeps pointing at an output path that now holds
+different content. `reconcile` must prune those rows, which is safe precisely
+because `runs` retains the history.
 
 ### 9.5 Atomic writes — Windows hazard
 
