@@ -1,14 +1,6 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Storage for DocFusion.
+//!
+//! Everything that touches the filesystem or a database lives here, keeping
+//! `docfusion-core` free of I/O so it stays trivially testable.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod atomic;

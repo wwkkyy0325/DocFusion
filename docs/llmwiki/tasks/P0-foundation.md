@@ -43,13 +43,18 @@ content is never processed twice. Agents must be able to use the output directly
 overlap cases plus the degenerate zero-area case.
 
 ### Step 3 — Atomic write (do this early — it is a Windows landmine)
-- [ ] `write_atomic(path, bytes)` helper: write `.tmp` → fsync → replace
-- [ ] Windows path uses `ReplaceFileW` (fallback `MoveFileEx`)
-- [ ] Unix path uses `rename`
-- [ ] Test: writing over an existing file succeeds on Windows
+- [x] `write_atomic(path, bytes)` helper: write `.tmp` → fsync → replace
+- [x] Windows path uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`
+- [x] Unix path uses `rename`
+- [x] Test: writing over an existing file succeeds on Windows
+- [x] Test: a failed write leaves no temporary file behind
 
 **Verify:** On Windows, `write_atomic` over an existing file returns `Ok` and the
 content is the new content. This test must run on Windows, not just Linux CI.
+
+> `ReplaceFileW` was dropped in favour of `MoveFileExW`: it requires the
+> destination to exist, so it needs a fallback path for new files, while
+> `MoveFileExW` handles both cases in one step.
 
 ### Step 4 — Store: hashing, manifest, dedup
 - [ ] BLAKE3 hashing of input content

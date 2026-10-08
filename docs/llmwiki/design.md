@@ -427,9 +427,19 @@ manifest. This is a designed-for condition, not an error state.
 ### 9.5 Atomic writes — Windows hazard
 
 `std::fs::rename` **fails on Windows when the destination exists** (Unix
-semantics differ). Every write goes `.tmp` → fsync → `ReplaceFileW`, with
-`MoveFileEx` as fallback. Without this, reprocessing any existing document fails
-on the project's primary platform. This is a must-fix-before-P0 item.
+semantics differ). Every write goes: temporary file in the destination directory
+→ `sync_all` → **`MoveFileExW`** with `MOVEFILE_REPLACE_EXISTING`. Without this,
+reprocessing any existing document fails on the project's primary platform.
+
+`MoveFileExW` is used rather than `ReplaceFileW` because it covers both the
+create and overwrite cases in one path; `ReplaceFileW` requires the destination
+to already exist, which would add a second failure path for no benefit until
+preserving destination ACLs actually matters.
+
+The temporary file must live in the destination directory so the replace stays
+within one filesystem. Parent-directory `fsync` is deliberately not performed on
+Unix: index drift is already a designed-for condition (§9.4), so `reconcile`
+covers a crash between replace and directory flush.
 
 ---
 
