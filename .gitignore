@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+
+# Local knowledge bases and index state produced during development
+/knowledge/
+/docfusion.local.toml
+
+# Secrets: cloud provider credentials must never be committed
+.env
+*.key
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
