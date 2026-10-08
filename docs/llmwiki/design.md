@@ -132,7 +132,7 @@ pub struct Block {
 pub struct Conflict {
     pub page:     u32,
     pub bbox:     Option<Rect>,
-    pub kind:     ConflictKind,      // TextMismatch | StructuralMismatch | Missing
+    pub kind:     ConflictKind,      // TextMismatch | StructuralMismatch
     pub variants: Vec<Variant>,      // Variant { engine, text }
     pub resolved: Option<Resolution>,
 }
@@ -261,12 +261,17 @@ independence of the check.
 
 ```rust
 pub struct VerifyPolicy {
-    pub mode:    VerifyMode,       // Off | OnLowConfidence(f32) | Always
+    pub mode:    VerifyMode,       // Off | OnDoubt | OnCriticalFields | Always
+    pub below:   f32,              // confidence under which the primary is unsure
     pub trigger: FieldTrigger,     // regex set: amounts, dates, IDs, clause numbers
-    pub arbiter: Option<EngineId>, // third engine for unresolved disagreements
     pub max_verify_pages: u32,     // hard cost ceiling
 }
 ```
+
+Four policies rather than three. The earlier `mode`-plus-`trigger` split left
+"verify on a critical field" expressible only as a confidence threshold that
+happens never to fire, which is a way of writing a decision that nobody can
+read back. The four are named after what a user would ask for.
 
 Three hard rules:
 
@@ -276,18 +281,59 @@ Three hard rules:
 2. **Conflicts are never silently dropped.** They are written to the IR and
    marked in the output.
 3. **`max_verify_pages` is enforced.** A 1000-page scan must not be able to run
-   up an unbounded bill.
+   up an unbounded bill. It is counted per document, so one enormous scan cannot
+   exhaust a budget the rest of the batch needed.
+
+**The policy is part of the cache key.** It decides what the output says — which
+pages carry conflicts, which are marked verified — so leaving it out would serve
+a cached single-engine result to a run that asked for a second opinion.
+
+**Arbitration is deferred.** `Resolution` and `ResolutionSource::Arbiter` are in
+the IR for it, but a third engine has to be a third *lineage*, and the stack has
+two. Shipping the field before there is anything that could fill it would be a
+setting that silently does nothing.
 
 ### 6.3 Alignment algorithm
 
 1. Both engines produce a `Page`.
-2. Greedy-match blocks by **bbox IoU**.
+2. Greedy-match blocks by **bbox IoU**, one to one.
 3. Unmatched blocks on either side become `StructuralMismatch` — usually a
    reading-order error or a dropped region. **This is the most dangerous class
    of failure** and is reported first.
-4. Matched blocks are normalized (whitespace, full/half-width, digit form) and
-   compared; mismatches become `TextMismatch`.
-5. Unresolved conflicts are surfaced to the user or routed to `arbiter`.
+4. Matched blocks are normalized (whitespace, full/half-width) and compared;
+   mismatches become `TextMismatch`.
+5. Unresolved conflicts are surfaced in the output.
+
+**When geometry is missing on either side, the comparison falls back to the
+whole page.** This is not an edge case — it is the path today's stack always
+takes, because a vision model answers with Markdown and no coordinates, and
+alignment by position is impossible when only one engine has positions.
+Inventing one would attribute a disagreement to the wrong region.
+
+The fallback is coarser, not weaker. Two engines that produce the same
+characters for a page have agreed about it, whatever they called the blocks, and
+a dropped region still changes the character stream. What is lost is the ability
+to say *where*, so those conflicts are recorded with no region rather than a
+guessed one.
+
+**Normalization folds whitespace away entirely, and nothing else.** Spacing is
+much the largest source of noise between a recognition model and a language
+model, and it is not a disagreement about the document. Case, punctuation and
+character identity are exactly what the comparison is for; a tolerance wide
+enough to hide a wrong digit would defeat the purpose.
+
+### 6.4 What the reader sees
+
+A conflict is worthless if it stays in the IR. The rendered Markdown carries it:
+
+- Front matter gains `verified: <checked>/<total>`. A page nobody checked and a
+  page that passed are different things, and the ceiling means a long scan can
+  be partly one and partly the other.
+- A `## Conflicts` section lists each disagreement with both readings verbatim,
+  in an indented block so that extracted text cannot become structure.
+- No reading is marked preferred. The tool has no basis for choosing, and a
+  report that quietly picked would be the silent resolution this exists to
+  prevent.
 
 ---
 
@@ -704,6 +750,7 @@ than duplicates the CLI.
 | Hashing | BLAKE3 | Fast, content addressing |
 | Manifest | SQLite (`rusqlite`) | Single file, FTS5 available for P4 |
 | CLI | `clap` | Derive API, generated help |
+| Field trigger | `regex` | The critical-field patterns. Four hand-rolled matchers would be more code, less capable, and harder to extend; the comparison itself folds width and case by hand, because a regex per character would be absurd. |
 | GUI | Tauri v2 + static frontend | No Node build chain |
 | Async | `tokio` | Needed for concurrent backend calls |
 

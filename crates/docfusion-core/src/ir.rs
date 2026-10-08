@@ -250,16 +250,20 @@ pub struct Page {
 }
 
 /// The class of disagreement between engines.
+///
+/// Two variants rather than three: an earlier `Missing` described the same
+/// failure as `StructuralMismatch` — a region one engine saw and the other did
+/// not — and two names for one thing invites recording the same fault under
+/// whichever came to hand.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ConflictKind {
-    /// Both engines found a block in the same place, but read different text.
+    /// Both engines found a region in the same place, but read different text.
     TextMismatch,
-    /// One engine found a block the other did not, or they disagree on where
-    /// it is. Usually a reading-order error or a dropped region — the most
-    /// dangerous class, because the text that *is* present looks fine.
+    /// One engine found a region the other did not. Usually a reading-order
+    /// error or a dropped block — the most dangerous class, because the text
+    /// that *is* present looks fine and nothing draws attention to what is
+    /// missing.
     StructuralMismatch,
-    /// A region present in one engine's output is absent from the other's.
-    Missing,
 }
 
 /// One engine's version of a disputed region.

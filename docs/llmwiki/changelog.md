@@ -4,6 +4,61 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Two engines, and the disagreement is kept
+
+**What:** the second engine now checks the first. `docfusion-core::verify` holds
+the policy and the comparison; `ScanExtractor` runs the verifier and records what
+it finds; the renderer writes the disagreement into the artifact. New flags:
+`--verify <off|doubt|fields|always>` and `--max-verify-pages`. P1 Step 6 is done.
+
+**Two engines read every page, and neither reading wins.** The verifier is
+whichever engine did *not* produce the primary result — today the local
+recognition engine checking a vision model's Markdown. A page nobody checked and
+a page that passed now say so separately: front matter carries `verified: 1/1`,
+and a `## Conflicts` section shows both readings verbatim. Nothing marks one as
+preferred, because the tool has no basis for choosing and a report that quietly
+picked would be the silent resolution this project exists to avoid.
+
+**The position-based alignment is not the one that runs.** A vision model answers
+with Markdown and no coordinates, so only one engine has geometry and there is
+nothing to align on. Rather than guess and blame the wrong region, the comparison
+falls back to whole-page text. That is coarser in what it can report and not
+weaker in what it checks — a dropped region still changes the character stream —
+but it means conflicts are recorded with no region rather than an invented one.
+Region matching is implemented, tested, and runs as soon as both engines report
+boxes.
+
+**Normalization folds whitespace and nothing else.** Spacing is much the largest
+source of noise between a recognition model and a language model and is not a
+disagreement about the document. Case, punctuation and character identity are
+exactly what the comparison is for.
+
+**The policy is part of the cache key.** It decides what the output says, so
+omitting it served a cached single-engine result to a run that asked for a second
+opinion. Found by running the binary, not by a test.
+
+**Three findings from running it rather than testing it:**
+
+- The default trigger shipped a wrong number. "Revenue increased by 13%" matched
+  no currency, date, identifier or clause number, so the check never ran.
+  Percentages and thousands-separated numbers joined the pattern set: a trigger
+  that fires when it need not costs one free local pass, and one that stays quiet
+  when it should have fired ships a wrong number.
+- The OCR engine kept only the first line's confidence on a merged paragraph, so
+  an uncertain line could hide behind a confident one — from the one consumer
+  that reads confidence to decide whether to check the page.
+- `ConflictKind::Missing` was removed. It described the same failure as
+  `StructuralMismatch` — a region one engine saw and the other did not — and two
+  names for one thing invites recording the same fault under whichever came to
+  hand.
+
+**Deferred:** arbitration. `Resolution` and `ResolutionSource::Arbiter` remain in
+the IR, but a third engine has to be a third lineage and the stack has two.
+Shipping the setting before there is anything to fill it would be a control that
+silently does nothing.
+
+---
+
 ## 2026-10-08 — The OCR weights ship with the tool
 
 **What:** PP-OCRv6 tiny is fetched and digest-verified at build time, embedded

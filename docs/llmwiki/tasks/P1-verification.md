@@ -157,13 +157,46 @@ stalls fails on the timeout rather than hanging.
 > objects. See design §8.2. The tool now runs no models at all.
 
 ### Step 6 — Verification
-- [ ] Alignment by bounding-box overlap; text comparison after normalization
-- [ ] `VerifyPolicy`: off, on low confidence, on critical fields, always
-- [ ] Conflicts recorded in the IR and marked in the rendered output
-- [ ] A cost ceiling, so a large scan cannot run away
+- [x] Alignment by bounding-box overlap; text comparison after normalization
+- [x] `VerifyPolicy`: off, on low confidence, on critical fields, always
+- [x] Conflicts recorded in the IR and marked in the rendered output
+- [x] A cost ceiling, so a large scan cannot run away
 
 **Verify:** two engines given deliberately different text produce a recorded
 conflict and a rendered marker; a policy of `Off` produces neither.
+
+> Verified end to end, with a real endpoint and the real OCR weights. A page
+> reading "Revenue increased by 12%" was put to a stub vision endpoint that
+> answered 13%. The artifact came back with `engines: [openai-compatible,
+> rapidocr]`, `verified: 1/1`, `conflict_count: 1`, and a `## Conflicts` section
+> holding both readings. The same input with `--verify off` produced
+> `verified: 0/1` and `conflict_count: 0`, and the OCR engine was never called.
+>
+> **The position-based path is not the one that runs.** A vision model answers
+> with Markdown and no coordinates, so in today's configuration only one engine
+> has geometry and there is nothing to align on. Rather than guess an alignment
+> and blame the wrong region, the comparison falls back to whole-page text —
+> coarser in what it can report, not weaker in what it checks. Region matching
+> is implemented and tested, and runs as soon as both engines report boxes.
+
+> **Three things the tests alone would not have caught.**
+>
+> *The default policy shipped a wrong number.* "Revenue increased by 13%"
+> matches no currency, date, identifier or clause number, so the first version
+> of the trigger stayed quiet and the disagreement was never looked for. A
+> percentage is a value a reader acts on. Percentages and thousands-separated
+> numbers joined the pattern set, and the reasoning is now in the code: a
+> pattern that fires when it need not costs one free local pass, a pattern that
+> stays quiet when it should have fired ships a wrong number.
+>
+> *The policy was not in the cache key.* Re-running with `--verify always` after
+> `--verify off` returned the cached single-engine result, conflicts and all
+> absent. Caught by running the binary twice rather than by any unit test.
+>
+> *A merged paragraph kept only its first line's confidence.* A merged paragraph
+> took the score of the line that opened it, so an uncertain line could hide
+> behind a confident one — from the one consumer that reads confidence to decide
+> whether to check the page. It now carries the least confident line in it.
 
 ### Step 7 — Model selection by measurement
 - [ ] Build the corpus from real documents

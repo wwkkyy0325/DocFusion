@@ -10,13 +10,14 @@ mod output;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use docfusion_core::backend::VisionBackend;
 use docfusion_core::extract::pdf::PdfTextLayer;
 use docfusion_core::extract::{
     ExtractError, Extractor, Router, docx::DocxParser, pptx::PptxParser, scan::ScanExtractor,
     text::TextPassthrough, xlsx::XlsxParser,
 };
+use docfusion_core::verify::{VerifyMode, VerifyPolicy};
 use docfusion_store::endpoint::{EndpointConfig, OpenAiEndpoint};
 use docfusion_store::ocr::RapidOcrBackend;
 use docfusion_store::manifest::StoreError;
@@ -61,8 +62,47 @@ struct Cli {
     #[arg(long, global = true, env = "DOCFUSION_API_KEY")]
     api_key: Option<String>,
 
+    /// When a second engine should check the first. `doubt` buys a second
+    /// opinion only where the first was unsure of itself or read a value whose
+    /// exactness matters; `always` doubles the cost of every page.
+    #[arg(long, global = true, value_enum, default_value_t = VerifyChoice::Doubt, env = "DOCFUSION_VERIFY")]
+    verify: VerifyChoice,
+
+    /// The most pages of one document a second engine may be asked to read.
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 50,
+        env = "DOCFUSION_MAX_VERIFY_PAGES"
+    )]
+    max_verify_pages: u32,
+
     #[command(subcommand)]
     command: Command,
+}
+
+/// The verification policies, as a command line spells them.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum VerifyChoice {
+    /// Where the reading was uncertain, or a value needed to be exact.
+    Doubt,
+    /// Only where the text holds an amount, a date or an identifier.
+    Fields,
+    /// Every page, whatever it says.
+    Always,
+    /// Never. One engine reads and nothing checks it.
+    Off,
+}
+
+impl From<VerifyChoice> for VerifyMode {
+    fn from(choice: VerifyChoice) -> Self {
+        match choice {
+            VerifyChoice::Doubt => VerifyMode::OnDoubt,
+            VerifyChoice::Fields => VerifyMode::OnCriticalFields,
+            VerifyChoice::Always => VerifyMode::Always,
+            VerifyChoice::Off => VerifyMode::Off,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -321,7 +361,7 @@ fn list(cli: &Cli, reporter: &Reporter, status: Option<&str>) -> Result<u8, CliE
 }
 
 fn open(cli: &Cli) -> Result<Pipeline, CliError> {
-    Ok(Pipeline::open(&cli.root, router(cli)?)?)
+    Ok(Pipeline::open(&cli.root, router(cli, policy(cli))?)?)
 }
 
 /// Measures engines against a corpus. Reads only: nothing is written and the
@@ -383,7 +423,7 @@ fn vision(cli: &Cli) -> Result<Option<Box<dyn VisionBackend>>, CliError> {
 /// registration order, and the text-layer engine comes first so that a PDF
 /// which can be parsed is parsed rather than rendered into images and sent to a
 /// model.
-fn engines(cli: &Cli) -> Result<Vec<Box<dyn Extractor>>, CliError> {
+fn engines(cli: &Cli, policy: VerifyPolicy) -> Result<Vec<Box<dyn Extractor>>, CliError> {
     let mut engines: Vec<Box<dyn Extractor>> = vec![
         Box::new(PdfTextLayer::new()),
         Box::new(DocxParser),
@@ -396,16 +436,25 @@ fn engines(cli: &Cli) -> Result<Vec<Box<dyn Extractor>>, CliError> {
     // actually needs reading. It is what makes a scan readable with no setup:
     // the weights are in the binary, so there is nothing to configure and
     // nothing to download.
-    engines.push(Box::new(ScanExtractor::new(
-        Some(Box::new(RapidOcrBackend::bundled())),
-        vision(cli)?,
-    )));
+    engines.push(Box::new(
+        ScanExtractor::new(Some(Box::new(RapidOcrBackend::bundled())), vision(cli)?)
+            .with_policy(policy),
+    ));
 
     Ok(engines)
 }
 
-fn router(cli: &Cli) -> Result<Router, CliError> {
-    Ok(Router::new(engines(cli)?))
+/// The verification policy the command line asked for.
+fn policy(cli: &Cli) -> VerifyPolicy {
+    VerifyPolicy {
+        mode: cli.verify.into(),
+        max_verify_pages: cli.max_verify_pages,
+        ..VerifyPolicy::default()
+    }
+}
+
+fn router(cli: &Cli, policy: VerifyPolicy) -> Result<Router, CliError> {
+    Ok(Router::new(engines(cli, policy)?))
 }
 
 /// A router holding one named engine, or all of them.
@@ -414,7 +463,11 @@ fn router(cli: &Cli) -> Result<Router, CliError> {
 /// whole router in place, each case is handled by whichever engine happens to
 /// fit, and the run measures the router rather than the engine.
 fn router_for(cli: &Cli, engine: Option<&str>) -> Result<Router, CliError> {
-    let available = engines(cli)?;
+    // Verification off, always. A benchmark measures what one engine reads,
+    // and the conflict report is not part of a reading — leaving it on would
+    // charge a model for the second engine's opinion and let a disagreement
+    // change the score of a run that is meant to be about accuracy alone.
+    let available = engines(cli, VerifyPolicy::off())?;
 
     let Some(wanted) = engine else {
         return Ok(Router::new(available));
@@ -464,8 +517,9 @@ fn schema() -> Value {
         },
         "commands": {
             "add": {
-                "arguments": ["<paths>...", "--dry-run"],
-                "emits": ["command", "path", "id", "output", "reused", "conflicts", "status"]
+                "arguments": ["<paths>...", "--dry-run", "--verify <off|doubt|fields|always>", "--max-verify-pages <n>"],
+                "emits": ["command", "path", "id", "output", "reused", "conflicts", "status"],
+                "note": "conflicts counts regions a second engine read differently; both readings are written into the document under `## Conflicts`, and `verified` in the front matter says how many pages were checked at all"
             },
             "show": {
                 "arguments": ["<document>"],
@@ -484,7 +538,7 @@ fn schema() -> Value {
             "bench": {
                 "arguments": ["--set <dir>", "--engine <id>"],
                 "emits": ["command", "case", "engine", "loss", "character_error_rate", "headings", "tables", "duration_ms", "error"],
-                "note": "reads only; one subdirectory per case, each holding `expected.md` beside the source document"
+                "note": "reads only; one subdirectory per case, each holding `expected.md` beside the source document. Verification is always off: a benchmark measures what one engine reads, and a second engine's opinion is not part of a reading"
             },
             "schema": {
                 "arguments": [],
@@ -529,7 +583,7 @@ mod tests {
     /// The promise that makes the tool useful with no setup at all.
     #[test]
     fn an_image_is_readable_with_nothing_configured() {
-        let router = router(&configured(&[])).unwrap();
+        let router = router(&configured(&[]), VerifyPolicy::default()).unwrap();
 
         assert!(
             router.can_handle(&png_probe()),
@@ -543,8 +597,8 @@ mod tests {
     /// been read by this one.
     #[test]
     fn an_endpoint_changes_what_the_scan_engine_is_keyed_on() {
-        let without = router(&configured(&[])).unwrap();
-        let with = router(&configured(&["--endpoint", "http://127.0.0.1:1", "--model", "m"]))
+        let without = router(&configured(&[]), VerifyPolicy::default()).unwrap();
+        let with = router(&configured(&["--endpoint", "http://127.0.0.1:1", "--model", "m"]), VerifyPolicy::default())
             .unwrap();
 
         let scan = docfusion_core::ir::EngineId::from("scan");
@@ -722,7 +776,7 @@ mod tests {
 
     #[test]
     fn the_router_covers_every_deterministic_format() {
-        let router = router(&configured(&[])).unwrap();
+        let router = router(&configured(&[]), VerifyPolicy::default()).unwrap();
         for probe in [
             InputProbe::new(b"%PDF-1.7", None, 8),
             InputProbe::new(b"PK\x03\x04", None, 4),

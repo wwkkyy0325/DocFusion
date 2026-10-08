@@ -4,7 +4,7 @@
 //! paragraph that happens to begin with `#` or `-` would be reinterpreted as
 //! structure the document never had, so text is escaped before it is written.
 
-use crate::ir::{Block, BlockKind, Document};
+use crate::ir::{Block, BlockKind, ConflictKind, Document};
 
 /// Characters that change the meaning of a line when they begin one.
 const BLOCK_MARKERS: [char; 8] = ['#', '>', '-', '+', '*', '=', '~', '`'];
@@ -40,7 +40,71 @@ pub fn markdown(document: &Document, created_at: &str) -> String {
         }
     }
 
+    conflicts_markdown(&mut markdown, document);
     markdown
+}
+
+/// Records the engines' disagreements at the foot of the document.
+///
+/// In the artifact rather than in a log beside it, because the artifact is what
+/// gets read, indexed and trusted: a specialized parser fails loudly and a
+/// general model fails silently, so a disagreement is the one thing the
+/// pipeline must not lose. A log is a file nobody opens.
+///
+/// Each reading is shown verbatim, in an indented block so that nothing in the
+/// extracted text is read as Markdown structure. What is deliberately absent is
+/// any suggestion of which reading is right — the tool has no basis for
+/// preferring one, and a report that quietly picked would be the silent
+/// resolution this exists to prevent.
+fn conflicts_markdown(out: &mut String, document: &Document) {
+    if document.conflicts.is_empty() {
+        return;
+    }
+
+    out.push_str("\n## Conflicts\n");
+
+    for conflict in &document.conflicts {
+        out.push_str(&format!(
+            "\nPage {}: {}.\n\n",
+            conflict.page + 1,
+            describe(&conflict.kind)
+        ));
+
+        for variant in &conflict.variants {
+            out.push_str("    ");
+            out.push_str(variant.engine.as_str());
+            out.push('\n');
+            for line in variant.text.lines() {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+    }
+}
+
+fn describe(kind: &ConflictKind) -> &'static str {
+    match kind {
+        ConflictKind::TextMismatch => "the engines read it differently",
+        ConflictKind::StructuralMismatch => "one engine found text the other did not",
+    }
+}
+
+/// How much of the document a second engine checked, as `checked of total`.
+///
+/// A page nobody checked and a page that passed are different things, and the
+/// ceiling on verification means a long scan can be partly one and partly the
+/// other. Reporting only the conflicts would leave the unchecked pages looking
+/// as good as the verified ones.
+fn verification(document: &Document) -> String {
+    let verified = document
+        .pages
+        .iter()
+        .filter(|page| page.provenance.verified)
+        .count();
+
+    format!("{verified}/{}", document.pages.len())
 }
 
 /// Whether two neighbouring blocks belong to the same construct, and so must
@@ -79,6 +143,8 @@ fn frontmatter(document: &Document, created_at: &str) -> String {
         out.push_str(&yaml_scalar(engine));
     }
     out.push_str("]\n");
+
+    field(&mut out, "verified", &verification(document));
 
     field(
         &mut out,
@@ -381,7 +447,7 @@ pub fn slug(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{DocMeta, EngineId, Page, PageProvenance, SourceRef};
+    use crate::ir::{Conflict, DocMeta, EngineId, Page, PageProvenance, SourceRef, Variant};
     use comrak::nodes::NodeValue;
     use comrak::{Arena, Options, parse_document};
     use std::path::PathBuf;
@@ -413,6 +479,22 @@ mod tests {
             }],
             meta: DocMeta::default(),
             conflicts: Vec::new(),
+        }
+    }
+
+    fn disagreement(kind: ConflictKind, readings: &[(&str, &str)]) -> Conflict {
+        Conflict {
+            page: 0,
+            bbox: None,
+            kind,
+            variants: readings
+                .iter()
+                .map(|(engine, text)| Variant {
+                    engine: EngineId::from(*engine),
+                    text: (*text).to_owned(),
+                })
+                .collect(),
+            resolved: None,
         }
     }
 
@@ -569,6 +651,132 @@ mod tests {
         assert!(markdown.contains(&format!("created_at: \"{CREATED_AT}\"")));
         assert!(markdown.contains("engines: [pdfium]"));
         assert!(markdown.contains("conflict_count: 0"));
+    }
+
+    // ── Conflicts ────────────────────────────────────────────────────────────
+
+    fn with_conflicts(conflicts: Vec<Conflict>) -> Document {
+        let mut doc = document(vec![block(BlockKind::Paragraph, "Body")]);
+        doc.conflicts = conflicts;
+        doc
+    }
+
+    #[test]
+    fn nothing_is_written_when_the_engines_agreed() {
+        let markdown = rendered(vec![block(BlockKind::Paragraph, "Body")]);
+
+        assert!(!markdown.contains("## Conflicts"));
+    }
+
+    /// A disagreement that is not in the artifact is a disagreement nobody
+    /// sees, and the artifact is what gets indexed and trusted.
+    #[test]
+    fn a_disagreement_is_written_into_the_document() {
+        let doc = with_conflicts(vec![disagreement(
+            ConflictKind::TextMismatch,
+            &[("vision", "Revenue increased by 13%"), ("ocr", "Revenue increased by 12%")],
+        )]);
+
+        let markdown = markdown(&doc, CREATED_AT);
+
+        assert!(markdown.contains("conflict_count: 1"));
+        assert!(markdown.contains("## Conflicts"), "{markdown}");
+        assert!(markdown.contains("Page 1: the engines read it differently."));
+        // Both readings, verbatim.
+        assert!(markdown.contains("Revenue increased by 13%"));
+        assert!(markdown.contains("Revenue increased by 12%"));
+        assert!(markdown.contains("vision"));
+        assert!(markdown.contains("ocr"));
+    }
+
+    #[test]
+    fn a_dropped_region_is_described_as_one() {
+        let doc = with_conflicts(vec![disagreement(
+            ConflictKind::StructuralMismatch,
+            &[("ocr", "Signature")],
+        )]);
+
+        let markdown = markdown(&doc, CREATED_AT);
+        assert!(
+            markdown.contains("Page 1: one engine found text the other did not."),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn conflicts_are_numbered_from_one() {
+        let mut second = disagreement(ConflictKind::TextMismatch, &[("a", "x"), ("b", "y")]);
+        second.page = 2;
+        let doc = with_conflicts(vec![
+            disagreement(ConflictKind::TextMismatch, &[("a", "x"), ("b", "y")]),
+            second,
+        ]);
+
+        let markdown = markdown(&doc, CREATED_AT);
+
+        assert!(markdown.contains("Page 1:"), "{markdown}");
+        assert!(markdown.contains("Page 3:"), "{markdown}");
+    }
+
+    /// The conflict report carries extracted text, which was never meant to be
+    /// Markdown. Text that escaped the report would become structure in a
+    /// document whose whole purpose is that it does not.
+    #[test]
+    fn extracted_text_cannot_break_out_of_the_conflict_report() {
+        let doc = with_conflicts(vec![disagreement(
+            ConflictKind::TextMismatch,
+            &[
+                ("vision", "# not a heading\n```\nstill inside"),
+                ("ocr", "ordinary"),
+            ],
+        )]);
+
+        let parsed = reparse(&markdown(&doc, CREATED_AT));
+
+        // The report's own heading and nothing else: the extracted `#` did not
+        // become one.
+        assert_eq!(parsed.headings, vec![(2, "Conflicts".to_owned())]);
+        assert!(parsed.paragraphs.contains(&"Body".to_owned()));
+        // And the injected text stayed inside the block that holds it.
+        assert!(
+            !parsed
+                .paragraphs
+                .iter()
+                .any(|paragraph| paragraph.contains("not a heading")),
+            "paragraphs: {:?}",
+            parsed.paragraphs
+        );
+    }
+
+    // ── Verification ─────────────────────────────────────────────────────────
+
+    /// A page nobody checked and a page that passed are different things, and
+    /// the ceiling means a long scan can be partly one and partly the other.
+    #[test]
+    fn the_front_matter_says_how_much_was_checked() {
+        assert!(rendered(vec![block(BlockKind::Paragraph, "x")]).contains("verified: 0/1"));
+
+        let mut doc = document(vec![block(BlockKind::Paragraph, "x")]);
+        doc.pages[0].provenance.verified = true;
+        assert!(markdown(&doc, CREATED_AT).contains("verified: 1/1"));
+    }
+
+    #[test]
+    fn a_partly_checked_document_says_so() {
+        let mut doc = document(vec![block(BlockKind::Paragraph, "x")]);
+        doc.pages[0].provenance.verified = true;
+        doc.pages.push(Page {
+            index: 1,
+            size: None,
+            blocks: vec![block(BlockKind::Paragraph, "y")],
+            provenance: PageProvenance {
+                primary: EngineId::from("pdfium"),
+                engines: vec![EngineId::from("pdfium")],
+                verified: false,
+            },
+        });
+
+        assert!(markdown(&doc, CREATED_AT).contains("verified: 1/2"));
     }
 
     #[test]
