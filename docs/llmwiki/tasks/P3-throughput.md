@@ -1,10 +1,10 @@
 # Task: throughput and resource use
 
 **Goal:** a knowledge base of real size is bounded by the machine rather than by
-the design.
+the design, and the bound is one the person with the machine can set.
 
-Two of these are done. The third was found by measuring the first two, and is
-the largest of them.
+All three are done. The third was found by measuring the first two, and
+measuring the third is what turned up the largest cost of all.
 
 ## Done
 
@@ -22,17 +22,36 @@ the largest of them.
 parallel is byte-identical to the same document read one page at a time. Both
 have tests; the manifest one was confirmed to fail without the fix.
 
-## Open
+### Step 3 — Pages arrive one at a time
 
-### Step 3 — Pages are rendered and held all at once
+- [x] `PageSource`: a page is produced when it is asked for and released when
+      the work on it is done
+- [x] A PDF reopens per page; an image is the one page it is
+- [x] Measured: 32 pages, one pipeline, **691 MB → 439 MB** in the same time
 
-- [ ] `page_images` renders every page of a PDF up front and returns them in a
-      `Vec`
-- [ ] `PageImage` holds raw RGBA8, `width * height * 4`
-- [ ] Make pages arrive one at a time, on demand, and be released after use
+**Verify:** the resident set no longer grows with the page count.
 
-**Verify:** a scan of several hundred pages completes without the resident set
-growing with the page count.
+> **Measured, and the measurement corrected the diagnosis.** At 32 pages with
+> four pipelines this looked like 39 MB, which is not what the arithmetic said.
+> One pipeline showed the real 252 MB; four ONNX sessions had been masking it.
+
+## Done, and the cost it turned out to have
+
+### Step 4 — The pipeline count is a setting
+
+- [x] `max_ocr_pipelines` in the configuration file, `--max-ocr-pipelines`, and
+      `DOCFUSION_OCR_PIPELINES`
+- [x] Below one is one: zero is a mistake, not a setting
+- [x] Measured on eight pages: 71 s at one, 41 s at two, 27 s at four
+
+**Verify:** the speed and the memory are both visible, and the choice between
+them belongs to whoever is paying for the memory.
+
+> **The dominant term, which is not the one this task was written about.** Each
+> pipeline costs about **250 MB** resident — not the 130 MB its weights measure,
+> because a session's working memory scales with the page it reads. Four of them
+> take 1.2 GB on a 32-page document, against 250 MB for the pages themselves.
+> Settling the page memory only made the pipeline cost visible.
 
 > **The arithmetic, because it is the whole argument.** A page rendered at the
 > documented 200 DPI is 1654×2339 pixels; as RGBA8 that is **15.5 MB**. Holding

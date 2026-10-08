@@ -26,6 +26,8 @@ pub struct Config {
     /// One of `off`, `doubt`, `fields` or `always`.
     pub verify: Option<String>,
     pub max_verify_pages: Option<u32>,
+    /// How many pages may be read at once. Each costs about 250 MB.
+    pub max_ocr_pipelines: Option<usize>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -117,6 +119,7 @@ mod tests {
             api_key = "sk-example"
             verify = "fields"
             max_verify_pages = 7
+            max_ocr_pipelines = 2
             "#,
         )
         .expect("valid");
@@ -126,6 +129,7 @@ mod tests {
         assert_eq!(config.api_key.as_deref(), Some("sk-example"));
         assert_eq!(config.verify.as_deref(), Some("fields"));
         assert_eq!(config.max_verify_pages, Some(7));
+        assert_eq!(config.max_ocr_pipelines, Some(2));
     }
 
     /// The failure that has to be loud. A misspelt key silently ignored means

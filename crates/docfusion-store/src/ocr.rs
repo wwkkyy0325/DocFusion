@@ -53,11 +53,15 @@ pub struct RapidOcrBackend {
     source: Source,
 }
 
-/// The most pipelines to keep.
+/// The most pipelines to keep unless something says otherwise.
 ///
-/// Memory is the binding constraint, not cores: each is about 130 MB resident,
-/// and a machine with sixteen cores does not want sixteen copies of the weights
-/// so that it can read a thousand-page scan four times faster.
+/// Memory is the binding constraint, not cores, and more sharply than the model
+/// files suggest: a loaded pipeline costs about **250 MB** resident, not the
+/// 130 MB its weights measure, because the session's working memory scales with
+/// the page it is reading. Measured over 32 pages: one pipeline peaks at 439 MB
+/// and takes 263 s, four peak at 1193 MB and take 76 s. That is 3.5× the speed
+/// for three quarters of a gigabyte, which is a good trade on most machines and
+/// a bad one on a small one — hence `with_pipelines`.
 const MAX_PIPELINES: usize = 4;
 
 /// How many pages this machine will read at once.
@@ -87,6 +91,22 @@ impl RapidOcrBackend {
     /// Reads pages using weights the caller located itself.
     pub fn from_config(config: RapidOcrConfig) -> Self {
         Self::with_source(Source::Config(Box::new(config)))
+    }
+
+    /// Sets how many pages may be read at once.
+    ///
+    /// The memory dial as much as the speed one, and the only one there is:
+    /// everything else here is measured in kilobytes. See `MAX_PIPELINES` for
+    /// the numbers. Below one is one, because a pipeline count of zero is not a
+    /// setting, it is a mistake that would read nothing.
+    pub fn with_pipelines(mut self, count: usize) -> Self {
+        let count = count.max(1);
+        self.runners.truncate(count);
+        self.runners.resize_with(count, || Mutex::new(None));
+
+        // Whatever was built beyond the new count is dropped with the vector
+        // entries above, which releases those pipelines.
+        self
     }
 
     fn with_source(source: Source) -> Self {
@@ -618,6 +638,7 @@ mod tests {
     #[test]
     #[ignore = "loads the embedded weights and takes seconds"]
     fn reads_text_from_a_rendered_page() {
+        use docfusion_core::extract::PageSource;
         use docfusion_core::extract::fixtures;
 
         let backend = RapidOcrBackend::bundled();
@@ -625,9 +646,9 @@ mod tests {
         // Large type, so that what is under test is the pipeline rather than
         // the resolution a page happens to be rendered at.
         let pdf = fixtures::pdf(&[(48.0, "Hello world")]);
-        let page = docfusion_core::extract::pdf::render_pages(&pdf, 200.0)
-            .expect("render")
-            .remove(0);
+        let pages = docfusion_core::extract::pdf::RenderedPages::open(&pdf, 200.0)
+            .expect("open");
+        let page = pages.page(0).expect("render");
 
         let blocks = backend
             .recognize(&PageRequest { image: &page, page: 0 })

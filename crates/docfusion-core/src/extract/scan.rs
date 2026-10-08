@@ -16,7 +16,7 @@ use crate::mime::Container;
 use crate::verify::{self, VerifyPolicy};
 
 use super::pdf;
-use super::{ExtractError, Extractor, Fit, Input, InputProbe};
+use super::{ExtractError, Extractor, Fit, Input, InputProbe, OnePage, PageSource};
 
 const ENGINE_ID: &str = "scan";
 const ENGINE_VERSION: &str = "1.0.0";
@@ -61,12 +61,17 @@ impl ScanExtractor {
         self.ocr.is_some() || self.vision.is_some()
     }
 
-    fn page_images(&self, input: &Input<'_>) -> Result<Vec<PageImage>, ExtractError> {
+    /// Where this input's pages come from, one at a time.
+    ///
+    /// A vector of decoded pages would be simpler, and is what this used to be.
+    /// It is also fifteen megabytes a page for an A4 at 200 DPI, all held at
+    /// once, which is fifteen gigabytes for a scan of a thousand pages.
+    fn page_source<'a>(&self, input: &Input<'a>) -> Result<Box<dyn PageSource + 'a>, ExtractError> {
         if input.probe.container.is_image() {
-            return Ok(vec![PageImage::decode(input.bytes)?]);
+            return Ok(Box::new(OnePage::new(PageImage::decode(input.bytes)?)));
         }
 
-        pdf::render_pages(input.bytes, self.dpi)
+        Ok(Box::new(pdf::RenderedPages::open(input.bytes, self.dpi)?))
     }
 
     /// Which pages a second engine should check, in page order.
@@ -76,7 +81,7 @@ impl ScanExtractor {
     /// make the choice depend on which page happened to finish first, and an
     /// output that differs between runs over the same input is an output nobody
     /// can diff.
-    fn worth_checking(&self, readings: &[Vec<Block>]) -> Vec<usize> {
+    fn worth_checking(&self, readings: &[Reading]) -> Vec<usize> {
         if self.verifier().is_none() {
             return Vec::new();
         }
@@ -84,7 +89,7 @@ impl ScanExtractor {
         readings
             .iter()
             .enumerate()
-            .filter(|(_, blocks)| self.policy.should_verify(blocks))
+            .filter(|(_, reading)| self.policy.should_verify(&reading.blocks))
             .map(|(index, _)| index)
             .take(self.policy.max_verify_pages as usize)
             .collect()
@@ -190,6 +195,15 @@ fn side_by_side<T: Sync, R: Send>(
 /// of any one engine.
 const THREADS: usize = 4;
 
+/// One page's reading, and what is known about it so far.
+///
+/// The size is taken while the page is in hand rather than asked for again
+/// afterwards, because by then it has been released.
+struct Reading {
+    blocks: Vec<Block>,
+    size: Size,
+}
+
 /// Turns a backend failure into this engine's failure.
 ///
 /// The engine is named rather than left to a generic one, because the message
@@ -237,60 +251,72 @@ impl Extractor for ScanExtractor {
     }
 
     fn extract(&self, input: &Input<'_>) -> Result<Document, ExtractError> {
-        let images = self.page_images(input)?;
-        if images.is_empty() {
+        let source = self.page_source(input)?;
+        if source.is_empty() {
             return Err(ExtractError::unsupported("the document has no pages"));
         }
 
+        let indexes: Vec<usize> = (0..source.len()).collect();
+
         // Every page is read first, several at a time, and then the pages worth
-        // checking are checked — also several at a time.
+        // checking are checked — also several at a time. A page is rendered when
+        // its turn comes and released when the work on it is done, so what is
+        // held is the pages in flight rather than the pages in the document.
         //
         // Two passes rather than one, for the determinism reason above. A page
         // whose check fails fails the document, which is the same answer the
         // one-page-at-a-time version gave: a check that did not happen must not
         // look like a check that passed.
-        let readings = side_by_side(&images, |image, index| {
-            self.primary(&PageRequest {
-                image,
-                page: index as u32,
+        let readings = side_by_side(&indexes, |index, _| {
+            let image = source.page(*index)?;
+            let blocks = self.primary(&PageRequest {
+                image: &image,
+                page: *index as u32,
+            })?;
+
+            Ok(Reading {
+                // Pixels, not points: this engine's native unit is the rendered
+                // image, and a backend reports geometry in it.
+                size: Size {
+                    w: image.width as f32,
+                    h: image.height as f32,
+                },
+                blocks,
             })
         })?;
 
         let worth = self.worth_checking(&readings);
         let checks = side_by_side(&worth, |index, _| {
+            let image = source.page(*index)?;
             let verifier = self
                 .verifier()
                 .expect("a page is worth checking only when there is a verifier");
+
             verifier
                 .recognize(&PageRequest {
-                    image: &images[*index],
+                    image: &image,
                     page: *index as u32,
                 })
                 .map_err(failed)
         })?;
 
-        let mut checked: Vec<Option<Vec<Block>>> = (0..images.len()).map(|_| None).collect();
+        let mut checked: Vec<Option<Vec<Block>>> = (0..source.len()).map(|_| None).collect();
         for (position, blocks) in checks.into_iter().enumerate() {
             checked[worth[position]] = Some(blocks);
         }
 
-        let mut pages = Vec::with_capacity(images.len());
+        let mut pages = Vec::with_capacity(source.len());
         let mut conflicts: Vec<Conflict> = Vec::new();
 
-        for (index, blocks) in readings.into_iter().enumerate() {
+        for (index, reading) in readings.into_iter().enumerate() {
             if let Some(second) = &checked[index] {
-                conflicts.extend(verify::compare(index as u32, &blocks, second));
+                conflicts.extend(verify::compare(index as u32, &reading.blocks, second));
             }
 
             pages.push(Page {
                 index: index as u32,
-                // Pixels, not points: this engine's native unit is the rendered
-                // image, and a backend reports geometry in it.
-                size: Some(Size {
-                    w: images[index].width as f32,
-                    h: images[index].height as f32,
-                }),
-                blocks,
+                size: Some(reading.size),
+                blocks: reading.blocks,
                 provenance: PageProvenance {
                     primary: self.id(),
                     engines: self.backend_ids(),

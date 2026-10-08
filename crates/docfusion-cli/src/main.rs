@@ -76,6 +76,11 @@ struct Cli {
     #[arg(long, global = true, env = "DOCFUSION_MAX_VERIFY_PAGES")]
     max_verify_pages: Option<u32>,
 
+    /// How many pages may be read at once. Each costs about 250 MB and buys
+    /// speed only on documents with more than one page. Default: 4.
+    #[arg(long, global = true, env = "DOCFUSION_OCR_PIPELINES")]
+    max_ocr_pipelines: Option<usize>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -142,6 +147,7 @@ impl Cli {
             .or(config.api_key)
             .filter(|key| !key.trim().is_empty());
         self.max_verify_pages = self.max_verify_pages.or(config.max_verify_pages);
+        self.max_ocr_pipelines = self.max_ocr_pipelines.or(config.max_ocr_pipelines);
 
         if self.verify.is_none()
             && let Some(name) = config.verify.as_deref()
@@ -534,9 +540,13 @@ fn engines(cli: &Cli, policy: VerifyPolicy) -> Result<Vec<Box<dyn Extractor>>, C
     // actually needs reading. It is what makes a scan readable with no setup:
     // the weights are in the binary, so there is nothing to configure and
     // nothing to download.
+    let ocr = match cli.max_ocr_pipelines {
+        Some(count) => RapidOcrBackend::bundled().with_pipelines(count),
+        None => RapidOcrBackend::bundled(),
+    };
+
     engines.push(Box::new(
-        ScanExtractor::new(Some(Box::new(RapidOcrBackend::bundled())), vision(cli)?)
-            .with_policy(policy),
+        ScanExtractor::new(Some(Box::new(ocr)), vision(cli)?).with_policy(policy),
     ));
 
     Ok(engines)
@@ -609,7 +619,7 @@ fn schema() -> Value {
         "config": {
             "path": config::path().display().to_string(),
             "format": "TOML; a misspelt key is an error rather than a setting quietly ignored",
-            "keys": ["root", "endpoint", "model", "api_key", "verify", "max_verify_pages"],
+            "keys": ["root", "endpoint", "model", "api_key", "verify", "max_verify_pages", "max_ocr_pipelines"],
             "precedence": "flag, then environment variable, then this file, then the built-in default",
             "override": "DOCFUSION_CONFIG"
         },

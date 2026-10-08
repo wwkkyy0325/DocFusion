@@ -4,6 +4,35 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Pages are rendered when they are wanted
+
+**What:** `PageSource` replaces the vector of decoded pages. A page is rendered
+when its turn comes and released when the work on it is done. Measured over 32
+pages with one pipeline: **691 MB → 439 MB**, in the same 265 seconds.
+
+**The measurement corrected the diagnosis that prompted it.** At 32 pages with
+four pipelines the change appeared to save 39 MB, which is not what the
+arithmetic predicted. Isolating with a single pipeline showed the real 252 MB —
+it had been masked, because four ONNX sessions cost about **750 MB** and
+everything else is a rounding error beside them.
+
+**Each pipeline costs about 250 MB resident, not the 130 MB its weights
+measure.** A session's working memory scales with the page it is reading. Four
+of them were taking 1.2 GB on a 32-page document while the pages themselves took
+250 MB — the thing I set out to fix was the smaller half.
+
+**So the pipeline count is now a setting**, `max_ocr_pipelines`, because a
+3.5× speed-up for three quarters of a gigabyte is a good trade on one machine
+and a bad one on another, and that is a decision the person with the machine
+should get to make. Measured on the same eight pages: **71 s at one, 41 s at
+two, 27 s at four.** Below one is one, since zero would read nothing.
+
+**The unbounded part is gone.** Held pages scaled with the page count — fifteen
+megabytes each — so a thousand-page scan accumulated towards eight gigabytes on
+top of everything else. That term is now bounded by the pages in flight.
+
+---
+
 ## 2026-10-08 — Reading a document's pages at the same time
 
 **What:** pages are read concurrently, and the manifest survives two runs

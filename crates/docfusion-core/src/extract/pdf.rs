@@ -11,6 +11,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use std::sync::Arc;
+
 use pdfium_bundled::bind_bundled;
 use pdfium_bundled::pdfium_render::prelude::{PdfPageText, PdfRenderConfig, Pdfium};
 
@@ -19,7 +21,7 @@ use crate::ir::{
     Block, BlockKind, DocMeta, Document, EngineId, EngineStamp, Page, PageProvenance, Rect, Size,
 };
 
-use super::{ExtractError, Extractor, Fit, Input, InputProbe};
+use super::{ExtractError, Extractor, Fit, Input, InputProbe, PageSource};
 use crate::mime::Container;
 
 const ENGINE_ID: &str = "pdfium";
@@ -163,34 +165,75 @@ impl Extractor for PdfTextLayer {
 /// images and go to an OCR or vision backend. Rendering happens at a chosen
 /// resolution rather than the PDF's own units, because recognition quality
 /// depends on how many pixels each character covers.
-pub fn render_pages(bytes: &[u8], dpi: f32) -> Result<Vec<PageImage>, ExtractError> {
-    with_engine(|pdfium| {
-        let pdf = pdfium
-            .load_pdf_from_byte_slice(bytes, None)
-            .map_err(|error| {
-                ExtractError::failed(ENGINE_ID, format!("could not open the PDF: {error}"))
+/// The pages of a PDF, rendered when they are asked for.
+///
+/// The document is reopened for every page. That looks wasteful and is not: a
+/// page costs seconds to recognise and milliseconds to open, while holding the
+/// document open across calls would mean holding the PDFium lock across them
+/// too, which would leave rendering serialised against everything else for the
+/// length of a document rather than the length of a page.
+pub struct RenderedPages<'a> {
+    bytes: &'a [u8],
+    dpi: f32,
+    count: usize,
+}
+
+impl<'a> RenderedPages<'a> {
+    /// Opens the document far enough to know how many pages it has.
+    pub fn open(bytes: &'a [u8], dpi: f32) -> Result<Self, ExtractError> {
+        // PDFium's page index is a signed 32-bit integer; nothing a document
+        // can be is anywhere near that.
+        let count = with_engine(|pdfium| Ok(open(pdfium, bytes)?.pages().len() as usize))?;
+
+        Ok(Self { bytes, dpi, count })
+    }
+}
+
+impl PageSource for RenderedPages<'_> {
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    fn page(&self, index: usize) -> Result<Arc<PageImage>, ExtractError> {
+        with_engine(|pdfium| {
+            let pdf = open(pdfium, self.bytes)?;
+
+            let reachable = i32::try_from(index).map_err(|_| {
+                ExtractError::unsupported(format!("this document has no page {}", index + 1))
+            })?;
+            let page = pdf.pages().get(reachable).map_err(|error| {
+                ExtractError::failed(
+                    ENGINE_ID,
+                    format!("could not reach page {}: {error}", index + 1),
+                )
             })?;
 
-        // PDF units are points: 72 to the inch. The pixel format is left at
-        // PDFium's own BGRA; `as_rgba_bytes` normalises it, and there is no
-        // RGBA format to ask for in the first place.
-        let config = PdfRenderConfig::new().scale_page_by_factor(dpi / 72.0);
-
-        let mut images = Vec::new();
-        for page in pdf.pages().iter() {
+            // PDF units are points: 72 to the inch. The pixel format is left at
+            // PDFium's own BGRA; `as_rgba_bytes` normalises it, and there is no
+            // RGBA format to ask for in the first place.
+            let config = PdfRenderConfig::new().scale_page_by_factor(self.dpi / 72.0);
             let bitmap = page.render_with_config(&config).map_err(|error| {
                 ExtractError::failed(ENGINE_ID, format!("could not render a page: {error}"))
             })?;
 
-            images.push(PageImage {
+            Ok(Arc::new(PageImage {
                 width: bitmap.width() as u32,
                 height: bitmap.height() as u32,
                 pixels: bitmap.as_rgba_bytes(),
-            });
-        }
+            }))
+        })
+    }
+}
 
-        Ok(images)
-    })
+/// Opens a document. Both references carry the same lifetime because PDFium
+/// borrows the bytes for as long as the document lives.
+fn open<'a>(
+    pdfium: &'a Pdfium,
+    bytes: &'a [u8],
+) -> Result<pdfium_bundled::pdfium_render::prelude::PdfDocument<'a>, ExtractError> {
+    pdfium
+        .load_pdf_from_byte_slice(bytes, None)
+        .map_err(|error| ExtractError::failed(ENGINE_ID, format!("could not open the PDF: {error}")))
 }
 
 /// One text fragment as PDFium reports it.
@@ -656,22 +699,31 @@ mod tests {
         assert_eq!(paragraph, "first line second line");
     }
 
+    /// Every page of a fixture, rendered.
+    ///
+    /// The pipeline asks for one page at a time; these tests want them all, and
+    /// saying so once beats repeating the loop.
+    fn render_all(bytes: &[u8], dpi: f32) -> Result<Vec<Arc<PageImage>>, ExtractError> {
+        let pages = RenderedPages::open(bytes, dpi)?;
+        (0..pages.len()).map(|index| pages.page(index)).collect()
+    }
+
     #[test]
     fn renders_a_page_to_pixels_at_the_requested_resolution() {
         let bytes = fixture(&[(12.0, "Hello")]);
 
         // The fixture page is 612×792 points, and points are 72 to the inch.
-        let at_72_dpi = render_pages(&bytes, 72.0).expect("render");
+        let at_72_dpi = render_all(&bytes, 72.0).expect("render");
         assert_eq!(at_72_dpi.len(), 1);
         assert_eq!((at_72_dpi[0].width, at_72_dpi[0].height), (612, 792));
 
-        let at_144_dpi = render_pages(&bytes, 144.0).expect("render");
+        let at_144_dpi = render_all(&bytes, 144.0).expect("render");
         assert_eq!((at_144_dpi[0].width, at_144_dpi[0].height), (1224, 1584));
     }
 
     #[test]
     fn rendered_pixels_are_rgba() {
-        let images = render_pages(&fixture(&[(12.0, "Hello")]), 72.0).expect("render");
+        let images = render_all(&fixture(&[(12.0, "Hello")]), 72.0).expect("render");
         let image = &images[0];
 
         assert_eq!(
@@ -691,7 +743,7 @@ mod tests {
             extract(&bytes),
             Err(ExtractError::Unsupported { .. })
         ));
-        assert_eq!(render_pages(&bytes, 72.0).expect("render").len(), 1);
+        assert_eq!(render_all(&bytes, 72.0).expect("render").len(), 1);
     }
 
     #[test]

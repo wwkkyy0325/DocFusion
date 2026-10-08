@@ -202,10 +202,30 @@ Resource use, measured on the same machine:
 | a command that reads nothing (`list`) | 2 MB |
 | reading a small page | 131 MB |
 | reading a 2754×3939 page | 392 MB |
+| a 32-page document, one pipeline | 439 MB |
+| a 32-page document, default settings | 1.2 GB |
 | process start-up | 41 ms |
 
-Reading is single-threaded, at roughly 15 seconds per page on CPU. A
-thousand-page scan is hours, not minutes.
+**Most of that is the number of pages read at once**, not the document. Pages
+are read in parallel and each reader holds a loaded model; each costs about
+250 MB, so four of them dominate everything else. Reading is otherwise about
+three seconds a page on CPU, and eight pages take 71 s at one pipeline, 41 s at
+two and 27 s at four.
+
+If memory matters more than speed, turn it down — in the configuration file or
+on one run:
+
+```bash
+docfusion --max-ocr-pipelines 1 --root kb add scan.pdf
+```
+
+```toml
+# config.toml
+max_ocr_pipelines = 2
+```
+
+Below one is one: zero would read nothing, so it is treated as a mistake rather
+than obeyed.
 
 ## 9. Verification
 

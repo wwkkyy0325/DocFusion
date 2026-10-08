@@ -20,8 +20,65 @@ pub mod scan;
 pub mod text;
 pub mod xlsx;
 
+use std::sync::Arc;
+
+use crate::image::PageImage;
 use crate::ir::{Document, EngineId, EngineStamp, SourceRef};
 use crate::mime::{Container, sniff};
+
+/// The pages of an input, produced when they are asked for.
+///
+/// On demand rather than all at once, because a rendered page is raw RGBA8 —
+/// fifteen megabytes for an A4 at 200 DPI. Returning every page of a PDF in one
+/// vector needs fifteen gigabytes for a thousand-page scan, before a single
+/// page has been read. This hands out one page at a time, in an `Arc` so that
+/// whoever is working on it keeps it alive and it is released the moment they
+/// are done.
+///
+/// The order is the document's, and an index means the same page every time.
+pub trait PageSource: Send + Sync {
+    fn len(&self) -> usize;
+
+    /// Whether there is nothing to read.
+    ///
+    /// Worth saying explicitly, because a page source with no pages is the
+    /// difference between a document that failed and one that was empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn page(&self, index: usize) -> Result<Arc<PageImage>, ExtractError>;
+}
+
+/// An input that is already a single page.
+pub struct OnePage(Arc<PageImage>);
+
+impl OnePage {
+    pub fn new(image: PageImage) -> Self {
+        Self(Arc::new(image))
+    }
+}
+
+impl PageSource for OnePage {
+    fn len(&self) -> usize {
+        1
+    }
+
+    fn is_empty(&self) -> bool {
+        false
+    }
+
+    fn page(&self, index: usize) -> Result<Arc<PageImage>, ExtractError> {
+        if index != 0 {
+            return Err(ExtractError::unsupported(format!(
+                "this input is one page, and page {} was asked for",
+                index + 1
+            )));
+        }
+
+        Ok(Arc::clone(&self.0))
+    }
+}
 
 /// How well an engine claims to fit an input.
 ///
