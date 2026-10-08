@@ -131,10 +131,19 @@ fn block_markdown(out: &mut String, block: &Block) {
             out.push_str(&escape(&block.text));
             out.push('\n');
         }
-        BlockKind::ListItem => {
-            out.push_str("- ");
-            out.push_str(&escape(&block.text));
+        BlockKind::ListItem => list_item_markdown(out, block, 0),
+        BlockKind::Quote => {
+            for (index, line) in block.text.lines().enumerate() {
+                if index > 0 {
+                    out.push('\n');
+                }
+                out.push_str("> ");
+                out.push_str(&escape_line(line));
+            }
             out.push('\n');
+            for child in &block.children {
+                block_markdown(out, child);
+            }
         }
         BlockKind::Table => table_markdown(out, block),
         BlockKind::Code => {
@@ -157,6 +166,23 @@ fn block_markdown(out: &mut String, block: &Block) {
         }
         // Rendered by the table that owns them.
         BlockKind::TableRow | BlockKind::TableCell => {}
+    }
+}
+
+/// Renders a list item and, indented beneath it, its sub-items.
+///
+/// Nesting is carried by the IR rather than by a depth field, so indentation is
+/// simply how deep the recursion is.
+fn list_item_markdown(out: &mut String, item: &Block, depth: usize) {
+    for _ in 0..depth {
+        out.push_str("  ");
+    }
+    out.push_str("- ");
+    out.push_str(&escape(&item.text));
+    out.push('\n');
+
+    for child in &item.children {
+        list_item_markdown(out, child, depth + 1);
     }
 }
 

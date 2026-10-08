@@ -4,6 +4,7 @@
 //! so any capability that exists but is not reachable from here is a capability
 //! an agent cannot use.
 
+mod bench;
 mod output;
 
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use docfusion_core::extract::pdf::PdfTextLayer;
 use docfusion_core::extract::{
-    ExtractError, Router, docx::DocxParser, pptx::PptxParser, text::TextPassthrough,
+    ExtractError, Extractor, Router, docx::DocxParser, pptx::PptxParser, text::TextPassthrough,
     xlsx::XlsxParser,
 };
 use docfusion_store::manifest::StoreError;
@@ -75,6 +76,17 @@ enum Command {
         fix: bool,
     },
 
+    /// Score engines against a corpus of reference documents.
+    Bench {
+        /// Corpus directory: one subdirectory per case, holding `expected.md`
+        /// beside the document it should come from.
+        #[arg(long)]
+        set: PathBuf,
+        /// Run only this engine. Default: the whole router.
+        #[arg(long)]
+        engine: Option<String>,
+    },
+
     /// Publish the output contract: commands, fields and exit codes.
     Schema,
 }
@@ -110,6 +122,7 @@ fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
         Command::Show { document } => show(cli, reporter, document),
         Command::List { status } => list(cli, reporter, status.as_deref()),
         Command::Reconcile { fix } => reconcile(cli, reporter, *fix),
+        Command::Bench { set, engine } => run_bench(reporter, set, engine.as_deref()),
         Command::Schema => {
             println!("{}", schema());
             Ok(OK)
@@ -289,15 +302,64 @@ fn open(root: &Path) -> Result<Pipeline, CliError> {
     Ok(Pipeline::open(root, router())?)
 }
 
+/// Measures engines against a corpus. Reads only: nothing is written and the
+/// knowledge base is not involved.
+fn run_bench(reporter: &Reporter, set: &Path, engine: Option<&str>) -> Result<u8, CliError> {
+    let cases = bench::load(set)?;
+    if cases.is_empty() {
+        return Err(CliError::NotFound(format!(
+            "no cases in {}; a corpus holds one subdirectory per case, \
+             each with `expected.md` beside the document to read",
+            set.display()
+        )));
+    }
+
+    let router = router_for(engine)?;
+    let report = bench::run(&cases, &router, engine.unwrap_or("router"));
+    bench::report(reporter, &report);
+
+    Ok(OK)
+}
+
 /// Every engine the tool knows about, best fit first.
-fn router() -> Router {
-    Router::new(vec![
+fn engines() -> Vec<Box<dyn Extractor>> {
+    vec![
         Box::new(PdfTextLayer::new()),
         Box::new(DocxParser),
         Box::new(XlsxParser),
         Box::new(PptxParser),
         Box::new(TextPassthrough),
-    ])
+    ]
+}
+
+fn router() -> Router {
+    Router::new(engines())
+}
+
+/// A router holding one named engine, or all of them.
+///
+/// Selecting a single engine is what makes a comparison meaningful: with the
+/// whole router in place, each case is handled by whichever engine happens to
+/// fit, and the run measures the router rather than the engine.
+fn router_for(engine: Option<&str>) -> Result<Router, CliError> {
+    let Some(wanted) = engine else {
+        return Ok(router());
+    };
+
+    let selected: Vec<Box<dyn Extractor>> = engines()
+        .into_iter()
+        .filter(|candidate| candidate.id().as_str() == wanted)
+        .collect();
+
+    if selected.is_empty() {
+        let known: Vec<String> = engines().iter().map(|c| c.id().to_string()).collect();
+        return Err(CliError::NotFound(format!(
+            "no engine named `{wanted}`; there is: {}",
+            known.join(", ")
+        )));
+    }
+
+    Ok(Router::new(selected))
 }
 
 fn exit_code(error: &CliError) -> u8 {
@@ -345,6 +407,11 @@ fn schema() -> Value {
                 "emits": ["command", "drift", "relinked", "forgotten", "untracked"],
                 "note": "exits 4 when drift is found and not repaired"
             },
+            "bench": {
+                "arguments": ["--set <dir>", "--engine <id>"],
+                "emits": ["command", "case", "engine", "loss", "character_error_rate", "headings", "tables", "duration_ms", "error"],
+                "note": "reads only; one subdirectory per case, each holding `expected.md` beside the source document"
+            },
             "schema": {
                 "arguments": [],
                 "note": "prints this document"
@@ -365,9 +432,30 @@ mod tests {
             .as_object()
             .expect("commands must be an object");
 
-        for expected in ["add", "show", "list", "reconcile", "schema"] {
+        for expected in ["add", "show", "list", "reconcile", "bench", "schema"] {
             assert!(commands.contains_key(expected), "missing {expected} in schema");
         }
+    }
+
+    #[test]
+    fn choosing_an_unknown_engine_names_the_ones_that_exist() {
+        let Err(error) = router_for(Some("nope")) else {
+            panic!("an unknown engine should be rejected rather than ignored");
+        };
+        let error = error.to_string();
+
+        assert!(error.contains("nope"), "{error}");
+        assert!(error.contains("pdfium"), "{error}");
+    }
+
+    #[test]
+    fn choosing_a_known_engine_selects_only_it() {
+        let router = router_for(Some("pdfium")).unwrap();
+        let pdf = docfusion_core::extract::InputProbe::new(b"%PDF-1.7", None, 8);
+        let text = docfusion_core::extract::InputProbe::new(b"hello", None, 5);
+
+        assert!(router.can_handle(&pdf));
+        assert!(!router.can_handle(&text), "a filtered router holds one engine");
     }
 
     #[test]

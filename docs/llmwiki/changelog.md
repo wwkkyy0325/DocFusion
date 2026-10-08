@@ -4,6 +4,48 @@ Append-only record of meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Benchmark harness, and the bug it found first
+
+**What:** `docfusion bench --set <dir> [--engine <id>]`, scoring any engine
+against a corpus of reference documents. P1 Step 1.
+
+**Decisions and why:**
+
+- **Scored with a Markdown parser, not string comparison.** Both sides are read
+  with `comrak`, so what is compared is the structure a reader would see. The
+  components are reported separately as well as combined, because a model that
+  reads every character and loses the section headings is not the same as one
+  that reads most characters and keeps them.
+- **Structural loss is weighted above character noise.** A missing heading or a
+  table of the wrong shape is worse than a scattering of character errors,
+  because the text that survives still looks correct — which is exactly how a
+  silent failure gets believed.
+- **Heading agreement is order-sensitive.** A document whose sections are all
+  present but shuffled is not the same document, and again the text reads fine.
+  The count is the longest run still in order.
+- **A corpus is one directory per case.** Pairing by file stem cannot express a
+  Markdown source, because the source and the reference would share a name. This
+  was found by trying to write that case.
+- **Cost is omitted, not zeroed.** No configured backend has a price, and a
+  zero would read as free.
+
+**The harness paid for itself on its first run.** A document byte-identical to
+its reference scored 0.047 characters of error, which turned out to be real:
+`TextPassthrough` read Markdown line by line, so a list flattened into a
+paragraph whose leading dash was then escaped to stop it becoming a list. Notes
+went in as Markdown and came out as text that merely looked like it. Markdown is
+now parsed with `comrak`, which was already a dependency and is now a real one,
+and the same case scores zero — including nested lists, tables, quotes and code
+blocks.
+
+Two things followed from that fix: `BlockKind::Quote` joined the IR, and list
+nesting moved into `children`, so the renderer indents by recursing rather than
+by a depth field that a reader would have to reconstruct the tree from.
+
+A test caught a further mistake: list items live inside a `List` node, and
+handling `Item` alone produced no blocks at all.
+
+
 ## 2026-10-08 — Reconcile, and the end of P0
 
 **What:** `docfusion reconcile [--fix]`, exit code 4, and a schema migration that

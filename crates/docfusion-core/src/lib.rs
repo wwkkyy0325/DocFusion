@@ -6,6 +6,7 @@
 //! stays trivially testable and both the CLI and the GUI are thin shells over
 //! it.
 
+pub mod bench;
 pub mod extract;
 pub mod ir;
 pub mod mime;

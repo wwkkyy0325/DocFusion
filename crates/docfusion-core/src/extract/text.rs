@@ -4,6 +4,9 @@
 //! does not attempt to be a Markdown parser — it recognises headings and splits
 //! on blank lines, which is what carries over into the output.
 
+use comrak::nodes::NodeValue;
+use comrak::{Arena, Node, Options, parse_document};
+
 use crate::ir::{Block, BlockKind, DocMeta, Document, EngineId, Page, PageProvenance};
 use crate::mime::Container;
 
@@ -33,6 +36,17 @@ impl Extractor for TextPassthrough {
         let engine = self.id();
         let text = decode(input.bytes);
 
+        // Markdown is read as Markdown and plain text as plain text. The file
+        // name decides only *how to read text already known to be text*, which
+        // is a different question from what the file is — that was settled by
+        // sniffing the bytes. Reading prose as Markdown would turn `a *b* c`
+        // into emphasis the author never wrote.
+        let blocks = if is_markdown(input.probe.file_name.as_deref()) {
+            markdown_blocks(&text, &engine)
+        } else {
+            into_blocks(&text, &engine)
+        };
+
         Ok(Document {
             source: input.source.clone(),
             pages: vec![Page {
@@ -41,7 +55,7 @@ impl Extractor for TextPassthrough {
                 // every other format is.
                 index: 0,
                 size: None,
-                blocks: into_blocks(&text, &engine),
+                blocks,
                 provenance: PageProvenance {
                     primary: engine.clone(),
                     engines: vec![engine],
@@ -148,6 +162,172 @@ fn flush(paragraph: &mut String, blocks: &mut Vec<Block>, engine: &EngineId) {
             engine.clone(),
         ));
     }
+}
+
+fn is_markdown(file_name: Option<&str>) -> bool {
+    file_name.is_some_and(|name| {
+        let lowered = name.to_ascii_lowercase();
+        lowered.ends_with(".md") || lowered.ends_with(".markdown")
+    })
+}
+
+/// Reads Markdown into blocks.
+///
+/// Parsing rather than guessing: the line-based reader below recognises
+/// headings and paragraphs and nothing else, so a list would flatten into a
+/// paragraph whose leading dash is then escaped to stop it becoming a list.
+/// The text survives, but a note that goes in as Markdown comes out as escaped
+/// prose — a loss the benchmark measured before anyone noticed it.
+fn markdown_blocks(markdown: &str, engine: &EngineId) -> Vec<Block> {
+    let arena = Arena::new();
+    let mut options = Options::default();
+    options.extension.table = true;
+    options.extension.front_matter_delimiter = Some("---".to_owned());
+
+    let root = parse_document(&arena, markdown, &options);
+    let mut blocks = Vec::new();
+
+    for node in root.children() {
+        convert(&node, engine, &mut blocks);
+    }
+
+    blocks
+}
+
+fn convert(node: &Node<'_>, engine: &EngineId, out: &mut Vec<Block>) {
+    let kind = match node.data.borrow().value {
+        NodeValue::Heading(ref heading) => Some(BlockKind::Heading {
+            level: heading.level,
+        }),
+        NodeValue::Paragraph => Some(BlockKind::Paragraph),
+        // Items live inside a list, so the list is what has to be walked; an
+        // item is reached through it rather than on its own.
+        NodeValue::List(..) => {
+            for item in node.children() {
+                if matches!(item.data.borrow().value, NodeValue::Item(..)) {
+                    out.push(list_item(&item, engine));
+                }
+            }
+            return;
+        }
+        NodeValue::Item(..) => {
+            out.push(list_item(node, engine));
+            return;
+        }
+        NodeValue::CodeBlock(ref code) => {
+            // Code is not prose: it is emitted as written, without the
+            // whitespace normalisation a paragraph gets.
+            out.push(Block::text(
+                BlockKind::Code,
+                code.literal.trim_end(),
+                engine.clone(),
+            ));
+            return;
+        }
+        NodeValue::BlockQuote => {
+            let inner = convert_all(node, engine);
+            let text = inner
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            out.push(Block::text(BlockKind::Quote, text, engine.clone()));
+            return;
+        }
+        NodeValue::Table(..) => {
+            out.push(table(node, engine));
+            return;
+        }
+        _ => None,
+    };
+
+    if let Some(kind) = kind {
+        out.push(Block::text(kind, text_of(node), engine.clone()));
+    }
+}
+
+fn convert_all(parent: &Node<'_>, engine: &EngineId) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    for node in parent.children() {
+        convert(&node, engine, &mut blocks);
+    }
+    blocks
+}
+
+fn list_item(node: &Node<'_>, engine: &EngineId) -> Block {
+    let mut text = String::new();
+    let mut children = Vec::new();
+
+    for child in node.children() {
+        match child.data.borrow().value {
+            NodeValue::Paragraph if text.is_empty() => text = text_of(&child),
+            NodeValue::List(..) => {
+                for nested in child.children() {
+                    children.push(list_item(&nested, engine));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Block {
+        kind: BlockKind::ListItem,
+        text,
+        bbox: None,
+        confidence: None,
+        engine: engine.clone(),
+        children,
+    }
+}
+
+fn table(node: &Node<'_>, engine: &EngineId) -> Block {
+    let rows = node
+        .children()
+        .filter(|child| matches!(child.data.borrow().value, NodeValue::TableRow(..)))
+        .map(|row| Block {
+            kind: BlockKind::TableRow,
+            text: String::new(),
+            bbox: None,
+            confidence: None,
+            engine: engine.clone(),
+            children: row
+                .children()
+                .filter(|cell| matches!(cell.data.borrow().value, NodeValue::TableCell))
+                .map(|cell| Block {
+                    kind: BlockKind::TableCell,
+                    text: text_of(&cell),
+                    bbox: None,
+                    confidence: None,
+                    engine: engine.clone(),
+                    children: Vec::new(),
+                })
+                .collect(),
+        })
+        .collect();
+
+    Block {
+        kind: BlockKind::Table,
+        text: String::new(),
+        bbox: None,
+        confidence: None,
+        engine: engine.clone(),
+        children: rows,
+    }
+}
+
+/// The text of a node's descendants.
+///
+/// Concatenated as written rather than joined with spaces, because a run
+/// boundary is a formatting boundary: `**年**度报告` is one word split across
+/// two runs, and a space between them would be a gap the document does not have.
+fn text_of(node: &Node<'_>) -> String {
+    let mut text = String::new();
+    for descendant in node.descendants() {
+        if let NodeValue::Text(ref value) = descendant.data.borrow().value {
+            text.push_str(value);
+        }
+    }
+    text.trim().to_owned()
 }
 
 /// Returns the fence marker if this line opens a fenced code block.
@@ -304,6 +484,84 @@ mod tests {
     #[test]
     fn invalid_utf8_becomes_replacement_characters() {
         assert!(decode(&[0xE4, 0xBD, 0x28]).contains('\u{FFFD}'));
+    }
+
+    fn extract_named(bytes: &[u8], name: &str) -> Document {
+        let probe = crate::extract::InputProbe::new(bytes, Some(name.to_owned()), bytes.len() as u64);
+        let source = crate::ir::SourceRef {
+            path: PathBuf::from(name),
+            content_hash: "0".repeat(64),
+            mime: "text/plain".into(),
+            size: bytes.len() as u64,
+            mtime: None,
+        };
+
+        TextPassthrough
+            .extract(&Input {
+                probe: &probe,
+                bytes,
+                source: &source,
+            })
+            .unwrap()
+    }
+
+    /// A list that goes in as Markdown must come out as a list. Reading it
+    /// line by line flattens it into a paragraph whose leading dash is then
+    /// escaped to stop it becoming a list, which loses the structure.
+    #[test]
+    fn markdown_lists_stay_lists() {
+        let document = extract_named(b"- one\n- two\n", "notes.md");
+        let kinds: Vec<&BlockKind> = document.blocks().map(|block| &block.kind).collect();
+
+        assert_eq!(kinds, vec![&BlockKind::ListItem, &BlockKind::ListItem]);
+    }
+
+    #[test]
+    fn nested_markdown_lists_keep_their_structure() {
+        let document = extract_named(b"- parent\n  - child\n", "notes.md");
+        let item = document.blocks().next().unwrap();
+
+        assert_eq!(item.text, "parent");
+        assert_eq!(item.children.len(), 1);
+        assert_eq!(item.children[0].text, "child");
+    }
+
+    #[test]
+    fn markdown_tables_become_table_blocks() {
+        let document = extract_named(b"| a | b |\n| --- | --- |\n| c | d |\n", "notes.md");
+        let table = document.blocks().next().unwrap();
+
+        assert_eq!(table.kind, BlockKind::Table);
+        assert_eq!(table.children.len(), 2);
+        assert_eq!(table.children[0].children[1].text, "b");
+    }
+
+    /// Code is not prose, so it is kept as written.
+    #[test]
+    fn markdown_code_blocks_keep_their_text() {
+        let document = extract_named(b"```\nfn main() {}\n```\n", "notes.md");
+        let block = document.blocks().next().unwrap();
+
+        assert_eq!(block.kind, BlockKind::Code);
+        assert_eq!(block.text, "fn main() {}");
+    }
+
+    #[test]
+    fn markdown_block_quotes_are_kept() {
+        let document = extract_named(b"> quoted\n", "notes.md");
+        assert_eq!(document.blocks().next().unwrap().kind, BlockKind::Quote);
+    }
+
+    /// Plain text is not Markdown. Reading it as Markdown would turn `a *b* c`
+    /// into emphasis the author never wrote, and turn a line of dashes into a
+    /// list.
+    #[test]
+    fn plain_text_is_not_parsed_as_markdown() {
+        let document = extract_named(b"- not a list\n", "notes.txt");
+        assert_eq!(
+            document.blocks().next().unwrap().kind,
+            BlockKind::Paragraph
+        );
     }
 
     #[test]

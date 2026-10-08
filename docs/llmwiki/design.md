@@ -121,7 +121,7 @@ pub struct Page {
 pub struct Block {
     pub kind:       BlockKind,       // Heading{level} | Paragraph | ListItem
                                      // | Table > TableRow > TableCell
-                                     // | Figure | Formula | Code
+                                     // | Quote | Figure | Formula | Code
     pub text:       String,
     pub bbox:       Option<Rect>,    // NORMALIZED to 0..1
     pub confidence: Option<f32>,     // 0..1
@@ -184,6 +184,22 @@ An engine that lacks a capability must never break the chain.
 A PDF with a usable text layer is extracted deterministically via pdfium — zero
 model, zero cost, zero latency, exactly reproducible. OCR/VLM is engaged **only**
 for scans, images, and pathological layouts.
+
+### 5.3 Text inputs are read for what they are
+
+A `.md` file is parsed as Markdown; a `.txt` file is read as plain text. Reading
+plain text as Markdown would turn `a *b* c` into emphasis the author never wrote,
+and turn a line of dashes into a list.
+
+The file name is used for this and nowhere else. That is not a contradiction of
+the rule in §5: the name decides **how to read text already known to be text**,
+which is a different question from *what the file is* — that was settled by
+sniffing the bytes.
+
+Reading Markdown line by line instead of parsing it costs real fidelity, and the
+benchmark is what caught it: a note containing a list was flattened into a
+paragraph whose leading dash was then escaped, so the list came out as text that
+merely looked like a list. The round trip now scores zero loss.
 
 ### 5.2 PDF engine: PDFium, and the constraint it imposes
 
@@ -366,10 +382,22 @@ backend impl.
 
 ### 8.5 Evaluation corpus
 
+A corpus is **one directory per case**, each holding `expected.md` beside the
+document it should come from:
+
+```
+corpus/
+  annual-report/
+    report.pdf          # any name, any extension
+    expected.md         # what the output should be
+```
+
+A directory per case rather than a flat pile of same-stemmed files, because the
+pairing has to survive a source that is itself Markdown: `notes.md` beside
+`notes.md` is not a pairing, it is one file.
+
 The corpus lives outside the repository (real documents are often private) and is
-referenced by path via `docfusion bench --set <dir>`. Because the corpus is not
-versioned, **each evaluated run records its corpus hash** so that results stay
-comparable across time.
+referenced by path via `docfusion bench --set <dir>`.
 
 Coverage the corpus must include, since these are where engines actually diverge:
 

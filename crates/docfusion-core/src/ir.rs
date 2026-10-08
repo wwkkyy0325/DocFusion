@@ -176,6 +176,8 @@ pub enum BlockKind {
     TableRow,
     /// A table cell. Its `text` holds the cell's content.
     TableCell,
+    /// A block quote.
+    Quote,
     Figure,
     Formula,
     Code,
@@ -189,7 +191,11 @@ pub struct Block {
     /// Engine-reported confidence, `0.0..=1.0`, when the engine provides one.
     pub confidence: Option<f32>,
     pub engine: EngineId,
-    /// Nested content, such as the cells of a table or the items of a list.
+    /// Nested content: the rows of a table, the sub-items of a list.
+    ///
+    /// Nesting rather than a depth field, because a renderer has to recurse to
+    /// indent a list anyway, and a flat list with depths would need the reader
+    /// to reconstruct the tree that was there all along.
     pub children: Vec<Block>,
 }
 
