@@ -11,12 +11,12 @@ use docfusion_core::ir::EngineStamp;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 /// Bumped whenever the schema below changes, tracked in `PRAGMA user_version`.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 /// The columns `row_to_record` expects, in the order it reads them.
 const COLUMNS: &str = "id, source_path, source_size, source_mtime, mime, output_path, \
                        engine_id, engine_version, model, prompt_version, \
-                       status, verified, conflict_count, created_at, updated_at";
+                       status, verified, conflict_count, created_at, updated_at, output_hash";
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS documents (
@@ -55,6 +55,13 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS runs_by_document ON runs(document_id);
 "#;
+
+/// Version 2 records the content hash of the rendered output.
+///
+/// It exists so that `reconcile` can recognise a file the user moved: the
+/// output path is what the manifest remembers, and a rename breaks that link
+/// even though nothing about the document changed.
+const MIGRATION_V2: &str = "ALTER TABLE documents ADD COLUMN output_hash TEXT";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -107,6 +114,12 @@ pub struct DocumentRecord {
     pub conflict_count: u32,
     pub created_at: String,
     pub updated_at: String,
+    /// BLAKE3 of the rendered Markdown, so that `reconcile` can recognise this
+    /// document's output after the file has been moved or renamed.
+    ///
+    /// `None` for records written before this column existed; such a document
+    /// can only be relinked by re-processing it.
+    pub output_hash: Option<String>,
 }
 
 /// Current UTC time as RFC 3339, to the second.
@@ -146,12 +159,18 @@ impl Manifest {
         Ok(Self { connection })
     }
 
+    /// Applies each step in turn, so an older database is upgraded rather than
+    /// rejected — an index that cannot be opened is an index that gets deleted,
+    /// and deleting it throws away which documents were already processed.
     fn migrate(connection: &Connection) -> Result<(), StoreError> {
         let existing: i32 =
             connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
 
         if existing < 1 {
             connection.execute_batch(SCHEMA_V1)?;
+        }
+        if existing < 2 {
+            connection.execute_batch(MIGRATION_V2)?;
         }
 
         if existing != SCHEMA_VERSION {
@@ -238,8 +257,8 @@ impl Manifest {
             "INSERT INTO documents (
                  id, source_path, source_size, source_mtime, mime, output_path,
                  engine_id, engine_version, model, prompt_version,
-                 status, verified, conflict_count, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 status, verified, conflict_count, created_at, updated_at, output_hash
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                  source_path    = excluded.source_path,
                  source_size    = excluded.source_size,
@@ -253,7 +272,8 @@ impl Manifest {
                  status         = excluded.status,
                  verified       = excluded.verified,
                  conflict_count = excluded.conflict_count,
-                 updated_at     = excluded.updated_at",
+                 updated_at     = excluded.updated_at,
+                 output_hash    = excluded.output_hash",
             params![
                 record.id,
                 path_to_string(&record.source_path),
@@ -270,9 +290,33 @@ impl Manifest {
                 record.conflict_count as i64,
                 record.created_at,
                 record.updated_at,
+                record.output_hash,
             ],
         )?;
 
+        Ok(())
+    }
+
+    /// Points a document at a new output path, leaving everything else alone.
+    ///
+    /// Used by `reconcile` when a file has been moved: the document did not
+    /// change, only where its output lives.
+    pub fn relink(&self, id: &str, output_path: &Path) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE documents SET output_path = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, path_to_string(output_path), now_iso8601()],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets a document entirely.
+    ///
+    /// Only for records whose output is genuinely gone: the manifest is a cache
+    /// over the file tree, and a cache entry pointing at nothing is not worth
+    /// keeping. Re-processing the source rebuilds it.
+    pub fn forget(&self, id: &str) -> Result<(), StoreError> {
+        self.connection
+            .execute("DELETE FROM documents WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -377,6 +421,7 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<DocumentRecord> {
         conflict_count: row.get::<_, i64>(12)? as u32,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
+        output_hash: row.get(15)?,
     })
 }
 
@@ -414,6 +459,7 @@ mod tests {
             conflict_count: 0,
             created_at: now.clone(),
             updated_at: now,
+            output_hash: Some("b".repeat(64)),
         }
     }
 

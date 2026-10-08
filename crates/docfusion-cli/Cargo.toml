@@ -11,3 +11,6 @@ docfusion-core = { version = "0.1.0", path = "../docfusion-core" }
 docfusion-store = { version = "0.1.0", path = "../docfusion-store" }
 serde_json = "1.0.151"
 thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"

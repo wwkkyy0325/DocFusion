@@ -19,7 +19,7 @@ use docfusion_store::manifest::StoreError;
 use docfusion_store::pipeline::{Mode, Pipeline, PipelineError};
 use serde_json::{Value, json};
 
-use output::{FAILED, NO_BACKEND, OK, PARTIAL, Reporter};
+use output::{FAILED, INDEX_INCONSISTENT, NO_BACKEND, OK, PARTIAL, Reporter};
 
 #[derive(Parser)]
 #[command(
@@ -68,6 +68,13 @@ enum Command {
         status: Option<String>,
     },
 
+    /// Repair the index against the file tree.
+    Reconcile {
+        /// Apply the repairs instead of only reporting them.
+        #[arg(long)]
+        fix: bool,
+    },
+
     /// Publish the output contract: commands, fields and exit codes.
     Schema,
 }
@@ -102,11 +109,75 @@ fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
         Command::Add { paths } => add(cli, reporter, paths),
         Command::Show { document } => show(cli, reporter, document),
         Command::List { status } => list(cli, reporter, status.as_deref()),
+        Command::Reconcile { fix } => reconcile(cli, reporter, *fix),
         Command::Schema => {
             println!("{}", schema());
             Ok(OK)
         }
     }
+}
+
+/// Reports, and optionally repairs, the index against the file tree.
+///
+/// Drift is reported as it is found even when repairing, because what was
+/// relinked or forgotten is the part a person wants to check.
+fn reconcile(cli: &Cli, reporter: &Reporter, fix: bool) -> Result<u8, CliError> {
+    let pipeline = open(&cli.root)?;
+    let drift = docfusion_store::reconcile::scan(&pipeline)?;
+
+    for (record, path) in &drift.relinked {
+        reporter.note(format!(
+            "moved  {} -> {}",
+            record.output_path.display(),
+            path.display()
+        ));
+    }
+    for record in &drift.missing {
+        reporter.note(format!("gone   {}", record.output_path.display()));
+    }
+    for path in &drift.untracked {
+        reporter.note(format!("extra  {} (not tracked)", path.display()));
+    }
+
+    // An unclaimed file is reported but is not drift: the index says nothing
+    // about it, so it cannot be wrong about it. A person may keep their own
+    // notes beside the extracted documents.
+    if !drift.needs_repair() {
+        reporter.record(
+            json!({
+                "command": "reconcile",
+                "drift": false,
+                "relinked": 0,
+                "forgotten": 0,
+                "untracked": drift.untracked.len(),
+            }),
+            "the index matches the file tree",
+        );
+        return Ok(OK);
+    }
+
+    // `--dry-run` wins over `--fix`: a global switch that says "change nothing"
+    // should not be overridden by a command-specific one that says "change this".
+    if !fix || cli.dry_run {
+        return Ok(INDEX_INCONSISTENT);
+    }
+
+    let repaired = docfusion_store::reconcile::repair(&pipeline, &drift)?;
+    reporter.record(
+        json!({
+            "command": "reconcile",
+            "drift": true,
+            "relinked": repaired.relinked,
+            "forgotten": repaired.forgotten,
+            "untracked": drift.untracked.len(),
+        }),
+        format!(
+            "relinked {}, forgot {}",
+            repaired.relinked, repaired.forgotten
+        ),
+    );
+
+    Ok(OK)
 }
 
 fn add(cli: &Cli, reporter: &Reporter, paths: &[PathBuf]) -> Result<u8, CliError> {
@@ -252,7 +323,8 @@ fn schema() -> Value {
             "0": "success",
             "1": "failure",
             "2": "some inputs succeeded and some did not",
-            "3": "no engine can read this input; it needs a backend that is not configured"
+            "3": "no engine can read this input; it needs a backend that is not configured",
+            "4": "the index disagrees with the file tree; run reconcile --fix"
         },
         "commands": {
             "add": {
@@ -262,11 +334,16 @@ fn schema() -> Value {
             "show": {
                 "arguments": ["<document>"],
                 "emits": ["command", "id", "output", "markdown"],
-                "note": "the document may be named by content id, source path, or output path"
+                "note": "the document may be named by content id, source path, output path, or file name"
             },
             "list": {
                 "arguments": ["--status <done|partial|failed>"],
                 "emits": ["command", "id", "source", "output", "status", "conflicts", "engine", "updated_at"]
+            },
+            "reconcile": {
+                "arguments": ["--fix"],
+                "emits": ["command", "drift", "relinked", "forgotten", "untracked"],
+                "note": "exits 4 when drift is found and not repaired"
             },
             "schema": {
                 "arguments": [],
@@ -288,9 +365,101 @@ mod tests {
             .as_object()
             .expect("commands must be an object");
 
-        for expected in ["add", "show", "list", "schema"] {
+        for expected in ["add", "show", "list", "reconcile", "schema"] {
             assert!(commands.contains_key(expected), "missing {expected} in schema");
         }
+    }
+
+    #[test]
+    fn reconciling_reports_an_index_that_is_consistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from(["docfusion", "--root", dir.path().to_str().unwrap(), "reconcile"]);
+        let reporter = Reporter::new(false);
+
+        assert_eq!(reconcile(&cli, &reporter, false).unwrap(), OK);
+    }
+
+    #[test]
+    fn reconciling_reports_drift_with_the_inconsistent_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_owned();
+
+        // Process a file, then move its output out from under the index.
+        let source = dir.path().join("notes.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let add = Cli::parse_from(["docfusion", "--root", &root, "add", source.to_str().unwrap()]);
+        assert_eq!(run(&add, &Reporter::new(false)).unwrap(), OK);
+
+        let docs = dir.path().join("docs");
+        std::fs::rename(docs.join("notes.md"), docs.join("renamed.md")).unwrap();
+
+        let cli = Cli::parse_from(["docfusion", "--root", &root, "reconcile"]);
+        assert_eq!(
+            reconcile(&cli, &Reporter::new(false), false).unwrap(),
+            INDEX_INCONSISTENT
+        );
+
+        let fix = Cli::parse_from(["docfusion", "--root", &root, "reconcile", "--fix"]);
+        assert_eq!(reconcile(&fix, &Reporter::new(false), true).unwrap(), OK);
+        assert_eq!(reconcile(&cli, &Reporter::new(false), false).unwrap(), OK);
+    }
+
+    /// A person may keep their own notes beside the extracted documents. The
+    /// index claims nothing about such a file, so it cannot be wrong about it.
+    #[test]
+    fn an_untracked_file_is_reported_but_is_not_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_owned();
+
+        let source = dir.path().join("notes.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let add = Cli::parse_from(["docfusion", "--root", &root, "add", source.to_str().unwrap()]);
+        run(&add, &Reporter::new(false)).unwrap();
+
+        std::fs::write(dir.path().join("docs").join("personal.md"), "mine").unwrap();
+
+        let cli = Cli::parse_from(["docfusion", "--root", &root, "reconcile"]);
+        assert_eq!(
+            reconcile(&cli, &Reporter::new(true), false).unwrap(),
+            OK,
+            "an unclaimed file should not be treated as index drift"
+        );
+    }
+
+    /// A global switch that says "change nothing" must not be overridden by a
+    /// command-specific one that says "change this".
+    #[test]
+    fn dry_run_wins_over_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_owned();
+
+        let source = dir.path().join("notes.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let add = Cli::parse_from(["docfusion", "--root", &root, "add", source.to_str().unwrap()]);
+        run(&add, &Reporter::new(false)).unwrap();
+
+        let docs = dir.path().join("docs");
+        std::fs::rename(docs.join("notes.md"), docs.join("renamed.md")).unwrap();
+
+        let cli = Cli::parse_from([
+            "docfusion",
+            "--root",
+            &root,
+            "--dry-run",
+            "reconcile",
+            "--fix",
+        ]);
+        assert_eq!(
+            reconcile(&cli, &Reporter::new(true), true).unwrap(),
+            INDEX_INCONSISTENT
+        );
+
+        let after = Cli::parse_from(["docfusion", "--root", &root, "reconcile"]);
+        assert_eq!(
+            reconcile(&after, &Reporter::new(false), false).unwrap(),
+            INDEX_INCONSISTENT,
+            "the dry run should have repaired nothing"
+        );
     }
 
     /// A published code that cannot be emitted is a lie, and a code that is
@@ -299,7 +468,7 @@ mod tests {
     #[test]
     fn the_schema_publishes_every_exit_code_the_tool_can_emit() {
         let schema = schema();
-        for code in [OK, FAILED, PARTIAL, NO_BACKEND] {
+        for code in [OK, FAILED, PARTIAL, NO_BACKEND, INDEX_INCONSISTENT] {
             assert!(
                 schema["exit_codes"].get(code.to_string()).is_some(),
                 "exit code {code} is emitted but not published"
@@ -307,7 +476,7 @@ mod tests {
         }
         assert_eq!(
             schema["exit_codes"].as_object().map(|codes| codes.len()),
-            Some(4),
+            Some(5),
             "the schema publishes a code the tool cannot emit"
         );
     }

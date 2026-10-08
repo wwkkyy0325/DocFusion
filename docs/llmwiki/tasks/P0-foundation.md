@@ -137,10 +137,10 @@ Fixtures live in `tests/fixtures/`, expected IR as committed snapshots.
 log lines appear only on stderr; exit code assertions for each failure mode.
 
 ### Step 8 — Reconcile
-- [ ] Rehash the file tree and diff against the manifest
-- [ ] Report orphaned outputs (manifest row, no file) and untracked files
-      (file, no manifest row)
-- [ ] `--fix` repairs the manifest
+- [x] Rehash the file tree and diff against the manifest
+- [x] Report unclaimed files (file, no manifest row) without treating them as drift
+- [x] Relink moved outputs by content hash, and forget rows whose output is gone
+- [x] `--fix` repairs the manifest; `--dry-run` outranks it
 
 **Verify:** Move a produced `.md` by hand, run `reconcile`, assert drift is
 reported; run with `--fix`, assert the manifest matches the tree again.

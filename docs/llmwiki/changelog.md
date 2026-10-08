@@ -4,6 +4,45 @@ Append-only record of meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Reconcile, and the end of P0
+
+**What:** `docfusion reconcile [--fix]`, exit code 4, and a schema migration that
+records the output content hash. **P0 is complete**: a document goes in, a
+structured Markdown file comes out, and re-processing is skipped.
+
+**Decisions and why:**
+
+- **The output hash exists so a moved file can be recognised.** A rename breaks
+  the path link even though nothing about the document changed, so repairing by
+  deleting the row would throw away the index entry for a document that is
+  sitting right there under a new name. Schema version 2 adds the column; the
+  migration is additive, because an index that cannot be opened is an index
+  somebody deletes, and deleting it throws away what was already processed.
+- **An unclaimed file is not drift.** A person may keep their own notes beside
+  the extracted documents. The index says nothing about such a file, so it
+  cannot be wrong about it — it is reported, and `--fix` leaves it alone.
+- **`--dry-run` outranks `--fix`.** A global switch that says "change nothing"
+  must not be overridden by a command-specific one that says "change this".
+
+**Two bugs found by running the command, not by testing it:**
+
+1. **A cache hit did not check that its output still existed.** After deleting
+   an extracted file, re-adding the source reported `cached` and handed back a
+   path to nothing, skipping the write that would have put it back. A cache hit
+   now confirms the file is there, so `add` heals itself and `reconcile` remains
+   the tool for repairing in bulk.
+2. **Reconcile returned exit 4 for a tree containing only an unclaimed file**,
+   contradicting the rule written in the same function — it tested
+   `drift.is_empty()` rather than `needs_repair()`.
+
+Also worth recording: a path-frame mismatch inside `reconcile` itself. Output
+paths are relative to the knowledge root (`docs/notes.md`) while the directory
+walk originally produced paths relative to the document directory
+(`notes.md`), so nothing ever matched. The first attempt to fix it introduced a
+second instance of the same mistake — hashing `docs/docs/...` — which
+`filter_map` swallowed silently. Both are now pinned by tests.
+
+
 ## 2026-10-08 — The command line
 
 **What:** `docfusion add`, `show`, `list` and `schema`, with `--json`,

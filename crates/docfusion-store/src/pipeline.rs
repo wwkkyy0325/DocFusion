@@ -143,6 +143,10 @@ impl Pipeline {
                 conflict_count: document.conflicts.len() as u32,
                 created_at: created_at.clone(),
                 updated_at: created_at,
+                // Recorded so `reconcile` can recognise this output after the
+                // user moves it: a rename breaks the path link even though the
+                // document itself never changed.
+                output_hash: Some(content_hash(markdown.as_bytes())),
             })?;
             self.manifest.add_alias(&id, source)?;
         }
@@ -175,6 +179,14 @@ impl Pipeline {
             let Some(record) = self.manifest.lookup(id, &engine.stamp())? else {
                 continue;
             };
+
+            // A record whose output has been deleted is not a usable cache
+            // entry. Reporting a hit would hand back a path to a file that is
+            // not there and skip the write that would put it back, so the
+            // lookup is treated as a miss and the document is produced again.
+            if !self.root.join(&record.output_path).exists() {
+                continue;
+            }
 
             if mode == Mode::Apply {
                 self.manifest.add_alias(id, source)?;
@@ -353,6 +365,23 @@ mod tests {
         assert!(two.reused);
         assert_eq!(one.id, two.id);
         assert_eq!(pipeline.manifest().document_count().unwrap(), 1);
+    }
+
+    /// A record whose output has been deleted is not a usable cache entry:
+    /// reporting a hit would hand back a path to a file that is not there and
+    /// skip the write that would put it back.
+    #[test]
+    fn a_deleted_output_is_rebuilt_rather_than_reported_as_cached() {
+        let (dir, mut pipeline) = setup();
+        let source = write_source(dir.path(), "notes.txt", "hello");
+
+        let first = pipeline.ingest(&source, Mode::Apply).unwrap();
+        fs::remove_file(&first.output).unwrap();
+
+        let second = pipeline.ingest(&source, Mode::Apply).unwrap();
+
+        assert!(!second.reused, "a missing output must not count as a hit");
+        assert!(second.output.exists(), "the output should have been rewritten");
     }
 
     #[test]

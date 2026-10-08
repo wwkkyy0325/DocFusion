@@ -429,7 +429,8 @@ CREATE TABLE documents (
   verified       INTEGER,
   conflict_count INTEGER,
   created_at     TEXT,
-  updated_at     TEXT
+  updated_at     TEXT,
+  output_hash    TEXT               -- BLAKE3 of the rendered Markdown
 );
 
 CREATE TABLE aliases (               -- same content imported from several paths
@@ -473,6 +474,23 @@ old row behind.** Because rows are keyed by content hash, a changed file gets a
 new row while the previous row keeps pointing at an output path that now holds
 different content. `reconcile` must prune those rows, which is safe precisely
 because `runs` retains the history.
+
+`reconcile` distinguishes three situations, and only two of them are drift:
+
+| Situation | Meaning | Repair |
+|---|---|---|
+| The output file is gone | The index is stale | **Forget** the row; re-adding the source rebuilds it |
+| The output is elsewhere, with the same content | The user moved the file | **Relink** the row to its new path |
+| A file the index does not claim | Maybe a person's own notes | Nothing — the index claims nothing about it, so it cannot be wrong about it |
+
+Relinking is why `output_hash` exists: a rename breaks the path link even though
+the document itself never changed, and hashing the tree is the only way to
+recognise it. A record written before that column existed is reported as missing
+rather than guessed at.
+
+**A cache hit also checks that its output still exists.** Reporting a hit for a
+file somebody deleted would hand back a path to nothing and skip the write that
+would put it back, which is a worse failure than redoing the work.
 
 ### 9.5 Atomic writes — Windows hazard
 

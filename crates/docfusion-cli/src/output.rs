@@ -15,6 +15,8 @@ pub const FAILED: u8 = 1;
 pub const PARTIAL: u8 = 2;
 /// No engine can read this input — it needs a backend that is not configured.
 pub const NO_BACKEND: u8 = 3;
+/// The index disagrees with the file tree; run `reconcile --fix`.
+pub const INDEX_INCONSISTENT: u8 = 4;
 
 pub struct Reporter {
     json: bool,
