@@ -113,7 +113,7 @@ pub struct Document {
 
 pub struct Page {
     pub index:      u32,
-    pub size:       Size,
+    pub size:       Option<Size>,    // None for formats without pages
     pub blocks:     Vec<Block>,
     pub provenance: PageProvenance,  // engines used, whether verified
 }

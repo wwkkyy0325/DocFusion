@@ -74,15 +74,24 @@ content is the new content. This test must run on Windows, not just Linux CI.
 (count invocations via a test double).
 
 ### Step 5 — Deterministic extractors
-- [ ] Content-based MIME sniffing (not extension-based)
-- [ ] `Extractor` trait + `Fit` routing
-- [ ] `PdfTextLayer` via `pdfium-render`; returns `Fit::No` when no text layer
+- [x] Content-based MIME sniffing (not extension-based)
+- [x] `Extractor` trait + `Fit` routing, with fall-through when an engine declines
+- [x] `TextPassthrough` for `.md` / `.txt`
+- [x] Legacy formats (`.doc`/`.xls`/`.ppt`) detected and rejected with a clear
+      "convert first" error
+- [ ] `PdfTextLayer`; returns `Unsupported` when there is no text layer
 - [ ] `DocxParser` via `docx-rs`
 - [ ] `XlsxParser` via `calamine`
 - [ ] `PptxParser` (zip + XML, hand-rolled)
-- [ ] `TextPassthrough` for `.md` / `.html` / `.txt`
-- [ ] Legacy formats (`.doc`/`.xls`/`.ppt`) detected and rejected with a clear
-      "convert first" error
+- [ ] `HtmlParser` for `.html`
+
+> **Deferred from this step:** HTML needs a real HTML→Markdown conversion
+> (link targets, image sources, base URLs); a regex-based strip would produce
+> output that looks right and is subtly wrong. It is a separate decision.
+>
+> **Open decision:** the PDF engine choice is pending research into the Windows
+> build/runtime burden of the available crates — whether a native libpdfium must
+> be shipped, and whether a pure-Rust option gives usable structure.
 
 **Verify:** Golden-corpus round-trip test — each fixture produces the expected IR.
 Fixtures live in `tests/fixtures/`, expected IR as committed snapshots.

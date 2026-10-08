@@ -211,7 +211,12 @@ pub struct PageProvenance {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Page {
     pub index: u32,
-    pub size: Size,
+    /// Page geometry, for formats that have a notion of pages.
+    ///
+    /// `None` for formats that do not — plain text has no page size, and
+    /// inventing one would be a lie the renderer and verifier would have to
+    /// work around.
+    pub size: Option<Size>,
     pub blocks: Vec<Block>,
     pub provenance: PageProvenance,
 }
@@ -374,7 +379,7 @@ mod tests {
             },
             pages: vec![Page {
                 index: 0,
-                size: Size { w: 612.0, h: 792.0 },
+                size: Some(Size { w: 612.0, h: 792.0 }),
                 blocks: vec![table, para],
                 provenance: PageProvenance {
                     primary: engine.clone(),
@@ -405,7 +410,7 @@ mod tests {
             },
             pages: vec![Page {
                 index: 0,
-                size: Size { w: 612.0, h: 792.0 },
+                size: Some(Size { w: 612.0, h: 792.0 }),
                 blocks: vec![Block {
                     kind: BlockKind::Heading { level: 1 },
                     text: "Annual Report".into(),
