@@ -4,6 +4,42 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — The setup guide, and P1 done
+
+**What:** `docs/setup.md` — the document somebody's agent is handed. Every
+command in it was run, and every quoted output is output that came back. P1 is
+complete.
+
+**Two defects surfaced by writing it**, both in what a person reads:
+
+- **An unreachable endpoint was reported as "no OCR or vision backend is
+  configured."** The real reason trailed in parentheses behind a sentence
+  contradicting it — the worst shape a message can take, because it is
+  believable and sends the reader to check the thing that is already right.
+  Every producer of that error is a broken backend, never an unreadable file, so
+  the mapping that produced it is deleted rather than corrected. An unreachable
+  endpoint now says `the scan engine failed: could not reach http://...` and
+  exits 1, where it used to exit 3 claiming nothing was configured.
+- **The binary was called `docfusion-cli`.** That says which crate it is, which
+  is a fact about the repository rather than about the tool, and a manual
+  telling somebody to run it has leaked the crate layout.
+
+**The guide says what it could not verify.** None of llama-server, Ollama or LM
+Studio is installed on the machine this was written on, and **github.com,
+ollama.com and lmstudio.ai are all unreachable from it** while `hf-mirror.com`
+and `modelscope.cn` are not. Those three rows are the vendors' documented
+commands and are labelled as such. Everything else ran. A guide that mixes
+tested and untested steps without saying which is which is the same failure as a
+metric that cannot tell misread from misordered.
+
+**P1 is finished.** Ten steps: the bench harness, page images, the backend
+traits, the local engine and its weights, the endpoint client, verification, the
+baseline, `doctor`, and this. What P1 set out to make true — scans are read,
+disagreements are visible, and no engine is wrong quietly — is now true, and
+measured rather than asserted.
+
+---
+
 ## 2026-10-08 — `docfusion doctor`
 
 **What:** one command that answers "what can this installation read, and what is

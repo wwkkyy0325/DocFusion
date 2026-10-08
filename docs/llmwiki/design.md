@@ -762,6 +762,12 @@ covers a crash between replace and directory flush.
 
 ## 10. CLI contract
 
+**The setup guide is `docs/setup.md`**, outside the knowledge base: it is a
+product deliverable with a different reader from these notes. Every command in
+it was run before it was written down, and it states which parts are a vendor's
+documented commands rather than something that could be verified here.
+
+
 ### 10.1 Commands
 
 ```

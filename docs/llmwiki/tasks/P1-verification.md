@@ -268,15 +268,39 @@ text-layer documents and scans through OCR.
 > that reports what matters.
 
 ### Step 9 — The setup guide
-- [ ] A guide the user's *agent* can execute: exact commands, exact file names,
+- [x] A guide the user's *agent* can execute: exact commands, exact file names,
       and a check that it worked
-- [ ] Cover `llama-server`, Ollama and LM Studio as interchangeable, since all
+- [x] Cover `llama-server`, Ollama and LM Studio as interchangeable, since all
       three expose the same API
-- [ ] State the projector requirement and the download sizes, because a model
+- [x] State the projector requirement and the download sizes, because a model
       served without its projector fails silently rather than loudly
 
 **Verify:** following the guide on a clean machine produces an endpoint that
 `docfusion` reports as working, without any step being guessed at.
+
+> **Written at `docs/setup.md`, outside the knowledge base.** It is a product
+> deliverable rather than a working note, and the two have different readers.
+
+> **Every quoted output is output that came back.** The zero-config front
+> matter, the `doctor` report, the authentication failure and the exit codes
+> were all captured from runs, not written from memory. Two rows of the
+> error table were corrected against the real wording after being drafted.
+
+> **Verified, and said so.** The DeepSeek path went end to end. The three local
+> runtimes could not be: none is installed here, and **github.com, ollama.com
+> and lmstudio.ai are all unreachable from this machine** while `hf-mirror.com`
+> and `modelscope.cn` are not. That is a fact about the reader's network that
+> the guide has to state rather than step around, and §9 says plainly which
+> rows are a vendor's documented commands rather than something that ran.
+
+> **Two defects found while writing it, both in what a person would read.**
+> An unreachable endpoint was reported as "no OCR or vision backend is
+> configured" — a sentence contradicting the real reason printed beside it in
+> parentheses, sending the reader to check a configuration that was already
+> correct. Every producer of that error is a broken backend, so the mapping that
+> produced it is gone. And the binary was named `docfusion-cli`, which is a fact
+> about the repository rather than about the tool; a manual telling somebody to
+> run that name has leaked the crate layout.
 
 ---
 
