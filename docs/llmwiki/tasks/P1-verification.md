@@ -75,13 +75,25 @@ router prefers the text-layer engine for a PDF that has one.
 
 **Verify:** a generated image of known text is read back exactly.
 
-### Step 5 — Local VLM backend
-- [ ] Ollama client, with the embedded-library style of failure reporting
-- [ ] Model pulled on demand, with clear progress and a clear error when the
-      daemon is absent
+### Step 5 — Local VLM backend: llama.cpp as a managed sidecar
+- [ ] Acquire the binary and the model into the tool's own directory, verified
+      against a checksum, with the download size stated before it starts
+- [ ] Sidecar lifecycle: spawn on demand on a free localhost port, wait for
+      health, terminate when the run ends
+- [ ] Put the child in a job object with `KILL_ON_JOB_CLOSE`, so a parent that
+      panics leaves nothing running
+- [ ] Treat an implausible prompt token count as an error: a GGUF model without
+      its `mmproj` does not fail, it emits repeated garbage
 
-**Verify:** against a running Ollama, a fixture page returns Markdown; with the
-daemon stopped, the error names Ollama and says what to do.
+**Verify:** with the binary absent, the error names what is missing and how
+large it is, without starting a download; with it present, a fixture page
+returns Markdown; killing the parent leaves no process behind.
+
+> **Changed from Ollama.** The earlier choice optimised for reaching a validated
+> chain fastest, which traded away the requirement that the tool leave nothing
+> on a user's machine beyond its own directory. llama.cpp is not a capability
+> regression: it has dedicated support for the document models this project
+> wants, including PaddleOCR-VL, GLM-OCR and dots.ocr. See design §8.2.
 
 ### Step 6 — Verification
 - [ ] Alignment by bounding-box overlap; text comparison after normalization

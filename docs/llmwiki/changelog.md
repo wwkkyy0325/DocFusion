@@ -4,6 +4,47 @@ Append-only record of meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Local inference moves from Ollama to llama.cpp
+
+**What:** Replaced the Ollama sidecar with llama.cpp, managed by the tool.
+Design §8.2 rewritten; P1 Step 5 restated.
+
+**Why:** The earlier decision optimised for reaching a validated end-to-end
+chain fastest, which traded a product decision for engineering convenience.
+Ollama is a separate application with its own daemon, its own login autostart,
+its own model store and its own uninstall path. The requirement is that the tool
+leave nothing on a user's machine beyond its own directory, and Ollama cannot
+meet it.
+
+**This is not a capability regression.** llama.cpp's multimodal documentation
+lists dedicated support for exactly the models this project wants — PaddleOCR-VL,
+GLM-OCR, DeepSeek-OCR, dots.ocr and HunyuanOCR — and PaddleOCR-VL has an official
+GGUF release.
+
+**What the change costs:**
+
+- A subprocess exists while documents are being processed. It is spawned on
+  demand on a free localhost port and terminated when the run ends.
+- **A crashed parent would orphan that subprocess**, which a destructor does not
+  prevent. The child is therefore placed in a Windows job object with
+  `KILL_ON_JOB_CLOSE`, so it dies with the parent. This is the specific failure
+  the requirement is about, and it is now a named risk in §14.
+- The download is ~290 MB of model beside ~840 MB of multimodal projector on
+  first use. The projector is not optional and cannot be inferred from a
+  successful HTTP response: without it the image never becomes vision tokens and
+  the model emits repeated garbage rather than failing.
+
+**Considered and rejected:** linking llama.cpp into the binary, which removes the
+subprocess but needs a C++ toolchain and CMake, fixes the GPU backend at compile
+time, and adds hundreds of megabytes to the executable; and `mistral.rs`, which
+is pure Rust and in-process but runs only general vision models, not the
+document-OCR specialists, and has no Vulkan backend.
+
+**Two open questions that only measurement can settle**, both recorded in §8.2:
+whether PaddleOCR-VL needs a separate layout-detection pass before pages reach
+it, and how much quantization costs accuracy in body text.
+
+
 ## 2026-10-08 — Benchmark harness, and the bug it found first
 
 **What:** `docfusion bench --set <dir> [--engine <id>]`, scoring any engine

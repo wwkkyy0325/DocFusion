@@ -330,24 +330,62 @@ configuration item. See §8.
   to Windows) and over "use a tiny VLM for everything" (too slow on CPU, and it
   destroys verifier independence).
 
-### 8.2 Local VLM (mid/high tier) — via Ollama sidecar
+### 8.2 Local VLM (mid/high tier) — llama.cpp, managed as a sidecar
 
-- **Primary candidate: GLM-OCR (~0.9B, Apache-2.0 code / MIT weights).**
-  Decisive property: it emits **structured output with bounding boxes**, which
-  dual verification requires. Also has ready-made Ollama support and runs on
-  consumer GPUs.
-- **Benchmark alternative: OvisOCR2 (0.8B, Apache-2.0)** — currently top of
-  OmniDocBench v1.6 (~96.6). Output interface (bbox support) still to be verified.
-- **Serving:** Ollama, started as a sidecar. Chosen for Windows-native operation,
-  model download/GPU allocation/VRAM management for free, and the fastest path to
-  a validated end-to-end chain. Bundling llama.cpp or pure-Rust inference
-  (`mistral.rs`/`candle`) remains possible later because both are just
-  `VlmBackend` impls.
+**Not Ollama.** Ollama was the earlier choice, made because it was the fastest
+route to a validated end-to-end chain — a product decision traded for
+engineering convenience. It is the wrong shape: a separate application with its
+own daemon, its own login autostart, its own model store, and its own uninstall
+path. The requirement is that the tool leaves nothing of itself on the user's
+machine beyond its own directory, and Ollama cannot meet that.
 
-> **Model identity, sizes, and benchmark claims in this section were gathered
-> from web sources of varying reliability and must be re-verified at
-> implementation time.** Benchmark numbers across sources use different
-> OmniDocBench versions and are not directly comparable.
+llama.cpp can, and it is not a compromise on capability. Its multimodal
+documentation lists dedicated support for exactly the models this project wants:
+PaddleOCR-VL, GLM-OCR, DeepSeek-OCR, dots.ocr and HunyuanOCR. PaddleOCR-VL has
+an official GGUF release, and at Q4_K_M it is ~290 MB beside an ~840 MB
+multimodal projector — the vision encoder dominates the download.
+
+**Candidates for the benchmark to choose between**, in roughly the order the
+evidence currently favours: PaddleOCR-VL (~0.9B, official GGUF, layout analysis),
+GLM-OCR (~0.9B, structured output with bounding boxes — the property dual
+verification needs most), OvisOCR2 (0.8B), dots.ocr (1.7B, heavier but with
+GGUF).
+
+**The projector is not optional.** A GGUF model file without its `mmproj` does
+not fail loudly: the image never becomes vision tokens and the model emits
+repeated garbage. The diagnostic is the prompt token count, which should be in
+the hundreds to thousands for an image and near-zero when the projector failed
+to load. The tool must check this rather than trust a 200 response.
+
+**Lifecycle — the part that decides whether this is well-behaved:**
+
+| Concern | Approach |
+|---|---|
+| Binary | Downloaded into the tool's own directory. The user installs nothing. |
+| Models | Downloaded into the tool's own directory on first use, checksum-verified, never into a system-wide store. |
+| Start | Spawned on demand, bound to a free localhost port chosen at start. |
+| Stop | Terminated when the run finishes, not kept warm indefinitely. |
+| Crash | The child is placed in a Windows **job object** with `KILL_ON_JOB_CLOSE`, so it dies with the parent. Relying on a destructor would leave an orphaned process the day the parent panics — which is precisely the "affects my machine" failure this design exists to avoid. |
+| Uninstall | Deleting the directory removes everything. |
+
+**Why not link llama.cpp into the binary**, which would remove the subprocess
+entirely: it needs a C++ toolchain and CMake at build time, it fixes the GPU
+backend at compile time, and it adds hundreds of megabytes to the executable.
+The subprocess exists only while documents are being processed, which is a
+smaller imposition than either.
+
+**Why not `mistral.rs`**, which is pure Rust and in-process: it runs general
+vision models (Qwen2.5-VL, Gemma 3 and similar) but not the document-OCR
+specialists above, and it has no Vulkan backend. Its purity would be bought with
+the accuracy this project is organised around.
+
+> **Sizes and capability claims in this section came from web sources of mixed
+> reliability and must be re-verified at implementation time.** Two substantive
+> questions can only be settled by measurement, and the benchmark exists for
+> them: whether PaddleOCR-VL needs a separate layout-detection pass before pages
+> are fed to it, and how much quantization costs accuracy in the body text —
+> one report has Q8_0 matching F16 on table values while reaching only ~73 %
+> text similarity.
 
 ### 8.3 Cloud (optional, configured by the user)
 
@@ -630,7 +668,7 @@ than duplicates the CLI.
 | DOCX / XLSX | `docx-rs` / `calamine` | Pure Rust |
 | PPTX | hand-rolled (zip + XML) | No mature Rust crate |
 | Local OCR | RapidOCR models + ONNX Runtime | No PaddlePaddle |
-| Local VLM | Ollama sidecar | `VlmBackend` impl |
+| Local VLM | llama.cpp, managed sidecar | GGUF + `mmproj`; spawned on demand, killed via a job object so it cannot outlive the parent |
 | Hashing | BLAKE3 | Fast, content addressing |
 | Manifest | SQLite (`rusqlite`) | Single file, FTS5 available for P4 |
 | CLI | `clap` | Derive API, generated help |
@@ -661,7 +699,8 @@ which engines are available.
 | # | Risk | Mitigation |
 |---|---|---|
 | 1 | Windows `rename` overwrite semantics | `MoveFileExW` — fixed in P0 Step 3 |
-| 2 | Ollama not installed / model not pulled | First-run guidance; explicit error; optional degrade to cloud or OCR-only |
+| 2 | The inference binary or model is not downloaded yet | First-run guidance with the size stated up front; explicit error; degrade to OCR-only or cloud |
+| 12 | An orphaned inference process outliving a crashed parent | Job object with `KILL_ON_JOB_CLOSE`; a destructor alone is not enough |
 | 3 | Tauri + WebView2 packaging size and CI | Validate early, before P2 is scoped |
 | 4 | Dual verification cost blowout | On-demand triggering + `max_verify_pages` |
 | 5 | Benchmark claims unreliable across sources | `docfusion bench` against the user's own corpus |
