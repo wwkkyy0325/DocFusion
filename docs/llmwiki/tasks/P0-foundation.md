@@ -79,7 +79,7 @@ content is the new content. This test must run on Windows, not just Linux CI.
 - [x] `TextPassthrough` for `.md` / `.txt`
 - [x] Legacy formats (`.doc`/`.xls`/`.ppt`) detected and rejected with a clear
       "convert first" error
-- [ ] `PdfTextLayer`; returns `Unsupported` when there is no text layer
+- [x] `PdfTextLayer`; returns `Unsupported` when there is no text layer
 - [ ] `DocxParser` via `docx-rs`
 - [ ] `XlsxParser` via `calamine`
 - [ ] `PptxParser` (zip + XML, hand-rolled)
@@ -89,9 +89,10 @@ content is the new content. This test must run on Windows, not just Linux CI.
 > (link targets, image sources, base URLs); a regex-based strip would produce
 > output that looks right and is subtly wrong. It is a separate decision.
 >
-> **Open decision:** the PDF engine choice is pending research into the Windows
-> build/runtime burden of the available crates — whether a native libpdfium must
-> be shipped, and whether a pure-Rust option gives usable structure.
+> **PDF engine decided:** `pdfium-render` + `pdfium-bundled` (Chromium's engine,
+> MIT/Apache). The library is downloaded and digest-verified at build time, then
+> embedded, so users install nothing and need no network at run time. See design
+> §5.2, including the constraint that PDFium may be bound only once per process.
 
 **Verify:** Golden-corpus round-trip test — each fixture produces the expected IR.
 Fixtures live in `tests/fixtures/`, expected IR as committed snapshots.

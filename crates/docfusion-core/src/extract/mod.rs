@@ -5,6 +5,7 @@
 //! case for a PDF with no text layer — hands control to the next candidate
 //! rather than failing the run.
 
+pub mod pdf;
 pub mod text;
 
 use crate::ir::{Document, EngineId, EngineStamp, SourceRef};

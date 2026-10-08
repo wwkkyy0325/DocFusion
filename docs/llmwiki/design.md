@@ -181,6 +181,38 @@ A PDF with a usable text layer is extracted deterministically via pdfium — zer
 model, zero cost, zero latency, exactly reproducible. OCR/VLM is engaged **only**
 for scans, images, and pathological layouts.
 
+### 5.2 PDF engine: PDFium, and the constraint it imposes
+
+`pdfium-render` + `pdfium-bundled`. PDFium is Chromium's PDF engine, chosen
+because CJK and CID font handling is the decisive requirement for this project's
+documents, and because it reports per-character bounds, font names and font
+sizes — the metadata heading detection and later region alignment depend on.
+Licence is MIT OR Apache-2.0, so it is safe for commercial use.
+
+`pdfium-bundled` (not `pdfium-render`) provides the embedding: its build script
+downloads the pinned Chromium build, verifies it against a SHA-256 digest, and
+`include_bytes!`es it into the binary. At first use the library is extracted to a
+cache directory. **The user never installs anything, and no network access is
+needed at run time.** Measured cost: the embedded `pdfium.dll` is 7.4 MB.
+
+Rejected: `mupdf-rs` is **AGPL-3.0**, which would force a closed-source
+application to be open-sourced; `poppler-rs` needs a native GLib/Cairo stack that
+is painful on Windows.
+
+> **Architectural constraint — PDFium binds only once per process.**
+> A second `bind_to_library` call returns
+> `PdfiumLibraryBindingsAlreadyInitialized` rather than handing back the loaded
+> library. The binding is therefore a process-wide singleton, not a field on an
+> engine instance: two engine instances, or one instance used twice, would
+> otherwise fail. Callers must also lock around extraction, because PDFium gives
+> no thread-safety guarantee and pdfium-render only serialises internally when
+> its optional `thread_safe` feature is enabled.
+
+**Note on core purity.** `docfusion-core` performs no document I/O, but loading
+PDFium does touch the filesystem once, to extract the embedded library. That is
+a deliberate, single, bounded exception rather than a slip: it happens at the
+native-library boundary, not per document.
+
 ---
 
 ## 6. Verification
@@ -541,7 +573,7 @@ than duplicates the CLI.
 |---|---|---|
 | Workspace | Cargo workspace, 4 crates | CLI must not compile Tauri |
 | Markdown render | `comrak` | GFM + tables; output HTML for both CLI and GUI |
-| PDF text layer | `pdfium-render` | Deterministic path, no model |
+| PDF text layer | `pdfium-render` + `pdfium-bundled` | Chromium engine, MIT/Apache, CJK-safe; DLL embedded, extracted to cache on first use (7.4 MB) |
 | DOCX / XLSX | `docx-rs` / `calamine` | Pure Rust |
 | PPTX | hand-rolled (zip + XML) | No mature Rust crate |
 | Local OCR | RapidOCR models + ONNX Runtime | No PaddlePaddle |
@@ -575,7 +607,7 @@ which engines are available.
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | Windows `rename` overwrite semantics | `ReplaceFileW` — fix before P0 ships |
+| 1 | Windows `rename` overwrite semantics | `MoveFileExW` — fixed in P0 Step 3 |
 | 2 | Ollama not installed / model not pulled | First-run guidance; explicit error; optional degrade to cloud or OCR-only |
 | 3 | Tauri + WebView2 packaging size and CI | Validate early, before P2 is scoped |
 | 4 | Dual verification cost blowout | On-demand triggering + `max_verify_pages` |
@@ -583,6 +615,9 @@ which engines are available.
 | 6 | Local VLM VRAM footprint | 0.9B Q4 ≈ 600 MB weights, but Ollama's real footprint must be measured |
 | 7 | Models turn over every ~6 months | Everything behind traits; selection re-evaluated by bench |
 | 8 | Verifier correlation (same lineage on both sides) | Enforced by the role matrix in §6.1 |
+| 9 | PDFium binds only once per process | Process-wide singleton; see §5.2 |
+| 10 | First run extracts 7.4 MB to a cache directory | Bounded and one-off; a read-only cache dir fails with a clear message rather than silently |
+| 11 | The embedded PDFium build is pinned; upgrading it changes output | The PDFium build participates in the cache key, so an upgrade invalidates affected documents automatically |
 
 ---
 
