@@ -146,6 +146,15 @@ impl Report {
         )
     }
 
+    /// The same, with reading order taken out. The gap is what ordering cost.
+    pub fn mean_content_error_rate(&self) -> Option<f64> {
+        mean(
+            self.cases
+                .iter()
+                .filter_map(|case| case.score.as_ref().map(|score| score.content_error_rate)),
+        )
+    }
+
     pub fn headings_matched(&self) -> usize {
         self.cases
             .iter()
@@ -278,6 +287,7 @@ pub fn report(reporter: &Reporter, report: &Report) {
             "engine": case.engine,
             "loss": case.loss(),
             "character_error_rate": case.score.as_ref().map(|score| score.character_error_rate),
+            "content_error_rate": case.score.as_ref().map(|score| score.content_error_rate),
             "headings": case.score.as_ref().map(|score| (score.headings_matched, score.headings_total)),
             "tables": case.score.as_ref().map(|score| (score.tables_matched, score.tables_total)),
             "duration_ms": case.duration.as_secs_f64() * 1000.0,
@@ -286,10 +296,12 @@ pub fn report(reporter: &Reporter, report: &Report) {
 
         let human = match (&case.score, &case.error) {
             (Some(score), _) => format!(
-                "{:<24} loss {:.3}  chars {:.3}  headings {}/{}  tables {}/{}  {:>6.0} ms",
+                "{:<24} loss {:.3}  order {:.3}  content {:.3}  \
+                 headings {}/{}  tables {}/{}  {:>6.0} ms",
                 case.name,
                 score.loss(),
                 score.character_error_rate,
+                score.content_error_rate,
                 score.headings_matched,
                 score.headings_total,
                 score.tables_matched,
@@ -311,18 +323,20 @@ pub fn report(reporter: &Reporter, report: &Report) {
         "failures": report.failures(),
         "mean_loss": report.mean_loss(),
         "mean_character_error_rate": report.mean_character_error_rate(),
+        "mean_content_error_rate": report.mean_content_error_rate(),
         "headings": (report.headings_matched(), report.headings_total()),
         "tables": (report.tables_matched(), report.tables_total()),
         "total_duration_ms": report.total_duration().as_secs_f64() * 1000.0,
     });
 
     let human = format!(
-        "---\n{} cases, {} failed\n{:>4} mean loss   {:.3} mean character error\n{:>4} headings {}/{}   tables {}/{}   {:.0} ms total",
+        "---\n{} cases, {} failed\nmean loss {:.3}   mean error {:.3} in reading order, \
+         {:.3} ignoring it\nheadings {}/{}   tables {}/{}   {:.0} ms total",
         report.cases.len(),
         report.failures(),
-        "",
+        report.mean_loss().unwrap_or(f64::NAN),
         report.mean_character_error_rate().unwrap_or(f64::NAN),
-        "",
+        report.mean_content_error_rate().unwrap_or(f64::NAN),
         report.headings_matched(),
         report.headings_total(),
         report.tables_matched(),

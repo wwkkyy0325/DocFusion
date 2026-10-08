@@ -17,6 +17,15 @@ pub struct Score {
     /// Characters that would have to change to turn the output into the
     /// reference, as a fraction of the reference. `0.0` is exact.
     pub character_error_rate: f64,
+    /// The same, with reading order taken out of the comparison.
+    ///
+    /// The ordered rate conflates two failures that need different answers. An
+    /// engine that reads every character of a multi-column page correctly but
+    /// lays it out across the columns instead of down them scores as badly as
+    /// one that read nothing — and those are not the same problem, or the same
+    /// size of problem. The gap between the two rates is what ordering cost,
+    /// and it is the number to look at when a page reads well but scores badly.
+    pub content_error_rate: f64,
     /// Reference headings found in the output, in the reference's order.
     pub headings_matched: usize,
     pub headings_total: usize,
@@ -62,11 +71,20 @@ pub fn score(expected: &str, actual: &str) -> Score {
 
     Score {
         character_error_rate: error_rate(&expected.text, &actual.text),
+        content_error_rate: error_rate(&sorted(&expected.text), &sorted(&actual.text)),
         headings_matched: ordered_matches(&expected.headings, &actual.headings),
         headings_total: expected.headings.len(),
         tables_matched: ordered_matches(&expected.tables, &actual.tables),
         tables_total: expected.tables.len(),
     }
+}
+
+/// A document's characters in a canonical order, so that comparing two of them
+/// ignores which came first.
+fn sorted(text: &str) -> String {
+    let mut characters: Vec<char> = text.chars().collect();
+    characters.sort_unstable();
+    characters.into_iter().collect()
 }
 
 /// The comparable content of a Markdown document.
@@ -246,8 +264,51 @@ mod tests {
         let score = score(markdown, markdown);
 
         assert_eq!(score.character_error_rate, 0.0);
+        assert_eq!(score.content_error_rate, 0.0);
         assert_eq!(score.heading_accuracy(), 1.0);
         assert_eq!(score.loss(), 0.0);
+    }
+
+    /// The failure this metric exists for. An engine that reads every character
+    /// of a two-column page and lays it out across the columns rather than down
+    /// them is not the same as one that read nothing, and the ordered rate
+    /// cannot tell them apart.
+    #[test]
+    fn misread_and_misordered_are_different_findings() {
+        let reference = "# Heading\n\nfirst column second column\n";
+        // The same words, taken in the wrong order.
+        let transposed = "# Heading\n\nsecond column first column\n";
+
+        let score = score(reference, transposed);
+
+        assert!(
+            score.character_error_rate > 0.2,
+            "out of order should cost the ordered rate something: {score:?}"
+        );
+        assert!(
+            score.content_error_rate < 0.05,
+            "but every character is present: {score:?}"
+        );
+        assert!(
+            score.character_error_rate > score.content_error_rate,
+            "the gap is the damage ordering did"
+        );
+    }
+
+    #[test]
+    fn a_missing_character_costs_both_rates() {
+        let score = score("abcdef", "abcdf");
+
+        assert!(score.character_error_rate > 0.0);
+        assert!(score.content_error_rate > 0.0);
+    }
+
+    #[test]
+    fn extra_output_is_not_free() {
+        let score = score("abcdef", "abcdefghij");
+
+        assert!(score.character_error_rate > 0.0, "{score:?}");
+        assert!(score.content_error_rate > 0.0, "{score:?}");
     }
 
     #[test]
