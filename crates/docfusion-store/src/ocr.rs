@@ -364,4 +364,54 @@ mod tests {
 
         assert_eq!(blocks[0].engine.as_str(), ENGINE_ID);
     }
+
+    /// Reads a page through the real models.
+    ///
+    /// Ignored by default because it needs weights on disk, which a unit test
+    /// has no business fetching. Run it with a model directory:
+    ///
+    /// ```text
+    /// DOCFUSION_OCR_MODELS=<dir> cargo test -p docfusion-store -- --ignored
+    /// ```
+    ///
+    /// It renders a PDF whose text is known rather than shipping a test image,
+    /// so the expected answer is stated in the test instead of trusted to a
+    /// binary that nobody can read.
+    #[test]
+    #[ignore = "needs OCR models; set DOCFUSION_OCR_MODELS to a directory holding them"]
+    fn reads_text_from_a_rendered_page() {
+        use docfusion_core::extract::fixtures;
+        use rapidocr_core::model::{ModelCache, model_set_by_name};
+
+        let directory = std::env::var("DOCFUSION_OCR_MODELS").expect("DOCFUSION_OCR_MODELS");
+        let model_set = model_set_by_name("ppocrv6-tiny").expect("a registered model set");
+        let backend = RapidOcrBackend::from_config(ModelCache::new(&directory).config_for(model_set))
+            .expect("the models should load");
+
+        // Large type, so that what is being tested is the pipeline rather than
+        // the resolution a page happens to be rendered at.
+        let pdf = fixtures::pdf(&[(48.0, "Hello world")]);
+        let page = docfusion_core::extract::pdf::render_pages(&pdf, 200.0)
+            .expect("render")
+            .remove(0);
+
+        let blocks = backend
+            .recognize(&PageRequest { image: &page, page: 0 })
+            .expect("recognize");
+
+        let text: String = blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(
+            text.to_lowercase().contains("hello"),
+            "expected the page's own words back, got: {text:?}"
+        );
+        assert!(
+            blocks.iter().all(|block| block.bbox.is_some()),
+            "every block should carry geometry"
+        );
+    }
 }

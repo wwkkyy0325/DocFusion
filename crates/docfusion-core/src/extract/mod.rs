@@ -5,7 +5,11 @@
 //! case for a PDF with no text layer — hands control to the next candidate
 //! rather than failing the run.
 
-#[cfg(test)]
+/// Documents built in memory, for tests.
+///
+/// Gated so that only tests pay for it, but reachable from other crates'
+/// tests: a fixture duplicated into a second crate is a fixture that drifts.
+#[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 
 pub mod docx;

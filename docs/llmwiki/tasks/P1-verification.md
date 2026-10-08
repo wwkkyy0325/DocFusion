@@ -82,9 +82,19 @@ PDF that has a text layer is parsed rather than rendered.
 - [x] RapidOCR models on ONNX Runtime; no PaddlePaddle
 - [x] Emits per-line bounding boxes **and** confidence, so this engine can be
       the verifier rather than only a reader
-- [ ] Model acquisition: where the weights come from
+- [x] Read a generated image of known text back exactly
+- [ ] Model acquisition: bundle the weights, measured at ~6.9 MB
 - [ ] Wire into the CLI once models can be found
-- [ ] Read a generated image of known text back exactly
+
+> **Measured, rather than estimated.** The `ppocrv6-tiny` set is 1.8 MB of
+> detector, 4.5 MB of recogniser, 0.6 MB of angle classifier and 27 KB of
+> dictionary — about 6.9 MB in total, less than half what the design assumed.
+> At that size bundling is not a trade-off.
+>
+> Verified end to end: a PDF whose text is known is rendered at 200 DPI, read
+> through the real models, and comes back with its own words and geometry. The
+> test is `#[ignore]`d because it needs weights on disk, which a unit test has
+> no business fetching.
 
 > **The pipeline is not ours to write.** `rapidocr-core` (Apache-2.0) implements
 > detection, angle classification, recognition, DBNet post-processing, contour
