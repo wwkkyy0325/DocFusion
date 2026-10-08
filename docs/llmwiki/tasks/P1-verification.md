@@ -199,12 +199,36 @@ conflict and a rendered marker; a policy of `Off` produces neither.
 > whether to check the page. It now carries the least confident line in it.
 
 ### Step 7 — Model selection by measurement
-- [ ] Build the corpus from real documents
-- [ ] Run every candidate through `bench`
-- [ ] Fix the default, and record the numbers that chose it
+- [x] Build the corpus from real documents
+- [x] Run every candidate through `bench`
+- [x] Record the numbers that chose it
 
 **Verify:** the chosen default is stated with the scores behind it, and
 swapping it is a one-line change behind the trait.
+
+> **The step that ran is not the step that was written.** It was planned as
+> "fix the default model". It cannot be that: §8.2 settled that DocFusion runs no
+> models and picks none — the user chooses, the tool reports what it found. So
+> there is no default to fix, and inventing one would have quietly restored the
+> thing that decision removed.
+>
+> What was left to measure was the only question actually open, and it turned
+> out to be the interesting one: **on real documents, which engine reads
+> better?** 24 pages from OmniDocBench v1.5, both engines, numbers in §8.5.
+>
+> The answer is that they are close on characters and not close on structure —
+> and that they fail on *different pages*, which is the empirical case for the
+> role matrix in §6.1 rather than an argument for one engine over the other.
+
+> **The first result was wrong, and wrong in one direction.** DeepSeek wrapped
+> whole pages in a fenced block behind an introductory sentence, and our scorer
+> could not see text inside a code block. Every affected page scored a content
+> error of 1.000 when the engine had read it perfectly. Two fixes, and the
+> corpus mean moved from 0.292 to 0.245.
+>
+> **A measurement that damns the thing being measured is the one to double-check
+> hardest.** This one was caught only because a flat 1.000 across two unrelated
+> pages is not a plausible reading of two different documents.
 
 ### Step 8 — Probing, not detecting
 - [ ] Probe the configured endpoint rather than inspecting the machine

@@ -133,13 +133,24 @@ fn outline(markdown: &str) -> Outline {
 
         match node.data.borrow().value {
             NodeValue::Text(ref text) => outline.text.push_str(text),
+            // A fenced block's content is a literal rather than a text node, so
+            // it has to be taken explicitly. Leaving it out scores an engine
+            // that returned the whole page inside one fence as though it had
+            // returned nothing at all — the characters are on the page and a
+            // reader sees them, so they belong in the comparison.
+            NodeValue::CodeBlock(ref code) => {
+                outline.text.push(' ');
+                outline.text.push_str(&code.literal);
+                outline.text.push(' ');
+            }
+
             // A space separates blocks, so the end of one does not fuse onto
             // the start of the next. Text nodes within a block are simply
             // concatenated, because a run boundary is a *formatting* boundary,
             // not a word boundary: `**年**度报告` is one word split across two
             // runs, and inserting a space there would invent a gap that the
             // document does not have.
-            NodeValue::Paragraph | NodeValue::Item(..) | NodeValue::CodeBlock(..) => {
+            NodeValue::Paragraph | NodeValue::Item(..) => {
                 outline.text.push(' ');
             }
             _ => {}
@@ -309,6 +320,44 @@ mod tests {
 
         assert!(score.character_error_rate > 0.0, "{score:?}");
         assert!(score.content_error_rate > 0.0, "{score:?}");
+    }
+
+    /// A fenced block's content is a literal rather than a text node. Taken on
+    /// the parser's terms, a whole page returned inside one fence scored as
+    /// though nothing had been returned — a correctly read page reported as a
+    /// total failure, which is the most misleading answer a metric can give.
+    ///
+    /// The rate is not zero even now, and should not be: inside a fence the
+    /// `#` is literal content rather than a heading, so a wrapped page really
+    /// does differ from the unwrapped one by its syntax characters. What
+    /// changed is the size of the finding, from everything to almost nothing.
+    #[test]
+    fn text_inside_a_code_block_is_still_text() {
+        let reference = "# Title\n\nThe page's own words.\n";
+        let wrapped = format!("```markdown\n{reference}```");
+
+        let score = score(reference, &wrapped);
+
+        assert!(
+            score.content_error_rate < 0.15,
+            "every word is present: {score:?}"
+        );
+        assert!(
+            score.headings_matched < score.headings_total,
+            "but a wrapped heading is a heading to nobody: {score:?}"
+        );
+    }
+
+    /// A sentence introducing the answer is not the page, and this scorer
+    /// counts it as output rather than excusing it — which is right, and is why
+    /// stripping the envelope belongs to the endpoint that received it rather
+    /// than to the measurement. See `endpoint::strip_envelope`.
+    #[test]
+    fn a_preamble_is_counted_against_the_engine() {
+        let reference = "# Title\n\nBody.\n";
+        let introduced = format!("Here is the transcription:\n\n```\n{reference}```");
+
+        assert!(score(reference, &introduced).content_error_rate > 0.5);
     }
 
     #[test]

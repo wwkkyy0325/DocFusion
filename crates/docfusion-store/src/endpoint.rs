@@ -264,8 +264,67 @@ impl OpenAiEndpoint {
             )));
         }
 
-        Ok(markdown_blocks(markdown, &self.id()))
+        Ok(markdown_blocks(strip_envelope(markdown), &self.id()))
     }
+}
+
+/// Removes the packaging a chat model sometimes wraps its answer in.
+///
+/// Asked to output only Markdown, a model may answer "Here is the transcription
+/// of the page in GitHub-flavoured Markdown." and put the page inside a fenced
+/// block anyway. The fence is punctuation around the answer, not part of it:
+/// left in place, the whole page becomes one verbatim code block and every
+/// heading, list and table the prompt asked for is lost.
+///
+/// Deliberately narrow. It unwraps only when the whole answer reduces to a
+/// single fenced block — possibly introduced by one sentence — because that is
+/// the shape being defended against. A page that genuinely contains a code
+/// listing has prose around it, and prose means no unwrapping.
+fn strip_envelope(markdown: &str) -> &str {
+    let text = markdown.trim();
+
+    if let Some(inner) = single_fenced_block(text) {
+        return inner;
+    }
+
+    if let Some((_, rest)) = text.split_once("\n\n")
+        && let Some(inner) = single_fenced_block(rest.trim())
+    {
+        return inner;
+    }
+
+    text
+}
+
+/// The contents of `text`, when `text` is exactly one fenced block.
+fn single_fenced_block(text: &str) -> Option<&str> {
+    let first_line = text.find('\n')?;
+    let opening = &text[..first_line];
+
+    let fence = opening.chars().next()?;
+    if fence != '`' && fence != '~' {
+        return None;
+    }
+
+    let length = opening.chars().take_while(|character| *character == fence).count();
+    if length < 3 {
+        return None;
+    }
+    // An info string may follow the fence, but not another run of it: a fence
+    // containing its own delimiter is not an opening fence.
+    if opening[length..].contains(fence) {
+        return None;
+    }
+
+    let body = &text[first_line + 1..];
+    let closing = format!("\n{}", fence.to_string().repeat(length));
+    let end = body.rfind(&closing)?;
+
+    if !body[end + closing.len()..].trim().is_empty() {
+        return None;
+    }
+
+    Some(body[..end].trim_matches('\n'))
 }
 
 #[derive(Debug, Deserialize)]
@@ -561,6 +620,85 @@ mod tests {
 
         assert!(!caps.bounding_boxes);
         assert!(!caps.confidence);
+    }
+
+    // ── The envelope a model wraps its answer in ─────────────────────────────
+    //
+    // Observed, not imagined: given a page and asked for Markdown, DeepSeek
+    // answered "Here is the transcription of the page in GitHub-flavoured
+    // Markdown." and put the page inside a fence. Left wrapped, the whole page
+    // became one verbatim code block and every heading and table was lost.
+
+    #[test]
+    fn a_page_wrapped_in_a_fence_is_unwrapped() {
+        let answer = "```markdown\n# Title\n\nBody.\n```";
+
+        assert_eq!(strip_envelope(answer), "# Title\n\nBody.");
+    }
+
+    #[test]
+    fn a_sentence_introducing_the_fence_goes_with_it() {
+        let answer = "Here is the transcription of the page in GitHub-flavoured Markdown.\n\n\
+                      ```\n# Title\n\nBody.\n```";
+
+        assert_eq!(strip_envelope(answer), "# Title\n\nBody.");
+    }
+
+    #[test]
+    fn tilde_fences_are_fences_too() {
+        assert_eq!(strip_envelope("~~~\n# Title\n~~~"), "# Title");
+    }
+
+    /// The narrowness is the point. A page that really does contain a code
+    /// listing has prose around it, and unwrapping would eat the page.
+    #[test]
+    fn a_code_block_inside_prose_is_left_alone() {
+        let answer = "# Title\n\nSome prose.\n\n```\nlet x = 1;\n```\n\nMore prose.";
+
+        assert_eq!(strip_envelope(answer), answer);
+    }
+
+    #[test]
+    fn an_unclosed_fence_is_left_alone() {
+        let answer = "```\n# Title\n\nBody.";
+
+        assert_eq!(strip_envelope(answer), answer);
+    }
+
+    #[test]
+    fn text_after_the_closing_fence_stops_the_unwrap() {
+        let answer = "```\n# Title\n```\n\nAnd here is what I made of it.";
+
+        assert_eq!(strip_envelope(answer), answer);
+    }
+
+    #[test]
+    fn a_fence_longer_than_the_one_it_contains_survives() {
+        // The inner ``` must not be mistaken for the end of the outer fence.
+        let answer = "````\n```\ninner\n```\n````";
+
+        assert_eq!(strip_envelope(answer), "```\ninner\n```");
+    }
+
+    #[test]
+    fn plain_markdown_is_untouched() {
+        let answer = "# Title\n\nBody.";
+
+        assert_eq!(strip_envelope(answer), answer);
+    }
+
+    /// The reason the unwrapping exists, stated as the outcome rather than the
+    /// mechanism: what the model read comes back as structure. Wrapped, the
+    /// whole page would be one verbatim block with no heading in it at all.
+    #[test]
+    fn an_introduced_fenced_answer_becomes_structure() {
+        let answer = "Here is the transcription of the page in GitHub-flavoured Markdown.\n\n\
+                      ```markdown\n# Results and discussion\n\nA paragraph.\n```";
+
+        let blocks = markdown_blocks(strip_envelope(answer), &EngineId::from("openai-compatible"));
+
+        assert_eq!(blocks[0].kind, BlockKind::Heading { level: 1 });
+        assert_eq!(blocks[0].text, "Results and discussion");
     }
 
     #[test]

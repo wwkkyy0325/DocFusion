@@ -567,6 +567,55 @@ would hide them:
    noise, no uneven lighting — so every number here is optimistic about
    real-world scans.
 
+#### The first baseline: local OCR against a cloud VLM
+
+24 pages, both engines run over the same corpus. `order` is the character error
+in reading order, `content` the same with order taken out.
+
+| | local RapidOCR | DeepSeek-V4.1-Flash |
+|---|---|---|
+| mean error, in reading order | 0.466 | **0.245** |
+| mean error, ignoring order | 0.203 | **0.171** |
+| headings found | 0 / 64 | **9 / 64** |
+| tables found with the right shape | 0 / 9 | **7 / 9** |
+| slowest page | 56 s | 74 s |
+
+**They are close on characters and not close on structure.** A line recogniser
+has no concept of a heading or a table, so those two columns are structural
+rather than measured — but a table read as a run of prose is genuinely worse for
+a knowledge base than the same table read as a table, and that is the difference
+the VLM buys.
+
+**And they fail on different pages, which is the whole argument for two.**
+Case 081, a Chinese newspaper page: the local engine recovered 97.7% of the
+reference's characters; the VLM recovered **72.8%**, cleanly omitting the
+masthead, the editor, the proofreader and the phone number. The cause is
+arithmetic rather than quality — the provider converts a page to at most ~1024
+image tokens, which downsizes a 2754×3939 scan to roughly 900×1280, and fine
+print does not survive that. The local engine runs at full resolution and does
+not care. On the same corpus the VLM's output on that page carries *more* of the
+page's structure and *less* of its content, which is exactly the shape of
+disagreement the verifier exists to catch.
+
+**Two findings this produced in code, both from running rather than from tests:**
+
+- **The VLM wrapped whole pages in a fenced block with a preamble** ("Here is
+  the transcription of the page in GitHub-flavoured Markdown." followed by a
+  fence). Left in place, the page became one verbatim code block and every
+  heading and table was lost. `endpoint::strip_envelope` unwraps a single fenced
+  block, with or without one introducing sentence, and only that.
+- **The scorer could not see inside a code block.** A fenced block's content is
+  a literal rather than a text node, so a correctly read page returned inside a
+  fence scored a content error of **1.000** — read as "the engine returned
+  nothing" when it had returned everything. Between the two, cases 011/012 went
+  from 1.000 to 0.089 and the corpus mean from 0.292 to 0.245.
+
+**Still open, raised by the data:** when the verifier recovers text the primary
+dropped, the primary's reading is still what the document contains; the conflict
+is recorded but nothing is resolved. Deferred arbitration covers this, but the
+geometry-free comparison also cannot classify a dropped region as the dangerous
+class it is, because it cannot localise it.
+
 ---
 
 ## 9. Storage & deduplication

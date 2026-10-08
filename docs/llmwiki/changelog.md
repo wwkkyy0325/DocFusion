@@ -4,6 +4,50 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — The first real baseline, and the bug that made it a lie
+
+**What:** both engines run over the 24-page corpus. DeepSeek-V4.1-Flash against
+the bundled local recogniser. Numbers in design §8.5.
+
+**Result: close on characters, not close on structure.** Reading order 0.245
+against 0.466; content 0.171 against 0.203; headings 9/64 against 0/64; tables
+7/9 against 0/9. The structural half is the difference a vision model buys.
+
+**And they fail on different pages.** A Chinese newspaper page: the local engine
+recovered 97.7% of the reference's characters, the VLM 72.8%, cleanly omitting
+the masthead, editor, proofreader and phone number. The provider turns a page
+into at most ~1024 image tokens, which downsizes a 2754×3939 scan to roughly
+900×1280, and fine print does not survive that. That single page is the argument
+for the whole two-engine design, measured rather than asserted.
+
+**Two bugs the run exposed, neither of which a test would have found:**
+
+- DeepSeek wrapped entire pages in a fenced block behind a sentence: "Here is
+  the transcription of the page in GitHub-flavoured Markdown." The fence is
+  packaging, not content, and left in place the page became one verbatim code
+  block with no headings and no tables. `strip_envelope` now unwraps a single
+  fenced block, with or without one introducing sentence, and only that.
+- **The scorer could not see inside a code block**, because a fenced block's
+  content is a literal rather than a text node. A page read perfectly and
+  returned inside a fence scored a content error of 1.000 — read as "returned
+  nothing" when it had returned everything. The most misleading answer a metric
+  can give. Fixed; text inside a code block now counts as text.
+
+Between the two, cases 011 and 012 went from 1.000 to 0.089.
+
+**A note on why the run was worth the trouble.** Every number in the first
+result was wrong in the direction of condemning the VLM. Reporting it as it came
+out would have been a confident, well-measured, false answer — which is the
+failure this project is built around not making.
+
+**Raised but not resolved:** when the verifier recovers text the primary
+dropped, the document still contains the primary's reading. The conflict is
+recorded and neither reading is preferred, but nothing is resolved, and the
+geometry-free comparison cannot classify a dropped region as the dangerous class
+it is because it cannot localise it. Both belong with arbitration.
+
+---
+
 ## 2026-10-08 — One place to put the key
 
 **What:** `%LOCALAPPDATA%\DocFusion\config.toml` holds the settings that would
