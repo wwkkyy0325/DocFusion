@@ -21,20 +21,23 @@ content is never processed twice. Agents must be able to use the output directly
 ## Steps
 
 ### Step 1 — Workspace scaffolding
-- [ ] `cargo new --lib crates/docfusion-core`
-- [ ] `cargo new --lib crates/docfusion-store`
-- [ ] `cargo new crates/docfusion-cli`
-- [ ] Root `Cargo.toml` workspace with shared dependency versions
-- [ ] `cargo build` succeeds from a clean checkout
+- [x] `cargo new --lib crates/docfusion-core`
+- [x] `cargo new --lib crates/docfusion-store`
+- [x] `cargo new crates/docfusion-cli`
+- [x] Root `Cargo.toml` workspace with shared dependency versions
+- [x] `cargo build` succeeds from a clean checkout
 
 **Verify:** `cargo build --workspace` exits 0; `cargo clippy -- -D warnings` clean.
 
+> The `docfusion-gui` crate is **not** created here. It is deferred to P2 so the
+> Tauri dependency tree does not tax CLI build times during P0/P1.
+
 ### Step 2 — Core IR
-- [ ] Define `Document`, `Page`, `Block`, `BlockKind`, `Rect`, `SourceRef`,
+- [x] Define `Document`, `Page`, `Block`, `BlockKind`, `Rect`, `SourceRef`,
       `Conflict`, `EngineId` in `docfusion-core/src/ir.rs`
-- [ ] `Rect` normalizes to 0..1 with `#[serde]` support
-- [ ] Serialize/deserialize round-trip test
-- [ ] `Rect::iou()` with unit tests (disjoint, contained, partial overlap)
+- [x] `Rect` normalizes to 0..1 with `#[serde]` support
+- [x] Serialize/deserialize round-trip test
+- [x] `Rect::iou()` with unit tests (disjoint, contained, partial overlap)
 
 **Verify:** `cargo test -p docfusion-core` passes; IoU unit tests cover the three
 overlap cases plus the degenerate zero-area case.

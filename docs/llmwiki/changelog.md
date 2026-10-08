@@ -4,6 +4,21 @@ Append-only record of meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — Model selection becomes measurement-driven
+
+**What:** Added design §8.5 (evaluation corpus) and a sequencing requirement in
+§8.4: the bench harness and golden corpus are built **before** the local VLM
+default is fixed. P1 was reordered so the harness comes first.
+
+**Why:** Review feedback — the model choice should be decided by testing on a
+suitable corpus and then tuned, not taken from public leaderboards. This matches
+the project's own finding that leaderboard numbers come from different benchmark
+versions and are not directly comparable. The candidates listed in §8.2 are now
+explicitly starting points for measurement rather than a decision.
+
+**Consequence:** No model name may be hard-coded outside a `VlmBackend` impl, and
+each bench run records its corpus hash so results remain comparable over time.
+
 ## 2026-10-08 — Initial design
 
 **What:** Created the repository and wrote the initial design for DocFusion: a

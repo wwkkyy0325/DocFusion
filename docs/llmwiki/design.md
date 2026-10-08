@@ -62,6 +62,9 @@ DocFusion/
     docfusion-gui/      # Tauri shell (Windows-first, static frontend, no Node)
 ```
 
+The GUI crate is created in P2, not upfront: its dependency tree is heavy and
+would slow every CLI build during P0 and P1.
+
 Rationale for a split workspace rather than feature flags in one crate: the Tauri
 dependency tree is heavy (hundreds of crates). CLI users must not pay that
 compile-time cost, and `docfusion-core` must stay testable in isolation against
@@ -129,7 +132,7 @@ pub struct Conflict {
     pub page:     u32,
     pub bbox:     Option<Rect>,
     pub kind:     ConflictKind,      // TextMismatch | StructuralMismatch | Missing
-    pub variants: Vec<(EngineId, String)>,
+    pub variants: Vec<Variant>,      // Variant { engine, text }
     pub resolved: Option<Resolution>,
 }
 ```
@@ -320,6 +323,35 @@ means this design decays within two quarters. Because every backend is already a
 trait impl, adding a new model is one `impl` block — and the choice is
 re-evaluated against *the user's own documents* rather than a public leaderboard.
 
+**Sequencing requirement:** the harness and the golden corpus are built *before*
+the local VLM default is fixed. The candidates in §8.2 are starting points for a
+measurement, not a decision. Nothing in P1 may hard-code a model name outside a
+backend impl.
+
+### 8.5 Evaluation corpus
+
+The corpus lives outside the repository (real documents are often private) and is
+referenced by path via `docfusion bench --set <dir>`. Because the corpus is not
+versioned, **each evaluated run records its corpus hash** so that results stay
+comparable across time.
+
+Coverage the corpus must include, since these are where engines actually diverge:
+
+- clean text-layer PDFs (baseline — note the deterministic path should win here
+  at zero cost, so this measures whether the router is correct, not model quality)
+- scanned documents, clean and skewed
+- multi-column academic / report layouts
+- tables with merged cells and multi-line cells
+- Chinese documents: mixed CJK/Latin, vertical text, seals/stamps
+- formulas
+- low-quality scans (fax-grade, uneven lighting)
+
+Ground truth is human-corrected Markdown. Metrics: per-block text accuracy after
+normalization, table TEDS, reading-order correctness, latency, and cost per 1000
+pages. Weighting is deliberate: **reading-order and table errors are weighted
+above character-level noise**, because they are the failures that silently
+corrupt downstream use.
+
 ---
 
 ## 9. Storage & deduplication
@@ -508,7 +540,7 @@ Each phase is independently usable — no phase requires the next to be useful.
 | Phase | Contents | Deliverable |
 |---|---|---|
 | **P0 Foundation** | IR, store, deterministic PDF/Office extractors, CLI (`add`/`show`/`list`/`reconcile`), atomic write | Clean file tree; **agents can use it immediately** |
-| **P1 Dual verification** | `VlmBackend`, Ollama backend, RapidOCR backend, alignment, conflicts | Scans handled; disagreements visible |
+| **P1 Dual verification** | **Bench harness + golden corpus first**, then `VlmBackend`, Ollama backend, RapidOCR backend, alignment, conflicts, model selection | Scans handled; disagreements visible; default local VLM chosen from measurement |
 | **P2 GUI** | Tauri shell, rendering, copy-as-plain-text, conflict panel | Users can review conflicts |
 | **P3 Retrieval** | SQLite FTS5 + Chinese tokenization, search UI, tags | Knowledge base for humans |
 | **P4 Optional** | Vector search, MCP server, environment detection UI, daemon/queue | — |

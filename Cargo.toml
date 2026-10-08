@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/docfusion-core",
+    "crates/docfusion-store",
+    "crates/docfusion-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
