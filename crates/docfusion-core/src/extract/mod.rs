@@ -5,10 +5,14 @@
 //! case for a PDF with no text layer — hands control to the next candidate
 //! rather than failing the run.
 
+#[cfg(test)]
+pub mod fixtures;
+
 pub mod docx;
 pub mod ooxml;
 pub mod pdf;
 pub mod pptx;
+pub mod scan;
 pub mod text;
 pub mod xlsx;
 
@@ -77,6 +81,30 @@ pub enum ExtractError {
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// A page could not be turned into pixels, so nothing could read it.
+    #[error(transparent)]
+    Image(#[from] crate::image::ImageError),
+}
+
+/// A backend failure becomes an extraction failure carrying the backend's own
+/// message.
+///
+/// An unavailable backend maps to `Unsupported` rather than `Failed`, because
+/// the two mean different things to a caller: one is a file nothing can read
+/// yet, the other is a run that broke.
+impl From<crate::backend::BackendError> for ExtractError {
+    fn from(error: crate::backend::BackendError) -> Self {
+        use crate::backend::BackendError;
+
+        match error {
+            BackendError::Unavailable(reason) => ExtractError::Unsupported { reason },
+            BackendError::Failed(message) => ExtractError::Failed {
+                engine: crate::ir::EngineId::from("backend"),
+                message,
+            },
+        }
+    }
 }
 
 impl ExtractError {
@@ -197,9 +225,12 @@ fn no_engine_reason(probe: &InputProbe, declines: &[String]) -> String {
         Container::Ole2 => "this is a legacy Office file (.doc, .xls or .ppt); \
              save it as .docx, .xlsx or .pptx, or export it to PDF, and try again"
             .to_owned(),
-        container if container.is_image() => {
-            "no OCR or vision backend is configured yet, so images cannot be read".to_owned()
-        }
+        Container::Pdf => "this PDF has no text layer, and no OCR or vision backend \
+             is configured to read it; see the setup guide"
+            .to_owned(),
+        container if container.is_image() => "no OCR or vision backend is configured, \
+             so images cannot be read; see the setup guide"
+            .to_owned(),
         Container::Zip => {
             "this archive is not a docx, xlsx or pptx, so nothing can read it".to_owned()
         }
@@ -328,6 +359,22 @@ mod tests {
 
         let document = router.extract(&probe(Container::Pdf), &source(), b"").unwrap();
         assert_eq!(document.pages[0].provenance.primary.as_str(), "fallback");
+    }
+
+    /// Equally plausible engines keep their registration order, which is the
+    /// mechanism behind a rule that matters: a PDF's text layer is tried before
+    /// its pages are rendered, because parsing is free and exact while
+    /// rendering costs an image and a model.
+    #[test]
+    fn equally_plausible_engines_keep_their_registration_order() {
+        let router = Router::new(vec![
+            Box::new(Stub::new("text-layer", Fit::Maybe, Outcome::Succeed)),
+            Box::new(Stub::new("render", Fit::Maybe, Outcome::Succeed)),
+        ]);
+
+        let document = router.extract(&probe(Container::Pdf), &source(), b"").unwrap();
+
+        assert_eq!(document.pages[0].provenance.primary.as_str(), "text-layer");
     }
 
     /// Candidates are sorted, so a `Maybe` is never tried before a `Yes`.

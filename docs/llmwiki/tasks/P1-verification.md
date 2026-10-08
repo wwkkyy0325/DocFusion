@@ -59,15 +59,24 @@ This proves the harness before it is used to judge anything.
 **Verify:** a fixture PDF renders to the expected pixel dimensions at a chosen DPI.
 
 ### Step 3 — Backend traits
-- [ ] `OcrBackend` and `VlmBackend`, with `Caps` declaring bounding-box and
+- [x] `OcrBackend` and `VisionBackend`, with `Caps` declaring bounding-box and
       confidence support
-- [ ] An `Extractor` adapter that routes images and text-layer-less PDF pages
-      to the configured backends
-- [ ] A router that reports which backend is missing when nothing can read an
-      input
+- [x] `ScanExtractor`: renders or decodes each page and hands it to the
+      configured backends
+- [x] A composite engine stamp covering every backend, so pointing the tool at a
+      different model invalidates previous output
+- [x] A router that reports what is missing when nothing can read an input
 
-**Verify:** a stubbed backend produces a Document from a fixture image, and the
-router prefers the text-layer engine for a PDF that has one.
+**Verify:** a stubbed backend produces a Document from a fixture image, and a
+PDF that has a text layer is parsed rather than rendered.
+
+> **Deliberately absent: a fallback from vision to OCR.** A silent downgrade
+> would produce unverified output indistinguishable from verified output, which
+> is the failure this project is organised around.
+>
+> **Not yet wired into the CLI.** `ScanExtractor` refuses every input until a
+> backend is configured, so registering one now would add an engine that can
+> only ever decline. Step 5 supplies the configuration it is waiting for.
 
 ### Step 4 — Local OCR backend
 - [ ] RapidOCR models on ONNX Runtime; no PaddlePaddle
