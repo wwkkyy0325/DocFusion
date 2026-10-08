@@ -76,8 +76,9 @@ struct Cli {
     #[arg(long, global = true, env = "DOCFUSION_MAX_VERIFY_PAGES")]
     max_verify_pages: Option<u32>,
 
-    /// How many pages may be read at once. Each costs about 250 MB and buys
-    /// speed only on documents with more than one page. Default: 4.
+    /// How many pages may be read at once. Default: a quarter of this
+    /// machine's memory, divided by the 250 MB a reader costs, capped by its
+    /// cores. Set it to trade speed against memory.
     #[arg(long, global = true, env = "DOCFUSION_OCR_PIPELINES")]
     max_ocr_pipelines: Option<usize>,
 
@@ -540,19 +541,32 @@ fn engines(cli: &Cli, policy: VerifyPolicy) -> Result<Vec<Box<dyn Extractor>>, C
     // actually needs reading. It is what makes a scan readable with no setup:
     // the weights are in the binary, so there is nothing to configure and
     // nothing to download.
-    let ocr = match cli.max_ocr_pipelines {
-        Some(count) => RapidOcrBackend::bundled().with_pipelines(count),
-        None => RapidOcrBackend::bundled(),
-    };
+    // One number, used twice. Threads beyond pipelines queue, and pipelines
+    // beyond threads are memory nobody reads a page with, so a mismatch wastes
+    // whichever is larger.
+    let readers = readers(cli);
 
     engines.push(Box::new(
-        ScanExtractor::new(Some(Box::new(ocr)), vision(cli)?).with_policy(policy),
+        ScanExtractor::new(
+            Some(Box::new(RapidOcrBackend::bundled().with_pipelines(readers))),
+            vision(cli)?,
+        )
+        .with_policy(policy)
+        .with_concurrency(readers),
     ));
 
     Ok(engines)
 }
 
-/// The verification policy the command line asked for.
+/// How many pages this run will read at once.
+///
+/// The machine decides, unless somebody has said otherwise. See
+/// `docfusion_store::memory` — the answer is a share of the memory there is,
+/// capped by the cores there are.
+fn readers(cli: &Cli) -> usize {
+    cli.max_ocr_pipelines
+        .unwrap_or_else(docfusion_store::memory::page_concurrency)
+}
 fn policy(cli: &Cli) -> VerifyPolicy {
     VerifyPolicy {
         mode: cli.verify.unwrap_or(VerifyChoice::Doubt).into(),
@@ -657,7 +671,7 @@ fn schema() -> Value {
             },
             "doctor": {
                 "arguments": [],
-                "emits": ["command", "root", "root_exists", "engines", "endpoint", "model", "serves", "model_listed", "tier", "notes", "problems", "config"],
+                "emits": ["command", "root", "root_exists", "engines", "memory_bytes", "readers", "endpoint", "model", "serves", "model_listed", "tier", "notes", "problems", "config"],
                 "note": "reports what this installation can read; `tier` is `vision` only when a configured endpoint answered and listed the model. Exits 1 when a configured endpoint could not be confirmed; exits 0 with no endpoint at all, which is a supported configuration"
             },
             "schema": {

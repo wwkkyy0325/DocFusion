@@ -73,6 +73,9 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
         _ => OCR_ONLY,
     };
 
+    let memory = docfusion_store::memory::total();
+    let readers = crate::readers(cli);
+
     let mut lines = vec![
         format!(
             "knowledge base  {}{}",
@@ -80,6 +83,17 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
             if root.is_dir() { "" } else { "  (not created yet)" }
         ),
         format!("engines         {}", engines.join(", ")),
+        format!(
+            "memory          {}",
+            match memory {
+                Some(bytes) => format!(
+                    "{:.1} GB, so {readers} page{} at once",
+                    bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                    if readers == 1 { "" } else { "s" }
+                ),
+                None => format!("unknown, so {readers} page(s) at once"),
+            }
+        ),
     ];
 
     match &endpoint {
@@ -135,6 +149,8 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
             "root": root.display().to_string(),
             "root_exists": root.is_dir(),
             "engines": engines,
+            "memory_bytes": memory,
+            "readers": readers,
             "endpoint": endpoint.as_ref().map(|e| e.config().base_url.clone()),
             "model": endpoint.as_ref().map(|e| e.config().model.clone()),
             "serves": serves,

@@ -53,22 +53,18 @@ pub struct RapidOcrBackend {
     source: Source,
 }
 
-/// The most pipelines to keep unless something says otherwise.
-///
-/// Memory is the binding constraint, not cores, and more sharply than the model
-/// files suggest: a loaded pipeline costs about **250 MB** resident, not the
-/// 130 MB its weights measure, because the session's working memory scales with
-/// the page it is reading. Measured over 32 pages: one pipeline peaks at 439 MB
-/// and takes 263 s, four peak at 1193 MB and take 76 s. That is 3.5× the speed
-/// for three quarters of a gigabyte, which is a good trade on most machines and
-/// a bad one on a small one — hence `with_pipelines`.
-const MAX_PIPELINES: usize = 4;
-
 /// How many pages this machine will read at once.
+///
+/// The machine answers this — from its memory and its cores — rather than a
+/// constant here. A loaded pipeline costs about **250 MB** resident: measured
+/// over 32 pages, one peaks at 439 MB and takes 263 s where four peak at 1193 MB
+/// and take 76 s. A number that is right on a laptop is wrong on a workstation,
+/// and the same build runs on both.
+///
+/// See `crate::memory::page_concurrency` for the arithmetic. Overriding it is
+/// what `with_pipelines` is for.
 fn pipeline_count() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(MAX_PIPELINES)
+    crate::memory::page_concurrency()
 }
 
 enum Source {

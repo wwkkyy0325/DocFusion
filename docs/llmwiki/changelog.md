@@ -4,6 +4,43 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-08 — The machine decides how many pages to read at once
+
+**What:** the reader count is no longer a constant. `docfusion-store::memory`
+asks the operating system for its physical memory, takes a quarter of it,
+divides by the 250 MB a reader costs, and caps the result at the core count.
+`docfusion doctor` now says what it worked out — on this machine, *31.2 GB, so
+16 pages at once* — and the number is used for both the extractor's threads and
+the recognition engine's pipelines, because two constants for one quantity drift
+apart and whichever is larger is wasted.
+
+**Where it stops paying.** Reading eight pages takes 71 s at one reader, 16 s at
+eight and 17 s at sixteen: **two gigabytes for no measurable gain.** On sixteen
+pages the sixteenth reader is worth 14%. So the rule is what the user asked for
+— a quarter of the machine — and the measurement says the useful number on a
+sixteen-core machine is nearer eight. That is one flag, and the guide says so
+rather than pretending the budget is also the optimum.
+
+**`docfusion doctor` gained the machine's memory**, and the figure was checked
+against what Windows reports: 33,476,141,056 bytes, exactly what the direct call
+returns.
+
+**The GUI question, answered in the design.** Can the Tauri shell talk to the
+crates directly? Yes, and it is the plan — the webview is a view over the same
+process, so there is **no port and therefore no port conflict**. That is not a
+lucky accident of Tauri but a consequence of not having a service: port clashes
+are the tax a desktop application pays for being two programs rather than one,
+and a `docfusion serve` would have reintroduced them for something the command
+line already does. §11 now says so, and says what a genuine long-running mode
+would need if one is ever wanted.
+
+**The setup guide gained §9**, for a program driving the tool rather than a
+person: point at `docfusion schema` rather than at the document, the two rules
+the output keeps, the exit codes, what is idempotent, that two processes may
+overlap, and that credentials belong in the file rather than in an argument.
+
+---
+
 ## 2026-10-08 — Pages are rendered when they are wanted
 
 **What:** `PageSource` replaces the vector of decoded pages. A page is rendered

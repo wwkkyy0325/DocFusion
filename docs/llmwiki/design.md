@@ -876,6 +876,25 @@ Empty state                    After processing
 - The GUI is a shell over the same `docfusion-core`; feature work belongs in core
   and CLI. The GUI must not become the only place a capability lives.
 
+**The GUI links the crates, and there is no server behind it.** Tauri is a Rust
+application whose webview is a view over the same process: the interface calls
+into `docfusion-core` and `docfusion-store` directly, as the command line does.
+There is no HTTP surface between the two halves.
+
+**Which means there is no port, and so nothing to collide.** Port conflicts are
+the tax a desktop application pays for being two programs rather than one —
+a fixed port that a second copy wants, a chosen port somebody else already has,
+a firewall rule for a listener the user never asked for. None of it arises here,
+and it is worth naming as a *reason* rather than an accident: a `docfusion
+serve` would have reintroduced all three for a capability the CLI already
+provides, which is why §10.2 can call the command line the complete agent
+surface.
+
+Should a long-running mode ever be needed — watching a directory, say, which is
+P4 — that is a service in the true sense, and it would need a port, a port
+policy, and a story for a second copy. It would not be this GUI growing a
+backend.
+
 ### 11.2 Copy behavior
 
 The displayed Markdown is **rendered** (headings, tables, emphasis). A dedicated

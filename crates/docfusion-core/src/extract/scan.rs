@@ -34,6 +34,10 @@ pub struct ScanExtractor {
     ocr: Option<Box<dyn OcrBackend>>,
     vision: Option<Box<dyn VisionBackend>>,
     policy: VerifyPolicy,
+    /// Pages read at once. Set from the machine in the command line, so that it
+    /// and the recognition engine's pipelines are the same number rather than
+    /// two constants that drift apart.
+    threads: usize,
     dpi: f32,
 }
 
@@ -43,8 +47,19 @@ impl ScanExtractor {
             ocr,
             vision,
             policy: VerifyPolicy::default(),
+            threads: DEFAULT_THREADS,
             dpi: DEFAULT_DPI,
         }
+    }
+
+    /// Sets how many pages are read at once.
+    ///
+    /// Set this and the recognition engine's pipeline count together, from the
+    /// same number: threads beyond pipelines spend their time queueing, and
+    /// pipelines beyond threads are memory that is never used.
+    pub fn with_concurrency(mut self, threads: usize) -> Self {
+        self.threads = threads.max(1);
+        self
     }
 
     pub fn with_policy(mut self, policy: VerifyPolicy) -> Self {
@@ -141,6 +156,7 @@ impl ScanExtractor {
 /// reporting by arrival would make the error message differ between runs over
 /// the same input.
 fn side_by_side<T: Sync, R: Send>(
+    threads: usize,
     items: &[T],
     action: impl Fn(&T, usize) -> Result<R, ExtractError> + Sync,
 ) -> Result<Vec<R>, ExtractError> {
@@ -155,7 +171,7 @@ fn side_by_side<T: Sync, R: Send>(
     let cursor = AtomicUsize::new(0);
 
     std::thread::scope(|scope| {
-        for _ in 0..items.len().min(THREADS) {
+        for _ in 0..items.len().min(threads.max(1)) {
             scope.spawn(|| {
                 loop {
                     let index = cursor.fetch_add(1, Ordering::Relaxed);
@@ -186,14 +202,15 @@ fn side_by_side<T: Sync, R: Send>(
     outcomes.into_iter().collect()
 }
 
-/// How many pages are read at once.
+/// How many pages are read at once when nothing says otherwise.
 ///
-/// Matched to the pipelines the recognition engine keeps, because beyond that
-/// the threads spend their time queueing rather than working. A recognition
-/// backend with a different shape — a remote endpoint, say — is served just as
-/// well by the same number; this is a bound on concurrency, not a measurement
-/// of any one engine.
-const THREADS: usize = 4;
+/// Deliberately unambitious. The number that matters is decided by whoever
+/// builds the extractor, from the machine it is running on — see
+/// `docfusion_store::memory::page_concurrency` — because the cost is memory and
+/// the right answer differs by an order of magnitude between machines. This is
+/// the floor for a caller who has not thought about it, and it has to match the
+/// pipelines the recognition engine keeps or one of the two is wasted.
+const DEFAULT_THREADS: usize = 4;
 
 /// One page's reading, and what is known about it so far.
 ///
@@ -267,7 +284,7 @@ impl Extractor for ScanExtractor {
         // whose check fails fails the document, which is the same answer the
         // one-page-at-a-time version gave: a check that did not happen must not
         // look like a check that passed.
-        let readings = side_by_side(&indexes, |index, _| {
+        let readings = side_by_side(self.threads, &indexes, |index, _| {
             let image = source.page(*index)?;
             let blocks = self.primary(&PageRequest {
                 image: &image,
@@ -286,7 +303,7 @@ impl Extractor for ScanExtractor {
         })?;
 
         let worth = self.worth_checking(&readings);
-        let checks = side_by_side(&worth, |index, _| {
+        let checks = side_by_side(self.threads, &worth, |index, _| {
             let image = source.page(*index)?;
             let verifier = self
                 .verifier()

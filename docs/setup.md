@@ -208,26 +208,90 @@ Resource use, measured on the same machine:
 
 **Most of that is the number of pages read at once**, not the document. Pages
 are read in parallel and each reader holds a loaded model; each costs about
-250 MB, so four of them dominate everything else. Reading is otherwise about
-three seconds a page on CPU, and eight pages take 71 s at one pipeline, 41 s at
-two and 27 s at four.
+250 MB, so several of them dominate everything else.
 
-If memory matters more than speed, turn it down — in the configuration file or
-on one run:
+**How many is decided from the machine, not chosen here.** A quarter of the
+physical memory, divided by what a reader costs, capped by the number of cores.
+`docfusion doctor` says what it worked out:
+
+```
+memory          31.2 GB, so 16 pages at once
+```
+
+On this machine, reading one page at a time takes 71 s for eight pages, eight at
+once takes 16 s, and sixteen at once takes 17 s — two gigabytes more for no
+measurable gain. **Between eight and sixteen is where the returns stop on a
+sixteen-core machine**, and where that point falls elsewhere is not something
+this was tested on. If memory matters more than speed, say so — in the
+configuration file or on one run:
 
 ```bash
-docfusion --max-ocr-pipelines 1 --root kb add scan.pdf
+docfusion --max-ocr-pipelines 8 --root kb add scan.pdf
 ```
 
 ```toml
 # config.toml
-max_ocr_pipelines = 2
+max_ocr_pipelines = 8
 ```
 
 Below one is one: zero would read nothing, so it is treated as a mistake rather
 than obeyed.
 
-## 9. Verification
+## 9. Calling it as a step in something else
+
+This is the section for a program or an agent driving `docfusion`, rather than a
+person typing at it. There is no server to start and no port to arrange: every
+call is a process, and a process that reads a document takes about three seconds
+a page.
+
+**Read the contract rather than this page.** It is printed by the tool:
+
+```bash
+docfusion schema
+```
+
+It lists every command, the fields each one emits, the exit codes, and the path
+and keys of the configuration file. It is generated from the same source as the
+behaviour, so it cannot be out of date in the way a document can.
+
+**Two rules the output keeps, so a caller can rely on them:**
+
+- **stdout carries results and nothing else** — NDJSON with `--json`, human
+  lines otherwise. Progress, warnings and errors always go to stderr. A caller
+  parsing stdout never has to defend against a log line.
+- **Exit codes say what happened**: `0` success, `1` failure, `2` some inputs
+  succeeded, `3` nothing can read this input, `4` the index disagrees with the
+  file tree.
+
+**It is safe to run twice.** The same file added again is a cache hit in
+milliseconds; the same content under a different name is recognised as the same
+document. Two processes writing to one knowledge base wait for each other rather
+than failing.
+
+**Put the credentials in the configuration file, not on the command line.** A
+key passed as an argument is a key in a process listing and in a shell history.
+See §4 — every setting there can also be given per run, and either form wins
+over the file.
+
+A worked example — one line of NDJSON per document, on stdout, with nothing else
+mixed into it:
+
+```console
+$ docfusion --json --root kb add page.png 2>/dev/null
+{"command":"add","conflicts":0,"id":"541182669b…","output":"kb\\docs\\ppt-…md",
+ "path":"…/page.png","reused":false,"status":"done"}
+```
+
+`reused` says whether the work was done or answered from the index, so a caller
+can tell a fresh reading from a repeat without timing anything. Filter it with
+whatever the calling program already has — `jq`, a JSON parser, a line split on
+`"reused":false`.
+
+**The knowledge base is a directory of Markdown plus one SQLite file.** Nothing
+is stored anywhere else and nothing is stored only in the index — if the index
+is lost, `docfusion reconcile` rebuilds it from the tree.
+
+## 10. Verification
 
 Two of the three original candidates for a local VLM — llama-server, Ollama and
 LM Studio — could not be exercised, because none of them is installed on the
