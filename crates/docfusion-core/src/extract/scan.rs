@@ -99,7 +99,7 @@ impl ScanExtractor {
         }
         *budget -= 1;
 
-        let checked = verifier.recognize(request).map_err(ExtractError::from)?;
+        let checked = verifier.recognize(request).map_err(failed)?;
 
         Ok(Reading {
             conflicts: verify::compare(request.page, &unchecked.blocks, &checked),
@@ -117,14 +117,14 @@ impl ScanExtractor {
     /// fast. See the role matrix in the design.
     fn primary(&self, request: &PageRequest<'_>) -> Result<Vec<Block>, ExtractError> {
         if let Some(vision) = &self.vision {
-            return vision.parse(request).map_err(ExtractError::from);
+            return vision.parse(request).map_err(failed);
         }
 
         let ocr = self
             .ocr
             .as_ref()
             .ok_or_else(|| ExtractError::failed(ENGINE_ID, "no backend is configured"))?;
-        ocr.recognize(request).map_err(ExtractError::from)
+        ocr.recognize(request).map_err(failed)
     }
 
     /// The engine that checks the primary's work, when there is a different one
@@ -140,6 +140,14 @@ impl ScanExtractor {
         self.vision.as_ref()?;
         self.ocr.as_deref()
     }
+}
+
+/// Turns a backend failure into this engine's failure.
+///
+/// The engine is named rather than left to a generic one, because the message
+/// a person sees should say which part of the pipeline broke.
+fn failed(error: crate::backend::BackendError) -> ExtractError {
+    ExtractError::failed(ENGINE_ID, error.to_string())
 }
 
 /// One page's reading, and what is known about how far it can be trusted.
@@ -667,6 +675,26 @@ mod tests {
 
         assert_eq!(calls.count(), 0);
         assert!(document.conflicts.is_empty());
+    }
+
+    /// A backend that cannot be reached is a broken engine, not an input
+    /// nothing can read. Reporting it as the latter sent a reader to check a
+    /// configuration that was already correct, with the real reason trailing in
+    /// parentheses behind a sentence contradicting it.
+    #[test]
+    fn an_unreachable_backend_is_a_failure_not_a_decline() {
+        let extractor = ScanExtractor::new(Some(ocr()), Some(vision(true)));
+
+        let error = extract(&extractor, &image(), "scan.png").expect_err("should fail");
+
+        assert!(
+            matches!(error, ExtractError::Failed { .. }),
+            "a broken backend is a failure: {error}"
+        );
+        assert!(
+            !error.to_string().contains("no OCR or vision backend is configured"),
+            "and the message must not contradict itself: {error}"
+        );
     }
 
     /// With no vision engine there is no second lineage to check the first, and

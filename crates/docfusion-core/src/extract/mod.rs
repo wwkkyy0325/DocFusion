@@ -91,26 +91,6 @@ pub enum ExtractError {
     Image(#[from] crate::image::ImageError),
 }
 
-/// A backend failure becomes an extraction failure carrying the backend's own
-/// message.
-///
-/// An unavailable backend maps to `Unsupported` rather than `Failed`, because
-/// the two mean different things to a caller: one is a file nothing can read
-/// yet, the other is a run that broke.
-impl From<crate::backend::BackendError> for ExtractError {
-    fn from(error: crate::backend::BackendError) -> Self {
-        use crate::backend::BackendError;
-
-        match error {
-            BackendError::Unavailable(reason) => ExtractError::Unsupported { reason },
-            BackendError::Failed(message) => ExtractError::Failed {
-                engine: crate::ir::EngineId::from("backend"),
-                message,
-            },
-        }
-    }
-}
-
 impl ExtractError {
     pub fn unsupported(reason: impl Into<String>) -> Self {
         Self::Unsupported {
