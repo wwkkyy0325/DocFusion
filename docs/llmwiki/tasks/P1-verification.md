@@ -85,15 +85,20 @@ PDF that has a text layer is parsed rather than rendered.
 **Verify:** a generated image of known text is read back exactly.
 
 ### Step 5 — Vision backend: the user's OpenAI-compatible endpoint
-- [ ] One HTTP client against `/v1/chat/completions`, covering llama-server,
+- [x] One HTTP client against `/v1/chat/completions`, covering llama-server,
       Ollama, LM Studio, vLLM and cloud providers alike
-- [ ] Configuration: base URL, model name, optional key, timeout
-- [ ] A request timeout, so an endpoint that accepts a connection and then
-      stalls cannot freeze a batch
-- [ ] Treat an implausible prompt token count as an error: a GGUF model served
-      without its multimodal projector answers 200 with repeated garbage
-- [ ] With nothing configured, say so and point at the guide — OCR-only is a
-      supported mode, not a failure
+- [x] Configuration: base URL, model name, optional key, timeout, prompt
+- [x] A request timeout that names the likely cause, since a model still loading
+      and a model too large for the machine look identical from outside
+- [x] An implausible prompt token count is an error: a GGUF model served without
+      its multimodal projector answers 200 with repeated garbage
+- [x] `probe()`, which asks the endpoint what it serves rather than inspecting
+      the machine
+- [ ] Wire the endpoint into the CLI: flags, environment variables, and
+      registering `ScanExtractor` once a backend exists
+
+**Verify:** a stub HTTP server, not a mocked transport — the client is the thing
+under test, and mocking below it would test the mock.
 
 **Verify:** against a stub server, a fixture page returns Markdown; with no
 endpoint configured the error names the guide; a server that accepts and then

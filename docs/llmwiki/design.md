@@ -387,21 +387,26 @@ Models turn over every few months; a document can be updated in a paragraph.
 > `docfusion bench` exists so this can be settled on the user's own documents
 > rather than on a leaderboard.
 
-### 8.3 Cloud (optional, configured by the user)
+### 8.3 Cloud is the same client
 
-Cloud is a config item, not a build-time decision. Providers sit behind the same
-`VlmBackend` trait.
+A hosted provider is not a separate subsystem. It is the endpoint from §8.2 with
+a different address and a key, which is why §8.2 made the endpoint the unit of
+configuration rather than the runtime.
 
-- **Preferred cloud OCR/parse: Mistral OCR 4.** On an independent olmOCR-Bench
-  run (40 hard documents) it ranked first overall (74.9%) and first among paid
-  APIs, leading on tables (94.3) and reading order (73.3). **The decisive factor
-  is not its rank but that it is the only leading system that returns typed
-  blocks, bounding boxes, and per-word confidence.** Without bbox and confidence
-  the verifier cannot align blocks, which collapses dual verification into a
-  whole-document text diff — unusable given OCR noise.
-- **Generic cloud VLMs** (Claude, GPT, Gemini class) remain usable as primary
-  extractors or arbiters, but must be treated as `Caps { has_bbox: false }`, with
-  verification degrading to text-only comparison.
+What differs is **what the endpoint can report**, and one property matters
+enough to name:
+
+- **Prefer a provider that returns typed blocks, bounding boxes and per-word
+  confidence over one that returns only text.** Without geometry the verifier
+  has nothing to align two engines' output on, and verification collapses into a
+  whole-document text comparison that OCR noise makes useless. On an independent
+  olmOCR-Bench run, Mistral's OCR models were the only leading system reporting
+  it alongside top accuracy — but the property is what counts, not the vendor.
+- **General hosted vision models report neither.** They are declared as
+  `Caps { bounding_boxes: false, confidence: false }`, so the verifier degrades
+  honestly instead of pretending to align on boxes that do not exist.
+
+Neither is a build-time decision. Both are a URL and a key.
 
 ### 8.4 Benchmark harness — selection is a *feature*, not a constant
 
@@ -669,6 +674,7 @@ than duplicates the CLI.
 | PPTX | hand-rolled (zip + XML) | No mature Rust crate |
 | Local OCR | RapidOCR models + ONNX Runtime | No PaddlePaddle |
 | Vision backend | The user's OpenAI-compatible endpoint | `llama-server`, Ollama, LM Studio, vLLM or a cloud API — one client covers all of them. Not ours to run. |
+| HTTP client | `ureq` | Blocking and small. The pipeline is synchronous, so an async runtime would be weight carried for nothing. |
 | Hashing | BLAKE3 | Fast, content addressing |
 | Manifest | SQLite (`rusqlite`) | Single file, FTS5 available for P4 |
 | CLI | `clap` | Derive API, generated help |

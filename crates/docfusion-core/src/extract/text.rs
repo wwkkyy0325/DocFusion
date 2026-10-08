@@ -178,7 +178,11 @@ fn is_markdown(file_name: Option<&str>) -> bool {
 /// paragraph whose leading dash is then escaped to stop it becoming a list.
 /// The text survives, but a note that goes in as Markdown comes out as escaped
 /// prose — a loss the benchmark measured before anyone noticed it.
-fn markdown_blocks(markdown: &str, engine: &EngineId) -> Vec<Block> {
+///
+/// Public because a vision model answers in Markdown too, and both paths have
+/// to land on the same block structure for the rest of the pipeline to be
+/// indifferent to which one produced a page.
+pub fn markdown_blocks(markdown: &str, engine: &EngineId) -> Vec<Block> {
     let arena = Arena::new();
     let mut options = Options::default();
     options.extension.table = true;

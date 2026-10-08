@@ -1,8 +1,46 @@
 # Changelog
 
-Append-only record of meaningful changes. Newest entries at the top.
+Append-only meaningful changes. Newest entries at the top.
 
 ---
+
+## 2026-10-08 — The vision endpoint client
+
+**What:** The OpenAI-compatible client that reaches `llama-server`, Ollama,
+LM Studio, vLLM or a hosted provider. P1 Step 5.
+
+**Decisions and why:**
+
+- **One client, every runtime.** That is the whole point of §8.2: the endpoint
+  is the unit of configuration rather than the runtime, so nothing here needs to
+  know what is on the other end.
+- **`temperature: 0`.** Recognition is not a creative act, and a model that
+  paraphrases is worse than one that does not.
+- **A short, plain prompt.** Document-tuned models are trained against a
+  particular prompt shape and do worse when it is dressed up; a long instruction
+  costs tokens on every page for a benefit nobody has measured.
+- **The prompt version is part of the engine stamp.** Editing a prompt changes
+  the output while the model stays the same, so a cache keyed only on the model
+  would serve the old one.
+- **`Caps` claims nothing.** A general vision model reports neither geometry nor
+  confidence, and claiming otherwise would let the verifier align on boxes that
+  do not exist.
+- **A low token count is treated as the projector failure.** A GGUF model served
+  without its multimodal projector does not fail; the image never becomes vision
+  tokens and the model returns repeated nonsense with a 200. The check is
+  skipped when the endpoint simply does not report usage, because a missing
+  field is not evidence of a problem and failing on it would break working
+  setups.
+- **A timeout names the likely cause.** A model still loading and a model too
+  large for the machine look identical from outside, and "did not answer within
+  180s" alone would send somebody looking in the wrong place.
+
+**Testing note:** the tests run a real HTTP server on an ephemeral port rather
+than mocking the transport. The client is the thing under test, and mocking
+below it would test the mock — including for the cases that matter most, which
+are the failures: an endpoint that accepts a connection and then says nothing,
+one that is not listening, and one that returns a status rather than a body.
+
 
 ## 2026-10-08 — DocFusion stops running models
 
