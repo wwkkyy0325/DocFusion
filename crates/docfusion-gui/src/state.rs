@@ -26,16 +26,21 @@ pub struct View {
 
 /// What the settings tab shows about reading with a model.
 ///
-/// The key is not in here and never will be. It goes one way — typed in the
-/// window, written to the file — and nothing in this program wants it back, so
-/// there is nothing for a form to show, nothing for a screenshot to keep, and
-/// nothing for the window to leak. `has_key` says whether one is set, which is
-/// the only question the person typing actually has.
+/// The key is not in here. This view is serialised for every command the window
+/// sends — every document read carries one — and a secret that travels on every
+/// call is a secret in more places than the one that needs it. What is here is
+/// how long the key is, which is enough to mask the field with the right number
+/// of dots and says nothing about the key itself.
+///
+/// Seeing the key is a thing somebody asks for, so it is a command of its own:
+/// `reveal_key`, in `lib.rs`. It crosses the boundary when the eye is pressed
+/// and at no other time.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Model {
     pub endpoint: String,
     pub model: String,
-    pub has_key: bool,
+    /// In characters, because it is a count of dots a person looks at.
+    pub key_length: usize,
 }
 
 /// Something that went wrong, split the way the window has to say it.

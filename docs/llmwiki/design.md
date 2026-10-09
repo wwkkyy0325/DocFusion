@@ -957,12 +957,24 @@ the three keys and leaves everything else — including the note somebody wrote 
 the end of the line being changed, which has to be carried over by hand because
 assigning a value takes the trivia around it as well.
 
-**The key goes one way.** It is typed in the window and written to the file, and
-nothing reads it back: the view carries `has_key` and never the key, so there is
-nothing for a form to show and nothing for a screenshot to keep. That has one
-consequence worth stating — an empty key box means *I did not touch this*, not
-*delete it*, because a form that re-sent the key on every save would be a form
-that needs the key.
+**The key is not in the view, and seeing it is something you ask for.** The view
+carries `key_length` — a number — and never the key. That is enough to mask the
+field with the right number of dots and says nothing about the key itself, and
+it matters because the view is serialised for *every* command the window sends:
+a secret in the view is a secret in every document read.
+
+The eye is the exception, and it is a command of its own: `reveal_key` crosses
+the boundary when somebody presses a button whose tooltip says what it does, and
+at no other time. A reveal that could not reveal would be worse than no reveal,
+so this is the price of having one.
+
+Two consequences worth stating. The dots are a **placeholder**, not a value: the
+field is empty and shows `•` repeated to the key's length, because a field
+*holding* a row of dots is one accident away from saving one. Placeholder bullets
+are also wider than the characters they stand for, so the masked field is
+visually longer than the revealed one — the count matches, the width does not.
+And because the field is empty when untouched, empty means *I did not touch
+this*, not *delete it*; deleting a key is what clearing the endpoint is for.
 
 **Turning the model off is clearing the endpoint.** `endpoint` and `model` are
 set together or not at all, since one endpoint may serve several models and

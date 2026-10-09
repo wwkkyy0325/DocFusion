@@ -4,6 +4,44 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-09 — The key field, and a settings page that looks finished
+
+**What:** The key is masked, with an eye to reveal it, and the settings page was
+redesigned — centred and bounded, a title and a sentence saying what the page is
+for, labels that read, and the one control that changes anything set apart from
+the fields.
+
+**The request and the design disagreed, and the disagreement was the work.** Dots
+the length of the real key, and an eye that shows it, both need the window to
+know the key — and the window had been built so that it never does. The view is
+serialised for *every* command, so a key in the view is a key in every document
+read.
+
+The answer keeps both: the view carries `key_length` and never the key, and the
+eye is a command of its own. The secret crosses the boundary when somebody
+presses a button whose tooltip says what it does, and at no other time.
+
+**The dots are a placeholder, not a value.** A field *holding* a row of dots is
+one accident away from saving a row of dots as the key — and a placeholder cannot
+be submitted. The cost is that placeholder bullets are wider than the characters
+they stand for, so the masked field is visually longer than the revealed one. The
+count matches; the width does not. That is in the design rather than left to be
+noticed.
+
+**The old test survived and got stronger.** `the_settings_never_carry_the_key_itself`
+was written against `has_key`; it is now written against `key_length` and checks
+the serialised form rather than the field. It is the test standing between a
+convenient settings page and a secret in every command the window sends, so it
+was not going to be deleted to make room for the feature.
+
+**The fixture was lying, and the picture was small enough to hide it.** The
+stub's key was twenty-six characters with a `key_length` of thirty-five typed
+next to it, which would have made any shot of the masked field evidence of
+nothing. The length is derived from the key string now. A fixture whose two
+halves disagree is worse than no fixture: it looks like proof.
+
+---
+
 ## 2026-10-09 — The report on a document, told apart from the document
 
 **What:** A window showing a document with a disagreement was confusing in three

@@ -47,6 +47,7 @@ const TEXT = {
     dialog_title: "Choose a document",
 
     settings: "Settings",
+    settings_title: "Model",
     endpoint: "Endpoint",
     model_label: "Model",
     key: "Key",
@@ -54,10 +55,12 @@ const TEXT = {
     saved: "Saved.",
     saving: "Saving…",
     save_failed: "Could not save.",
-    key_set: "A key is set. Leave this empty to keep it.",
+    show_key: "Show the key",
+    hide_key: "Hide the key",
+    key_set: "A key is set. Leave this box empty to keep it.",
     key_unset: "No key is set. One is only needed if the endpoint asks for it.",
     settings_about:
-      "Clearing the endpoint reads documents with the engine inside this app and calls nothing.",
+      "Let a model on the other end read scanned pages, and have the engine inside this app check what it read. Clearing the endpoint turns it off and calls nothing.",
     address_needs_scheme: "The address needs http:// or https:// in front of it.",
     model_needed: "An endpoint needs a model: one endpoint can serve several.",
     endpoint_needed: "A model needs an endpoint to be reached through.",
@@ -121,6 +124,7 @@ const TEXT = {
     dialog_title: "选择文档",
 
     settings: "设置",
+    settings_title: "模型",
     endpoint: "端点地址",
     model_label: "模型",
     key: "密钥",
@@ -128,9 +132,12 @@ const TEXT = {
     saved: "已保存。",
     saving: "保存中…",
     save_failed: "保存失败。",
-    key_set: "已设置密钥，留空即不改动。",
+    show_key: "显示密钥",
+    hide_key: "隐藏密钥",
+    key_set: "已设置密钥，这个框留空即不改动。",
     key_unset: "还没有密钥。端点不要求的话可以空着。",
-    settings_about: "清空端点地址，就只用本机内置的引擎识别，不调用任何模型。",
+    settings_about:
+      "让远端的模型读扫描件，再由本机内置的识别去印证它读了什么。清空端点地址就关掉它，不调用任何模型。",
     address_needs_scheme: "地址前面要有 http:// 或 https://。",
     model_needed: "填了端点就要填模型：一个端点上可以有多个模型。",
     endpoint_needed: "填了模型就要填端点，否则连不上。",
@@ -171,6 +178,7 @@ const el = (id) => document.getElementById(id);
 
 let current = null;
 let running = false;
+let revealed = false;
 let ticker = 0;
 let started = 0;
 
@@ -288,6 +296,7 @@ function applyLang() {
     ["tab-settings", words.settings],
     ["add", words.add],
     ["lang", words.switch_lang],
+    ["set-title", words.settings_title],
     ["lbl-endpoint", words.endpoint],
     ["lbl-model", words.model_label],
     ["lbl-key", words.key],
@@ -298,6 +307,10 @@ function applyLang() {
   }
 
   el("lang").title = words.switch_title;
+
+  // The eye's tooltip is a phrase in the language too, and it was written by
+  // the last `drawReveal`.
+  drawReveal();
 
   // Last, because it writes a label of its own and that label is a word in the
   // language that has just been chosen.
@@ -318,17 +331,64 @@ function draw(view) {
 
 /// Fills the settings form from the view.
 ///
-/// The key box is emptied rather than filled: what comes back from the other
-/// side says only whether a key is set, and there is nothing to put in an input
-/// that would not be the secret on screen.
+/// The key box is emptied rather than filled. What comes back from the other
+/// side is how long the key is, not the key, and that length goes into a
+/// placeholder: the dots then match the real key exactly, and a placeholder
+/// cannot be submitted — which a field holding a row of dots is one accident
+/// away from doing.
+///
+/// So the box is empty, and empty means "leave the key as it is" rather than
+/// "delete it". Deleting it is what clearing the endpoint is for.
 function drawSettings(model) {
   el("set-endpoint").value = model.endpoint;
   el("set-model").value = model.model;
-  el("set-key").value = "";
-  el("set-hint").textContent = model.has_key ? t().key_set : t().key_unset;
+
+  const key = el("set-key");
+  key.value = "";
+  key.type = "password";
+  key.placeholder = "•".repeat(model.key_length);
+
+  el("set-hint").textContent = model.key_length > 0 ? t().key_set : t().key_unset;
+
+  revealed = false;
+  drawReveal();
 
   // Whatever the last save said is about a form that no longer exists.
   note("");
+}
+
+/// The eye, and which of the two shapes is on it.
+///
+/// It says what pressing it gives you, like the theme and the language buttons:
+/// a plain eye while the key is hidden. The tooltip says the action too,
+/// because which of the two means "hidden" is a convention nobody agrees on.
+function drawReveal() {
+  el("icon-eye").toggleAttribute("hidden", revealed);
+  el("icon-eye-off").toggleAttribute("hidden", !revealed);
+  el("reveal").setAttribute("aria-pressed", String(revealed));
+  el("reveal").title = revealed ? t().hide_key : t().show_key;
+}
+
+/// Shows or hides the key, fetching it on the way if it is the one on file.
+///
+/// The key is not in the view. It is asked for here and only here, because
+/// somebody pressed a button that says what it does — rather than travelling
+/// with every document the window reads.
+async function toggleReveal() {
+  const key = el("set-key");
+
+  if (!revealed && key.value === "" && (current?.model?.key_length ?? 0) > 0) {
+    try {
+      key.value = (await invoke("reveal_key")) ?? "";
+    } catch (error) {
+      return note(String(error), false);
+    }
+  }
+
+  revealed = !revealed;
+  key.type = revealed ? "text" : "password";
+  drawReveal();
+  key.focus();
 }
 
 /// Something wrong with the installation rather than with a document, said once
@@ -787,6 +847,7 @@ el("tab-document").addEventListener("click", () => showTab("document"));
 el("tab-records").addEventListener("click", openRecords);
 el("tab-settings").addEventListener("click", openSettings);
 el("settings").addEventListener("submit", saveSettings);
+el("reveal").addEventListener("click", toggleReveal);
 
 applyLang();
 

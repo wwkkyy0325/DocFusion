@@ -438,15 +438,14 @@ fn endpoint_of(config: &config::Config) -> Option<docfusion_store::endpoint::End
     Some(endpoint)
 }
 
-/// What the settings tab shows. Never the key, only whether there is one.
+/// What the settings tab shows. The length of the key, never the key.
 fn model_of(config: &config::Config) -> Model {
+    let key = config.api_key.as_deref().unwrap_or_default().trim();
+
     Model {
         endpoint: config.endpoint.clone().unwrap_or_default(),
         model: config.model.clone().unwrap_or_default(),
-        has_key: config
-            .api_key
-            .as_deref()
-            .is_some_and(|key| !key.trim().is_empty()),
+        key_length: key.chars().count(),
     }
 }
 
@@ -541,6 +540,20 @@ async fn process(app: AppHandle, path: String) -> Result<View, String> {
     .map_err(|error| error.to_string())
 }
 
+/// The key itself, for the one case that needs it: somebody pressed the eye.
+///
+/// Deliberately not part of the view, which is serialised for every command the
+/// window sends. A secret that travels with every document read is a secret in
+/// more places than the one place that asks for it. Here it is asked for, and
+/// it crosses the boundary once.
+#[tauri::command]
+fn reveal_key() -> Option<String> {
+    config::Config::load()
+        .ok()
+        .and_then(|config| config.api_key)
+        .filter(|key| !key.trim().is_empty())
+}
+
 /// Writes the model settings, and starts using them.
 ///
 /// The key arrives here and goes no further. It is written to the file, which
@@ -584,7 +597,8 @@ pub fn run() {
             choose_file,
             process,
             open,
-            save_model
+            save_model,
+            reveal_key
         ])
         .run(tauri::generate_context!())
         .expect("the window could not start");
@@ -704,9 +718,13 @@ mod tests {
         assert_eq!(endpoint.api_key.as_deref(), Some("sk-example"));
     }
 
-    /// Nothing reads a key back — not the form, not the view, not a screenshot.
-    /// Whether there is one is the only thing the window is told, and a key
-    /// that is present but blank is not a key.
+    /// The view does not carry the key. It carries how long the key is, which
+    /// is what the field is masked from and says nothing about the key — and a
+    /// key that is present but blank is not a key.
+    ///
+    /// This is the test standing between a convenient settings page and a
+    /// secret in every command the window sends, so it checks the serialised
+    /// form rather than the field.
     #[test]
     fn the_settings_never_carry_the_key_itself() {
         let with_key = config::Config {
@@ -718,9 +736,9 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(model_of(&with_key).has_key);
-        assert!(!model_of(&blank_key).has_key);
-        assert!(!model_of(&config::Config::default()).has_key);
+        assert_eq!(model_of(&with_key).key_length, "sk-example".len());
+        assert_eq!(model_of(&blank_key).key_length, 0);
+        assert_eq!(model_of(&config::Config::default()).key_length, 0);
 
         let shown = serde_json::to_string(&model_of(&with_key)).unwrap();
         assert!(!shown.contains("sk-example"), "{shown}");

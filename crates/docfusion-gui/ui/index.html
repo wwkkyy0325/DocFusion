@@ -89,33 +89,63 @@
         hidden
       >
         <form id="settings">
-          <label for="set-endpoint"><span id="lbl-endpoint">Endpoint</span></label>
-          <input
-            id="set-endpoint"
-            type="text"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="https://api.deepseek.com"
-          />
+          <h2 id="set-title">Model</h2>
+          <p id="set-about" class="lead"></p>
 
-          <label for="set-model"><span id="lbl-model">Model</span></label>
-          <input
-            id="set-model"
-            type="text"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="deepseek-flash"
-          />
+          <div class="field">
+            <label id="lbl-endpoint" for="set-endpoint">Endpoint</label>
+            <input
+              id="set-endpoint"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="https://api.deepseek.com"
+            />
+          </div>
 
-          <label for="set-key"><span id="lbl-key">Key</span></label>
-          <input id="set-key" type="password" spellcheck="false" autocomplete="new-password" />
+          <div class="field">
+            <label id="lbl-model" for="set-model">Model</label>
+            <input
+              id="set-model"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="deepseek-flash"
+            />
+          </div>
 
-          <p id="set-hint" class="hint"></p>
-          <p id="set-about" class="hint"></p>
-          <p id="set-note" class="hint"></p>
+          <div class="field">
+            <label id="lbl-key" for="set-key">Key</label>
+            <div class="with-affix">
+              <input id="set-key" type="password" spellcheck="false" autocomplete="new-password" />
+              <!-- The eye says what pressing it gives you, like the theme and
+                   the language. Which of the two means "hidden" is a
+                   convention nobody agrees on, so the tooltip says the action
+                   as well. -->
+              <button
+                id="reveal"
+                type="button"
+                class="icon-button"
+                aria-pressed="false"
+                title="显示密钥"
+              >
+                <svg id="icon-eye" class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12Z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                <svg id="icon-eye-off" class="icon" viewBox="0 0 24 24" aria-hidden="true" hidden>
+                  <path d="M2 12s3.7-6.5 10-6.5S22 12 22 12s-3.7 6.5-10 6.5S2 12 2 12Z" />
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M4 3.5 20 20.5" />
+                </svg>
+              </button>
+            </div>
+            <p id="set-hint" class="hint"></p>
+          </div>
 
           <div class="actions">
             <button id="save" type="submit" class="primary">Save</button>
+            <span id="set-note" class="hint"></span>
           </div>
         </form>
       </section>

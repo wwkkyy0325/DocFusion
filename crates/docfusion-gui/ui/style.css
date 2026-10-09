@@ -398,29 +398,45 @@ footer button.link:hover { background: none; filter: brightness(1.15); }
 
 #panel-settings { overflow: auto; }
 
+/* Centred in the panel and bounded, because a form pinned to the top-left of a
+   wide window reads as something nobody finished. The measure matches the
+   document's, so the two panes have the same shape. */
 #settings {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 20px 24px 40px;
-  max-width: 34rem;
+  max-width: 30rem;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
 }
 
-#settings label {
-  margin-top: 14px;
-  font-size: 13px;
+#settings h2 { margin: 0 0 8px; font-size: 1.15em; }
+
+#settings .lead {
+  margin: 0 0 28px;
   color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.field { margin-bottom: 20px; }
+
+#settings label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
 }
 
 #settings input {
   font: inherit;
   width: 100%;
-  padding: 7px 10px;
+  padding: 9px 12px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--paper);
   color: var(--ink);
 }
+
+#settings input::placeholder { color: var(--muted); }
 
 #settings input:focus {
   outline: 2px solid var(--accent);
@@ -428,17 +444,48 @@ footer button.link:hover { background: none; filter: brightness(1.15); }
   border-color: transparent;
 }
 
-#settings .hint {
-  margin: 6px 0 0;
-  font-size: 12px;
+/* The eye inside the field's right edge, which is where every other field with
+   a reveal keeps it and therefore where it is looked for. */
+.with-affix { position: relative; }
+.with-affix input { padding-right: 44px; }
+
+.icon-button {
+  position: absolute;
+  inset: 1px 1px 1px auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 7px 7px 0;
+  background: none;
   color: var(--muted);
-  line-height: 1.45;
 }
 
-/* The one line that answers a button press. Coloured, because it appears
-   where nothing else changes and has to be noticed in passing. */
+.icon-button:hover { background: var(--wash); color: var(--ink); }
+.icon-button[aria-pressed="true"] { color: var(--ink); }
+.icon-button .icon { width: 17px; height: 17px; }
+
+#settings .hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* Set apart, so the one control that changes something is not one more field. */
+#settings .actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+/* The line that answers a button press. Coloured, because it appears where
+   nothing else changes and has to be noticed in passing. */
 #set-note:empty { display: none; }
 #set-note.ok { color: var(--accent); }
 #set-note.bad { color: var(--warn); }
-
-#settings .actions { margin-top: 18px; }
