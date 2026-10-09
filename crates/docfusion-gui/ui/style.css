@@ -1,5 +1,5 @@
-/* One page, one column. No framework: the document is rendered to HTML by the
-   pipeline and this only has to put it somewhere readable. */
+/* Two tabs, one column of text. No framework: the document is rendered to HTML
+   by the pipeline and this only has to put it somewhere readable. */
 
 :root {
   --ink: #0f172a;
@@ -13,6 +13,14 @@
 }
 
 * { box-sizing: border-box; }
+
+/* `hidden` is a user-agent default — `display: none` — and a user-agent default
+   loses to any author rule for the same property. Every element that is ever
+   hidden here also has a `display` of its own, so without this line the
+   attribute silently stops working: the element is hidden in the markup and
+   visible on screen. Said once, for everything, rather than remembered at each
+   place something is hidden. */
+[hidden] { display: none !important; }
 
 html, body {
   height: 100%;
@@ -58,7 +66,26 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover { filter: brightness(1.08); }
 button.quiet { border-color: transparent; color: var(--muted); }
 
+/* ── tabs ───────────────────────────────────────────────────────────────── */
+
+.tabs { display: flex; gap: 2px; margin-left: 12px; }
+
+.tab {
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--ink);
+  background: var(--wash);
+  font-weight: 600;
+}
+
 .banner {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   margin: 0;
   padding: 9px 14px;
   background: var(--warn-wash);
@@ -68,13 +95,35 @@ button.quiet { border-color: transparent; color: var(--muted); }
   flex: none;
 }
 
-/* ── the one screen ─────────────────────────────────────────────────────── */
+/* The engine's own account of what went wrong, beside our sentence about it.
+   Set apart by weight rather than colour: it is the same warning, said by
+   somebody else. */
+.banner .detail { color: var(--muted); overflow-wrap: anywhere; }
+
+/* ── the two panels ─────────────────────────────────────────────────────── */
 
 main {
   flex: 1;
-  overflow: auto;
-  scroll-behavior: smooth;
+  min-height: 0;
+  display: flex;
 }
+
+/* One at a time, and both take the whole area, so switching tabs does not move
+   anything that stays on screen. */
+.panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#screen {
+  flex: 1;
+  overflow: auto;
+}
+
+#panel-records { overflow: auto; }
 
 .empty {
   height: 100%;
@@ -116,6 +165,12 @@ main {
   gap: 14px;
   color: var(--muted);
 }
+
+/* The clock is the point of this line: a read can take minutes, and a number
+   that moves is the difference between a window that is working and a window
+   that has stopped. */
+.working .progress { margin: 0; font-size: 12px; }
+.working .progress .elapsed { font-variant-numeric: tabular-nums; color: var(--ink); }
 
 .pulse {
   width: 30px;
@@ -167,7 +222,18 @@ main {
 }
 
 .failure h2 { margin-top: 0; font-size: 1.1em; }
-.failure pre { white-space: pre-wrap; color: var(--muted); font-size: 13px; }
+.failure .cause { margin: 0 0 12px; }
+
+.failure .detail {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  white-space: pre-wrap;
+  color: var(--muted);
+  font-size: 13px;
+}
 
 /* ── footer ─────────────────────────────────────────────────────────────── */
 
@@ -184,34 +250,12 @@ footer {
 
 footer .warn { color: var(--warn); }
 
-/* ── drawer ─────────────────────────────────────────────────────────────── */
-
-aside {
-  position: fixed;
-  inset: 0 0 0 auto;
-  width: min(420px, 80vw);
-  background: var(--paper);
-  border-left: 1px solid var(--line);
-  box-shadow: -8px 0 24px rgba(15, 23, 42, 0.08);
-  display: flex;
-  flex-direction: column;
-}
-
-.drawer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
-  font-weight: 600;
-}
+/* ── records ────────────────────────────────────────────────────────────── */
 
 #records {
   list-style: none;
   margin: 0;
   padding: 6px;
-  overflow: auto;
-  flex: 1;
 }
 
 #records li { border-radius: 7px; }

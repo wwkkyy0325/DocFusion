@@ -857,24 +857,45 @@ Mermaid. All logic stays in Rust.
 Exactly one page plus a settings page. One screen state at a time:
 
 ```
-Empty state                    After processing
+Document tab                   Records tab
 ┌──────────────────────┐      ┌──────────────────────┐
-│ DocFusion        [⚙] │      │ DocFusion        [⚙] │
+│ DocFusion            │      │ DocFusion            │
+│ [Document] Records   │      │ Document [Records]   │
+│        [+ Add]       │      │        [+ Add]       │
 ├──────────────────────┤      ├──────────────────────┤
-│                      │      │ # 2024 Annual Report │
-│   ┌──────────────┐   │      │ Revenue 1.2B, +12%   │
-│   │ Drop a file  │   │      │ ┌────┬──────┬─────┐  │
-│   │ or click     │   │      │ │Year│ Rev  │ YoY │  │
-│   └──────────────┘   │      │ └────┴──────┴─────┘  │
-│                      │      │                      │
-│                      │      │ ⚠ 3 items to review  │
-│ [Records]            │      │ [Copy] [Export ▾]    │
+│ # 2024 Annual Report │      │ annual report.pdf    │
+│ Revenue 1.2B, +12%   │      │ done · 2 to review   │
+│ ┌────┬──────┬─────┐  │      │                      │
+│ │Year│ Rev  │ YoY │  │      │ scan-0007.png        │
+│ └────┴──────┴─────┘  │      │ done                 │
+├──────────────────────┤      │                      │
+│ rapidocr · ⚠ 3  [Copy]│     │                      │
 └──────────────────────┘      └──────────────────────┘
 ```
 
-- **Records** and **Settings** open as drawers/modals, never as new pages.
+- **The two views are tabs, not a drawer.** A drawer is an overlay: it covers the
+  document, it has to be dismissed before the document can be read, and on this
+  window it turned out to be the single most broken thing in it (see below). A
+  tab is a sibling. Switching costs one `hidden` attribute and the layout does
+  not move.
 - The GUI is a shell over the same `docfusion-core`; feature work belongs in core
   and CLI. The GUI must not become the only place a capability lives.
+
+**`hidden` loses to any `display` you write.** The drawer shipped unable to
+close: `aside { display: flex }` overrides the user-agent rule that `hidden`
+relies on, so the attribute was set and the panel stayed pinned open. This is not
+a mistake about Tauri or about CSS in general — it is a mistake about *which*
+rule wins, and the fix is one line for every element rather than a rule per
+element: `[hidden] { display: none !important; }`. Anything hidden in this
+frontend is hidden through that.
+
+**The window draws its own waiting state.** The other side sets a `Working` state
+the moment a read starts, but that state only reaches the frontend when the call
+returns — and the call is the thing that takes minutes. So the frontend draws the
+waiting screen before it asks for the work, with a clock that counts up. A window
+that says nothing for the length of a scan is indistinguishable from one that has
+stopped, which is exactly the complaint this fixed. The clock is not decoration:
+it is the evidence that the process is alive.
 
 **`docfusion-gui` is Tauri v2 with a static frontend and no build chain.** The
 `ui/` folder is HTML, CSS and one JavaScript file, loaded directly — no bundler,
@@ -915,14 +936,49 @@ P4 — that is a service in the true sense, and it would need a port, a port
 policy, and a story for a second copy. It would not be this GUI growing a
 backend.
 
-### 11.2 Copy behavior
+### 11.2 Language
+
+The interface is in Chinese and English, and it opens in whichever one the
+machine is set to. Nothing has to be configured: `navigator.language` on a
+Chinese Windows is already `zh-CN`. A button in the header switches, and the
+choice is remembered.
+
+**The window sends the kind of a failure, not the sentence about it.** This is
+the whole reason the interface can be translated at all, and it is the part
+worth writing down. A `thiserror` message is English, and it is the string the
+command line prints. A window that had to show it in Chinese could only match on
+the sentence — which comes apart the moment somebody rewords it, silently, in a
+place nobody looks. So a failure crosses the boundary in two halves:
+
+- **`cause`** — the kind: nothing can read this, an engine failed, a file could
+  not be read, the index is not usable, and so on. `Cause` in `state.rs` is a
+  closed enum, `cause_of` in `lib.rs` maps the library's error to it with an
+  exhaustive `match`, and the frontend holds one sentence per kind. A new way
+  for the library to fail stops `cause_of` compiling, which is the window being
+  made to decide how to say it rather than finding out later that it has nothing
+  to say.
+- **`detail`** — the account the engine or the operating system gave, carried
+  through untouched.
+
+**Which leaves one thing in English, and it is not laziness.** `detail` is
+somebody else's words: `reqwest` said the connection was refused, the OS said
+`os error 10061`, SQLite said what was wrong with the query. Translating those
+would mean guessing at what a third-party crate meant and writing the guess in
+Chinese — inventing an explanation instead of reporting one. It is shown as it
+arrived, set apart so it reads as a quotation rather than as our own sentence.
+
+The command line is untouched by all of this and stays English. It is the agent
+surface (§10.2), and an agent reading a `Display` message is exactly the case
+the message is written for.
+
+### 11.3 Copy behavior
 
 The displayed Markdown is **rendered** (headings, tables, emphasis). A dedicated
 **Copy** action yields **plain text with formatting stripped** — what users
 actually paste into other tools. (Rendering is a view concern; copying is a
 content concern. They must not be the same code path.)
 
-### 11.3 Conflict review
+### 11.4 Conflict review
 
 The conflict panel is the GUI's main reason to exist. The CLI can report that
 three blocks disagree, but only a GUI can present the two engines' outputs

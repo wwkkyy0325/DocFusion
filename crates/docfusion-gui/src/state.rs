@@ -18,9 +18,59 @@ pub struct View {
     /// Separate from `Screen` because it is true whatever is on screen: a
     /// settings file that cannot be read is worth saying once, at the top,
     /// rather than replacing whatever the person is looking at.
-    pub problem: Option<String>,
+    pub problem: Option<Trouble>,
     pub screen: Screen,
     pub records: Vec<Record>,
+}
+
+/// Something that went wrong, split the way the window has to say it.
+///
+/// Two halves, and the split is the point. `cause` is the kind of failure, the
+/// only part this program owns and therefore the only part it can put into the
+/// reader's language. `detail` is the account the engine or the operating
+/// system gave — somebody else's words, in somebody else's language — and it is
+/// carried through rather than paraphrased, because a paraphrase of a cause is
+/// a guess dressed as an explanation.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Trouble {
+    pub cause: Cause,
+    pub detail: String,
+}
+
+impl Trouble {
+    pub fn new(cause: Cause, detail: impl Into<String>) -> Self {
+        Self {
+            cause,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// What kind of failure this is.
+///
+/// Deliberately the kind and not the message. The library's messages are
+/// English and are what the command line prints; the window picks the kind and
+/// writes its own sentence, because matching on a sentence to decide what to
+/// say would come apart the moment somebody reworded it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Cause {
+    /// Nothing here can read this kind of file.
+    Unsupported,
+    /// Something that could have read it failed trying.
+    EngineFailed,
+    /// A file could not be read.
+    Unreadable,
+    /// The result could not be written.
+    Unwritable,
+    /// The index of what is already in the knowledge base is not usable.
+    Index,
+    /// The index does not have the document that was asked for.
+    Missing,
+    /// The settings file is not usable.
+    Settings,
+    /// It was read, and there was nothing in it.
+    NothingToRead,
 }
 
 /// Which of the four things the window can be showing.
@@ -39,7 +89,7 @@ pub enum Screen {
     /// looks like one that has stopped working.
     Working { name: String },
     Ready(Opened),
-    Failed { name: String, message: String },
+    Failed { name: String, trouble: Trouble },
 }
 
 /// A document that has been read and is on screen.
@@ -104,10 +154,10 @@ impl View {
         self.screen = Screen::Working { name: name.into() };
     }
 
-    pub fn failed(&mut self, name: impl Into<String>, message: impl Into<String>) {
+    pub fn failed(&mut self, name: impl Into<String>, trouble: Trouble) {
         self.screen = Screen::Failed {
             name: name.into(),
-            message: message.into(),
+            trouble,
         };
     }
 
@@ -174,20 +224,60 @@ mod tests {
     }
 
     /// A failure keeps the name, because the useful question about something
-    /// that would not open is which thing it was.
+    /// that would not open is which thing it was — and it keeps the kind and
+    /// the account apart, because the window says the first in the reader's
+    /// language and passes the second through.
     #[test]
-    fn a_failure_says_what_failed() {
+    fn a_failure_keeps_the_kind_and_the_account_apart() {
         let mut view = View::new("kb", "config.toml");
 
-        view.failed("report.pdf", "the PDF engine could not open it");
+        view.failed(
+            "report.pdf",
+            Trouble::new(Cause::EngineFailed, "could not reach the endpoint"),
+        );
 
         match view.screen {
-            Screen::Failed { name, message } => {
+            Screen::Failed { name, trouble } => {
                 assert_eq!(name, "report.pdf");
-                assert!(message.contains("could not open"));
+                assert_eq!(trouble.cause, Cause::EngineFailed);
+                assert!(trouble.detail.contains("could not reach"));
             }
             other => panic!("expected a failure, got {other:?}"),
         }
+    }
+
+    /// The frontend picks its words by reading this string, so it is a contract
+    /// between two languages and it is checked where it is written rather than
+    /// discovered when a message comes out blank.
+    #[test]
+    fn the_kinds_of_failure_have_the_names_the_frontend_looks_up() {
+        let names: Vec<String> = [
+            Cause::Unsupported,
+            Cause::EngineFailed,
+            Cause::Unreadable,
+            Cause::Unwritable,
+            Cause::Index,
+            Cause::Missing,
+            Cause::Settings,
+            Cause::NothingToRead,
+        ]
+        .into_iter()
+        .map(|cause| serde_json::to_value(cause).unwrap().as_str().unwrap().to_owned())
+        .collect();
+
+        assert_eq!(
+            names,
+            [
+                "unsupported",
+                "engine-failed",
+                "unreadable",
+                "unwritable",
+                "index",
+                "missing",
+                "settings",
+                "nothing-to-read",
+            ]
+        );
     }
 
     /// The list is drawn from the index, so the mapping from what is stored to

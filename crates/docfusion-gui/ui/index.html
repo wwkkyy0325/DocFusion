@@ -9,24 +9,51 @@
   <body>
     <header>
       <span class="brand">DocFusion</span>
+      <nav class="tabs" role="tablist">
+        <button
+          id="tab-document"
+          class="tab"
+          role="tab"
+          aria-selected="true"
+          aria-controls="panel-document"
+        >
+          Document
+        </button>
+        <button
+          id="tab-records"
+          class="tab"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-records"
+        >
+          Records
+        </button>
+      </nav>
       <span class="spacer"></span>
+      <!-- Both labels here are replaced at startup from the view's own
+           language, and are English only so that the markup reads on its own. -->
+      <button id="lang" class="quiet" title="用中文显示界面">中文</button>
       <button id="add" class="primary">Add a document</button>
-      <button id="records">Records</button>
     </header>
 
     <p id="problem" class="banner" hidden></p>
 
-    <main id="screen"></main>
+    <main>
+      <section id="panel-document" class="panel" role="tabpanel" aria-labelledby="tab-document">
+        <div id="screen"></div>
+        <footer id="status" hidden></footer>
+      </section>
 
-    <footer id="status" hidden></footer>
-
-    <aside id="drawer" hidden>
-      <div class="drawer-head">
-        <span>Records</span>
-        <button id="close-drawer" class="quiet">Close</button>
-      </div>
-      <ul id="records"></ul>
-    </aside>
+      <section
+        id="panel-records"
+        class="panel"
+        role="tabpanel"
+        aria-labelledby="tab-records"
+        hidden
+      >
+        <ul id="records"></ul>
+      </section>
+    </main>
 
     <script type="module" src="app.js"></script>
   </body>

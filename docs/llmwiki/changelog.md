@@ -4,6 +4,101 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-09 — Chinese, and the kind of a failure rather than the sentence about it
+
+**What:** The window is in Chinese and English, opens in whichever the machine
+is set to, and switches with a header button. The instruction was that
+everything a person sees, apart from the application's name, should be in
+Chinese — including what the engine says when it fails.
+
+**The interface's own words were the easy half.** They are all in `app.js`, and
+`draw(view)` is already a function of the view, so the language is one more
+thing in that function and switching is "change it and draw again". That is why
+a switch costs almost nothing here and why it was chosen over Chinese alone: the
+architecture had already done the work.
+
+**The engine's words were the half that needed a decision.** A `thiserror`
+message is English, and it is the same string the command line prints. A window
+that had to show it in Chinese could only match on the sentence, which comes
+apart the moment somebody rewords it — silently, in a place nobody looks. So the
+failure now crosses the boundary in two halves: a `Cause`, which is the kind
+(`unsupported`, `engine-failed`, `unreadable`, `unwritable`, `index`, `missing`,
+`settings`, `nothing-to-read`), and a `detail`, which is the account as it
+arrived. The frontend holds one sentence per kind and prints the account
+underneath it.
+
+**The mapping is an exhaustive `match`, and that is the point of it.** `cause_of`
+in `lib.rs` goes over every variant of the library's errors with no catch-all,
+so adding a way to fail stops the build rather than shipping a message that says
+nothing. There is a test that walks all eight kinds and a test that pins the
+names, because the frontend looks them up by string and that is a contract
+between two languages.
+
+**One thing is still English and it is not an oversight.** `detail` is somebody
+else's words — `reqwest` said the connection was refused, the OS said
+`os error 10061`. Translating that means guessing what a third-party crate meant
+and writing the guess in Chinese, which is inventing an explanation rather than
+reporting one. It is shown as it came, set apart so it reads as a quotation.
+
+**A document that will not read is no longer an error on the wire.** `process`
+used to put the failure in the view *and* reject with the string, so the
+frontend had two ways to say the same thing and two chances for them to
+disagree. It now returns the view, and only a task that never finished rejects.
+
+**The check caught its own flaw.** The first `switched` shot set the remembered
+language to Chinese and then clicked the switch, so it showed English and proved
+nothing about the direction it was meant to test. Fixing it exposed a second
+problem: headless runs were sharing a profile, so one shot's remembered language
+decided the next shot's starting language. Each shot now gets a profile of its
+own, and `default` — no language pinned at all — is kept in the set precisely to
+show what the machine's own answer comes to on this machine, which is Chinese.
+
+---
+
+## 2026-10-09 — The drawer that would not close, and a window that said nothing
+
+**What:** Three defects in the window, all reported from using it. The records
+drawer could not be closed; the interface appeared to freeze while a document
+was being read; and the drawer is now two tabs instead of an overlay.
+
+**The drawer could not close because `hidden` was losing.** `aside` had
+`display: flex`, which is an author rule, and `hidden` only works through a
+user-agent rule saying `display: none`. An author rule beats a user-agent rule
+for the same property, so `drawer.hidden = true` set the attribute and changed
+nothing on screen. The fix is stated once for the whole frontend —
+`[hidden] { display: none !important; }` — rather than remembered at each place
+something is hidden, which is how it was missed the first time.
+
+**The freeze was not a freeze.** Nothing was blocking: the engines are built
+lazily, a read runs on the blocking pool, and the database write happens after
+extraction as a single short statement, so the window's own thread was never
+held. What was wrong is that the interface never drew the waiting state. Rust
+sets `Working` as soon as a read starts, but that state only reaches the
+frontend when the call returns, and the call is the thing that takes minutes.
+So `run()` now draws the waiting screen *before* asking for the work, with a
+clock that counts up. Long enough a delay that opening an already-read document
+does not flash a spinner for one frame, short enough that a real read shows one
+immediately. The clock is the point: it is the evidence the process is alive.
+
+**Tabs, because a drawer is an overlay.** It covers the document, it has to be
+dismissed before the document can be read, and switching between the two moved
+things that were not switching. Two sibling panels cost one `hidden` attribute
+each and leave the layout where it was.
+
+**Verified in a browser rather than by looking at the window.** The application
+could not be photographed: its window is composited by the system rather than
+drawn into a device context, and a screen capture from a session whose desktop
+is not rendering comes back uniformly black. Screenshots of the real window
+would have been evidence of nothing. Instead the three `ui/` files are served
+to a headless browser with `invoke` stubbed out, one scenario per state, and
+the resulting pictures read. Everything below the `invoke` boundary is the file
+that ships, so the layout, the tab switching and the clock are the real ones.
+The scenario that matters is `working`: the stubbed read never resolves, which
+is the case the old code would have sat through showing an unmoving empty page.
+The harness is `target/uicheck/`, and it is thrown away with the build.
+
+---
+
 ## 2026-10-08 — The window
 
 **What:** `docfusion-gui`, a Tauri v2 application with a static frontend and no
