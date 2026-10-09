@@ -424,6 +424,37 @@ Two details that only matter because they were measured rather than assumed:
   compares them, so an upstream update fails loudly instead of silently
   embedding weights the crate no longer expects.
 
+### 8.1b Structure on the page — PP-DocLayout_plus-L, fetched and not embedded
+
+The recogniser finds boxes and reads them. It does not know what a table is,
+which is why the local engine scored 0 of 64 headings and 0 of 9 tables. The
+second model closes that, and it is the one thing this tool needs that is not
+inside it.
+
+- **124 MB, downloaded on request** — `docfusion doctor --fetch`. The line is
+  *can* against *nice*: 6.9 MB of recognition weights are embedded because they
+  are the promise (a scan is readable with no setup, offline), and moving that
+  promise behind a download would cost all of it to save 6.9 MB. This model is
+  an improvement, and every page reads without it.
+- **Twenty classes, seven kinds.** The whole of the judgement about a page is
+  one table in `structure.rs`. See the changelog for what is deliberately in it
+  and what is deliberately not.
+- **The engine's name depends on whether it is here**: `rapidocr` or
+  `rapidocr+layout`. The name is the cache key, and two different outputs under
+  one name is a cache that lies.
+- **Boxes are in the coordinates of the 800×800 square the page is squashed
+  into**, not of the page. The model's `im_shape`/`scale_factor` inputs are named
+  for mapping them back and apply the ratio twice over; it is told it was given
+  a square and the fit is done here. Worth knowing before trusting any drawing
+  made with those inputs.
+- **A region that cannot become the kind it claims becomes a paragraph.** A
+  `Table` with no rows renders as nothing, so this is a data-loss question and
+  not a cosmetic one.
+
+Off by default, absent on most installations, and costing one 124 MB digest and
+one session load per process when present — about a second, against the seconds
+the recogniser spends on the same page.
+
 ### 8.2 The vision backend is the user's endpoint, not ours
 
 **DocFusion does not run models.** It speaks to an OpenAI-compatible HTTP

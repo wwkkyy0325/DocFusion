@@ -1,0 +1,1463 @@
+//! Finding the structure on a page, and putting the recognised words inside it.
+//!
+//! The bundled recogniser reads every page and cannot say what any of it is: it
+//! returns text, on a line at a time, and a page of headings and a page of
+//! prose come out identical. On the corpus this was measured on it found **0 of
+//! 64 headings and 0 of 9 tables** — not a bug in it, since a text detector and
+//! a recogniser are all it is, but a ceiling.
+//!
+//! PP-DocLayout_plus-L is the other half. It is a detector and not a reader:
+//! it puts a box around each region of a page and names twenty kinds of them,
+//! and reads none of the words. The two together give what neither gives alone,
+//! and that is what this module is — the join.
+//!
+//! Three things are decided here and nowhere else: how the model's twenty
+//! classes become our ten block kinds, which words belong to which region, and
+//! how a region's lines become rows and cells. All three are pure functions of
+//! the model's output and the recogniser's, which is why almost all of this file
+//! runs without the weights on disk.
+
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+use docfusion_core::backend::BackendError;
+use docfusion_core::ir::{Block, BlockKind, EngineId, Rect};
+use ort::session::Session;
+use ort::value::TensorRef;
+use rapidocr_core::types::OcrLine;
+
+use crate::layout;
+
+/// The side the page is squashed to before the model sees it.
+///
+/// A square, and the aspect ratio is not kept, because that is what the model
+/// was trained on. It is also the coordinate system its answers come back in,
+/// which the two inputs named for undoing that do not actually undo. See
+/// [`Region::on_page`].
+const SIDE: usize = 800;
+
+/// Below this the detector is guessing, and a guess about a heading lands in
+/// the document as a heading.
+const FLOOR: f32 = 0.5;
+
+/// How much of the region's width a line may cover before it stops counting as
+/// evidence of where the columns are.
+///
+/// A row spanning the whole table crosses every column, so counting it would
+/// weld the columns into one and lose the table. Such a line still becomes a
+/// cell; it just does not get a vote on where the boundaries are.
+const SPANNING: f32 = 0.8;
+
+/// How much room between two lines of the same column before they are two
+/// cells rather than one wrapped one.
+///
+/// A fraction of the line height, because that is the only scale a page carries
+/// with it. Wrapped lines touch or nearly touch; the gap to the next row is at
+/// least the padding between rows, which in any table worth reading is more.
+const WRAP_GAP: f32 = 0.5;
+
+/// What a region is, in the terms this program has for blocks.
+///
+/// Seven rather than the model's twenty: the classes below that are not
+/// distinguished here are distinctions the document format cannot carry
+/// anyway — a running header and a footnote are both a paragraph once they are
+/// Markdown — and pretending otherwise would be a field nothing reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionKind {
+    Title,
+    Section,
+    Text,
+    Table,
+    Figure,
+    Formula,
+    Code,
+}
+
+/// The model's twenty classes, in its own order.
+///
+/// This is the whole of the judgement this module makes about a page, and it is
+/// made in one place on purpose. Several of these could be argued either way:
+/// `header` and `footer` are running matter that a reader would rather not see
+/// in the body, and they are read as ordinary text here because every other
+/// extractor in this project reads them as ordinary text too — dropping them
+/// only in the layout pass would be one rule in one place for no stated reason.
+const CLASSES: [RegionKind; 20] = [
+    RegionKind::Section, // paragraph_title
+    RegionKind::Figure,  // image
+    RegionKind::Text,    // text
+    RegionKind::Text,    // number
+    RegionKind::Text,    // abstract
+    RegionKind::Text,    // content
+    RegionKind::Text,    // figure_title
+    RegionKind::Formula, // formula
+    RegionKind::Table,   // table
+    RegionKind::Text,    // reference
+    RegionKind::Title,   // doc_title
+    RegionKind::Text,    // footnote
+    RegionKind::Text,    // header
+    RegionKind::Code,    // algorithm
+    RegionKind::Text,    // footer
+    RegionKind::Figure,  // seal
+    RegionKind::Figure,  // chart
+    RegionKind::Text,    // formula_number
+    RegionKind::Text,    // aside_text
+    RegionKind::Text,    // reference_content
+];
+
+impl From<RegionKind> for BlockKind {
+    fn from(kind: RegionKind) -> Self {
+        match kind {
+            // The model distinguishes a document title from a section title but
+            // not one section level from another, so there are two levels and
+            // no more. Nesting them by guesswork would be an outline that is
+            // wrong in a way nobody can see.
+            RegionKind::Title => BlockKind::Heading { level: 1 },
+            RegionKind::Section => BlockKind::Heading { level: 2 },
+            RegionKind::Text => BlockKind::Paragraph,
+            RegionKind::Table => BlockKind::Table,
+            RegionKind::Figure => BlockKind::Figure,
+            RegionKind::Formula => BlockKind::Formula,
+            RegionKind::Code => BlockKind::Code,
+        }
+    }
+}
+
+/// A region the detector found, in page pixels.
+///
+/// Pixels rather than the IR's normalized coordinates, because everything this
+/// module does with them is a comparison against the recogniser's boxes, which
+/// are in pixels too. The conversion happens once, on the way out.
+///
+/// Pixels of the *page*, which is not what the model answers in. See
+/// [`Region::on_page`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Region {
+    kind: RegionKind,
+    score: f32,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl Region {
+    fn width(&self) -> f32 {
+        self.x1 - self.x0
+    }
+
+    fn area(&self) -> f32 {
+        self.width().max(0.0) * (self.y1 - self.y0).max(0.0)
+    }
+
+    fn holds(&self, x: f32, y: f32) -> bool {
+        self.x0 <= x && x <= self.x1 && self.y0 <= y && y <= self.y1
+    }
+
+    /// The same region, in the coordinates of the page it came from.
+    ///
+    /// Two multiplications, because the page was squashed into a square and the
+    /// model answers in the square. Both axes are scaled by their own ratio —
+    /// this is not the aspect-preserving step, it is the undoing of one that
+    /// was never there.
+    fn on_page(mut self, width: f32, height: f32) -> Self {
+        let (across, down) = (width / SIDE as f32, height / SIDE as f32);
+
+        self.x0 *= across;
+        self.x1 *= across;
+        self.y0 *= down;
+        self.y1 *= down;
+
+        self
+    }
+
+    /// How much of `box` this region covers.
+    fn overlap(&self, box_: (f32, f32, f32, f32)) -> f32 {
+        let (x0, y0, x1, y1) = box_;
+        let width = (self.x1.min(x1) - self.x0.max(x0)).max(0.0);
+        let height = (self.y1.min(y1) - self.y0.max(y0)).max(0.0);
+
+        width * height
+    }
+}
+
+/// The model, loaded on the first page that needs it.
+///
+/// One session rather than the several the recogniser keeps. A page costs about
+/// 405 ms here against seconds in the recogniser, so the queue this creates is
+/// a tenth of the work it is queued behind; a second copy would be another
+/// 124 MB of weights resident to save that tenth.
+pub struct Detector {
+    model: PathBuf,
+    session: Mutex<Option<Session>>,
+}
+
+impl Detector {
+    pub fn new(model: PathBuf) -> Self {
+        Self {
+            model,
+            session: Mutex::new(None),
+        }
+    }
+
+    /// Finds the regions on a page, in page pixels.
+    pub fn detect(&self, page: &image::RgbImage) -> Result<Vec<Region>, BackendError> {
+        let mut guard = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if guard.is_none() {
+            *guard = Some(self.load()?);
+        }
+        let session = guard.as_mut().expect("loaded immediately above");
+
+        // Squashed to a square without keeping the ratio, which is what the
+        // model was trained on — and it answers in that square's coordinates,
+        // not the page's. See `Region::on_page`.
+        let square = image::imageops::resize(
+            page,
+            SIDE as u32,
+            SIDE as u32,
+            image::imageops::FilterType::Triangle,
+        );
+        let pixels_count = SIDE * SIDE;
+
+        // Planar, not interleaved, and scaled to 0-1. The model's own
+        // `inference.yml` says mean 0 and std 1, which reads as "leave the
+        // bytes alone" and gives a best score of 0.049 and no boxes at all.
+        // Measured against the same page, this gives 0.985.
+        let raw = square.as_raw();
+        let mut pixels = vec![0.0f32; 3 * pixels_count];
+        for (index, pixel) in raw.chunks_exact(3).enumerate() {
+            for (channel, byte) in pixel.iter().enumerate() {
+                pixels[channel * pixels_count + index] = f32::from(*byte) / 255.0;
+            }
+        }
+
+        // `im_shape` and `scale_factor` are what the model is meant to map its
+        // boxes back through, and what they actually do is scale them by the
+        // factor twice over: told a page is 2200 by 1700, it puts a title 4.5
+        // times too far right and 7.6 times too far down, which is the square
+        // ratio squared each way. So it is told the truth — that it was given
+        // an 800×800 square, which it was — and the page is put back below,
+        // where the arithmetic is two multiplications and can be read.
+        //
+        // This is worth stating because the reference implementation passes the
+        // page's shape here and uses the boxes it gets back, and the boxes it
+        // gets back are wrong by exactly this much. On a page close to square
+        // they land near enough to their region to look right in a drawing.
+        let shape = [SIDE as f32, SIDE as f32];
+        let factor = [1.0f32, 1.0];
+
+        let image = TensorRef::from_array_view(([1usize, 3, SIDE, SIDE], &pixels[..]))
+            .map_err(|error| BackendError::Failed(error.to_string()))?;
+        let shape = TensorRef::from_array_view(([1usize, 2], &shape[..]))
+            .map_err(|error| BackendError::Failed(error.to_string()))?;
+        let scale = TensorRef::from_array_view(([1usize, 2], &factor[..]))
+            .map_err(|error| BackendError::Failed(error.to_string()))?;
+
+        let outputs = session
+            .run(ort::inputs![
+                "image" => image,
+                "im_shape" => shape,
+                "scale_factor" => scale
+            ])
+            .map_err(|error| {
+                BackendError::Failed(format!("the structure model failed on this page: {error}"))
+            })?;
+
+        let (_, found) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|error| BackendError::Failed(error.to_string()))?;
+
+        let width = page.width() as f32;
+        let height = page.height() as f32;
+
+        Ok(decode(found)
+            .into_iter()
+            .map(|region| region.on_page(width, height))
+            .collect())
+    }
+
+    fn load(&self) -> Result<Session, BackendError> {
+        let failed = |error: ort::Error| {
+            BackendError::Unavailable(format!(
+                "the structure model at {} could not be loaded: {error}",
+                self.model.display()
+            ))
+        };
+
+        let mut builder = Session::builder().map_err(failed)?;
+        builder.commit_from_file(&self.model).map_err(failed)
+    }
+}
+
+/// Whether the structure model is here, checked once for the process.
+///
+/// The check reads 124 MB, so it is made once rather than per page or per
+/// backend. It is what decides whether the local engine calls itself
+/// `rapidocr` or `rapidocr+layout`, and that name is the cache key: a run with
+/// this model and a run without it produce different output for the same bytes,
+/// and must not be served each other's. Which is also why the answer is taken
+/// before any work rather than when the first page needs it — an id that
+/// changed half way through a run would be two names for one run's output.
+///
+/// The cost of deciding it once is that fetching the model while a window is
+/// open does not reach that window until it is restarted. Nothing downloads it
+/// on its own and nothing here changes while a program runs, so that is a
+/// sentence rather than a subsystem.
+pub fn available() -> bool {
+    static CHECKED: OnceLock<bool> = OnceLock::new();
+
+    *CHECKED.get_or_init(|| layout::present(&layout::default_root()))
+}
+
+/// Where the model would be, whether or not it is.
+pub fn model_path() -> PathBuf {
+    layout::path_in(&layout::default_root())
+}
+
+/// Reads the model's output.
+///
+/// Flat, six numbers per region: the class, the score, and the two corners.
+/// The boxes come back in the coordinates of the original page rather than of
+/// the 800×800 square, because the model was told how to map them back.
+fn decode(found: &[f32]) -> Vec<Region> {
+    found
+        .chunks_exact(6)
+        .filter_map(|row| {
+            if row[1] < FLOOR {
+                return None;
+            }
+
+            let label = row[0].round();
+            if label < 0.0 {
+                return None;
+            }
+
+            Some(Region {
+                kind: *CLASSES.get(label as usize)?,
+                score: row[1],
+                x0: row[2],
+                y0: row[3],
+                x1: row[4],
+                y1: row[5],
+            })
+        })
+        .collect()
+}
+
+/// Puts the recognised words inside the regions that were found.
+///
+/// The whole of the join, and pure: two lists in, blocks out. Everything hard
+/// about it is geometry, which is exactly the part that should not need a
+/// quarter of a gigabyte of weights on disk to be tested.
+pub fn blocks_from(
+    lines: &[OcrLine],
+    regions: &[Region],
+    width: u32,
+    height: u32,
+    engine: &EngineId,
+) -> Vec<Block> {
+    let lines: Vec<&OcrLine> = lines
+        .iter()
+        .filter(|line| !line.text.trim().is_empty())
+        .collect();
+
+    let mut held: Vec<Vec<usize>> = vec![Vec::new(); regions.len()];
+    let mut loose: Vec<usize> = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        match region_for(extent(line), regions) {
+            Some(region) => held[region].push(index),
+            None => loose.push(index),
+        }
+    }
+
+    // Ordered by the region's own box rather than by the words inside it, so
+    // that a short line hanging above its region cannot reorder two regions.
+    let mut ordered: Vec<(f32, f32, Block)> = Vec::new();
+
+    for (region, indices) in regions.iter().zip(&held) {
+        if let Some(block) = region_block(region, indices, &lines, width, height, engine) {
+            ordered.push((region.y0, region.x0, block));
+        }
+    }
+
+    // A word the detector put nowhere is still a word on the page, and it keeps
+    // its own place in the order by its own box.
+    for index in loose {
+        let block = one_block(
+            BlockKind::Paragraph,
+            std::slice::from_ref(&index),
+            &lines,
+            width,
+            height,
+            engine,
+        );
+        let (_, top, _, _) = extent(lines[index]);
+        ordered.push((top, left_of(lines[index]), block));
+    }
+
+    ordered.sort_by(|left, right| {
+        left.0
+            .total_cmp(&right.0)
+            .then(left.1.total_cmp(&right.1))
+    });
+
+    ordered.into_iter().map(|(_, _, block)| block).collect()
+}
+
+/// Which region a recognised line belongs to.
+///
+/// The centre decides, because a line sits inside the region that holds it and
+/// only grazes the neighbours. Falling back to the greatest overlap and then to
+/// nothing at all keeps a line that straddles two regions from vanishing.
+fn region_for(box_: (f32, f32, f32, f32), regions: &[Region]) -> Option<usize> {
+    let (x0, y0, x1, y1) = box_;
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+
+    let mut smallest: Option<(usize, f32)> = None;
+    for (index, region) in regions.iter().enumerate() {
+        if region.holds(cx, cy) && smallest.is_none_or(|(_, area)| region.area() < area) {
+            smallest = Some((index, region.area()));
+        }
+    }
+    if let Some((index, _)) = smallest {
+        return Some(index);
+    }
+
+    let mut best: Option<(usize, f32)> = None;
+    for (index, region) in regions.iter().enumerate() {
+        let overlap = region.overlap(box_);
+        if overlap > 0.0 && best.is_none_or(|(_, area)| overlap > area) {
+            best = Some((index, overlap));
+        }
+    }
+
+    best.map(|(index, _)| index)
+}
+
+/// The block a region becomes, if it becomes one.
+fn region_block(
+    region: &Region,
+    indices: &[usize],
+    lines: &[&OcrLine],
+    width: u32,
+    height: u32,
+    engine: &EngineId,
+) -> Option<Block> {
+    if indices.is_empty() {
+        // A figure with no words in it is still worth carrying: its box is
+        // where the picture is, and a pass that extracts assets will read that
+        // box. Every other empty region is a region with nothing to say, and a
+        // heading with no text renders as a bare `#`.
+        return (region.kind == RegionKind::Figure).then(|| Block {
+            kind: BlockKind::Figure,
+            text: String::new(),
+            bbox: Some(normalized(region.x0, region.y0, region.x1, region.y1, width, height)),
+            confidence: Some(region.score),
+            engine: engine.clone(),
+            children: Vec::new(),
+        });
+    }
+
+    if region.kind == RegionKind::Table
+        && let Some(table) = table_block(region, indices, lines, width, height, engine)
+    {
+        return Some(table);
+    }
+
+    // Including a table that could not be reconstructed, and this is the case
+    // that matters: a `Table` with no rows renders as nothing at all, so a
+    // region called a table and built as a paragraph is the difference between
+    // words in the document and words gone. The kind falls with it — a list of
+    // one column is a paragraph, and saying otherwise would be a table that
+    // isn't there.
+    let kind = match region.kind {
+        RegionKind::Table => BlockKind::Paragraph,
+        other => other.into(),
+    };
+
+    Some(one_block(kind, indices, lines, width, height, engine))
+}
+
+/// One block from the lines that belong to it, joined in reading order.
+fn one_block(
+    kind: BlockKind,
+    indices: &[usize],
+    lines: &[&OcrLine],
+    width: u32,
+    height: u32,
+    engine: &EngineId,
+) -> Block {
+    let text = reading_order(indices, lines)
+        .into_iter()
+        .map(|index| lines[index].text.trim())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Block {
+        kind,
+        text,
+        bbox: Some(union(indices, lines, width, height)),
+        // The least confident line in it. A block only as sure as its first
+        // line would let an uncertain one hide behind a confident one, which is
+        // exactly what a policy reading confidence to decide whether to check
+        // the page must not be told.
+        confidence: Some(least_confident(indices, lines)),
+        engine: engine.clone(),
+        children: Vec::new(),
+    }
+}
+
+/// A table, as rows and cells.
+///
+/// The columns are worked out once for the table and not once per row. That is
+/// the whole of it: a row-by-row reading gives rows of different lengths, and a
+/// Markdown table with a row of the wrong length is silently padded into
+/// something that looks deliberate and is not.
+fn table_block(
+    region: &Region,
+    indices: &[usize],
+    lines: &[&OcrLine],
+    width: u32,
+    height: u32,
+    engine: &EngineId,
+) -> Option<Block> {
+    // One line is a paragraph that happens to sit in a table's box, and one
+    // column is a list. Neither is a grid, and calling either one a table would
+    // put a Markdown table in the document that says nothing a sentence would
+    // not have said better.
+    if indices.len() < 2 {
+        return None;
+    }
+
+    let columns = columns_of(region, indices, lines);
+    if columns.len() < 2 {
+        return None;
+    }
+
+    let pieces = pieces_of(&columns, indices, lines);
+
+    let mut children: Vec<Block> = Vec::new();
+    let mut body: Vec<String> = Vec::new();
+
+    for row in stack(&pieces) {
+        let mut cells: Vec<Block> = Vec::with_capacity(columns.len());
+        let mut written: Vec<String> = Vec::with_capacity(columns.len());
+
+        for column in 0..columns.len() {
+            let held = row
+                .iter()
+                .map(|index| &pieces[*index])
+                .find(|piece| piece.column == column);
+
+            let text = held
+                .map(|piece| piece.text(lines))
+                .unwrap_or_default();
+
+            written.push(text.clone());
+            cells.push(Block {
+                kind: BlockKind::TableCell,
+                text,
+                // Empty for a cell the table does not have. There is nothing
+                // there to have been sure about.
+                bbox: held.map(|piece| union(&piece.lines, lines, width, height)),
+                confidence: held.map(|piece| least_confident(&piece.lines, lines)),
+                engine: engine.clone(),
+                children: Vec::new(),
+            });
+        }
+
+        let covered: Vec<usize> = row
+            .iter()
+            .flat_map(|index| pieces[*index].lines.iter().copied())
+            .collect();
+
+        body.push(written.join(" "));
+
+        children.push(Block {
+            kind: BlockKind::TableRow,
+            text: String::new(),
+            bbox: Some(union(&covered, lines, width, height)),
+            confidence: Some(least_confident(&covered, lines)),
+            engine: engine.clone(),
+            children: cells,
+        });
+    }
+
+    Some(Block {
+        kind: BlockKind::Table,
+        // The cells again, in a form that can be searched and compared. The
+        // renderer reads the children, but everything downstream of the
+        // renderer reads text, and a table with none would be a hole.
+        text: body.join("\n"),
+        bbox: Some(normalized(region.x0, region.y0, region.x1, region.y1, width, height)),
+        confidence: Some(least_confident(indices, lines)),
+        engine: engine.clone(),
+        children,
+    })
+}
+
+/// Where the columns are.
+///
+/// The gaps that run through the whole table, and nothing else. Every line in a
+/// column covers some of the same horizontal space as every other line in it,
+/// so the columns are what is left when the lines' spans are merged and the
+/// gaps between them are the gutters.
+///
+/// A gap has to be at least a line high to count. Two words in the same cell
+/// are never that far apart, and the gap between two columns always is, which
+/// makes the line height the one scale a page carries with it.
+fn columns_of(region: &Region, indices: &[usize], lines: &[&OcrLine]) -> Vec<(f32, f32)> {
+    let gutter = median_height(indices, lines);
+    let spanning = region.width() * SPANNING;
+
+    let mut spans: Vec<(f32, f32)> = indices
+        .iter()
+        .map(|index| (left_of(lines[*index]), right_of(lines[*index])))
+        .filter(|(left, right)| right - left < spanning)
+        .collect();
+
+    if spans.is_empty() {
+        return vec![(region.x0, region.x1)];
+    }
+
+    spans.sort_by(|left, right| left.0.total_cmp(&right.0));
+
+    let mut columns: Vec<(f32, f32)> = vec![spans[0]];
+    for (left, right) in &spans[1..] {
+        let last = columns.last_mut().expect("just pushed");
+        if left - last.1 < gutter {
+            last.1 = last.1.max(*right);
+        } else {
+            columns.push((*left, *right));
+        }
+    }
+
+    columns
+}
+
+/// Which column a line sits in, by its centre.
+///
+/// The nearest column as well as the containing one, because a line whose box
+/// overhangs its region would otherwise belong to nothing and disappear from
+/// the table it is a part of.
+fn column_of(centre: f32, columns: &[(f32, f32)]) -> usize {
+    let mut best = 0;
+    let mut distance = f32::INFINITY;
+
+    for (index, (left, right)) in columns.iter().enumerate() {
+        if *left <= centre && centre <= *right {
+            return index;
+        }
+
+        let to = if centre < *left {
+            *left - centre
+        } else {
+            centre - *right
+        };
+        if to < distance {
+            distance = to;
+            best = index;
+        }
+    }
+
+    best
+}
+
+/// One cell's worth of lines, and which column it is in.
+///
+/// Cells before rows, and that order is the whole of why a wrapped cell stays
+/// one cell. Two lines of one cell sit on top of each other and do not overlap
+/// at all, so read as lines first they are two rows — a row of `Widgets and`
+/// and a row of `gadgets`, with the rest of the table empty beside them.
+/// Grouped into a cell first, its box is as tall as both lines and the columns
+/// beside it land on it and not on one half of it.
+struct Piece {
+    column: usize,
+    top: f32,
+    bottom: f32,
+    left: f32,
+    lines: Vec<usize>,
+}
+
+impl Piece {
+    /// A cell's own lines are one wrapped sentence, so a space. A cell cannot
+    /// hold a newline: Markdown would break the row in two if it did.
+    fn text(&self, lines: &[&OcrLine]) -> String {
+        self.lines
+            .iter()
+            .map(|index| lines[*index].text.trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn pieces_of(columns: &[(f32, f32)], indices: &[usize], lines: &[&OcrLine]) -> Vec<Piece> {
+    let mut within: Vec<Vec<usize>> = vec![Vec::new(); columns.len()];
+    for index in indices {
+        within[column_of(centre_x(lines[*index]), columns)].push(*index);
+    }
+
+    let mut pieces: Vec<Piece> = Vec::new();
+
+    for (column, mut held) in within.into_iter().enumerate() {
+        held.sort_by(|left, right| {
+            top_of(lines[*left])
+                .total_cmp(&top_of(lines[*right]))
+                .then(left_of(lines[*left]).total_cmp(&left_of(lines[*right])))
+        });
+
+        let wrap = median_height(&held, lines) * WRAP_GAP;
+        let mut piece: Option<Piece> = None;
+
+        for index in held {
+            let (top, bottom) = (top_of(lines[index]), bottom_of(lines[index]));
+
+            match &mut piece {
+                // Still the same cell: nothing to write with between the two.
+                Some(piece) if top - piece.bottom < wrap => {
+                    piece.bottom = piece.bottom.max(bottom);
+                    piece.lines.push(index);
+                }
+                _ => {
+                    // The previous cell is done with.
+                    if let Some(finished) = piece.take() {
+                        pieces.push(finished);
+                    }
+
+                    piece = Some(Piece {
+                        column,
+                        top,
+                        bottom,
+                        left: left_of(lines[index]),
+                        lines: vec![index],
+                    });
+                }
+            }
+        }
+
+        if let Some(finished) = piece {
+            pieces.push(finished);
+        }
+    }
+
+    pieces
+}
+
+/// Groups cells into rows by vertical overlap.
+///
+/// A row is read off a cell and not off a line, so a row that is tall because
+/// one of its cells wraps still meets the single-line cells beside it.
+fn stack(pieces: &[Piece]) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..pieces.len()).collect();
+    order.sort_by(|left, right| {
+        pieces[*left]
+            .top
+            .total_cmp(&pieces[*right].top)
+            .then(pieces[*left].left.total_cmp(&pieces[*right].left))
+    });
+
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut band: Option<(f32, f32)> = None;
+
+    for index in order {
+        let piece = &pieces[index];
+
+        match band {
+            Some((top, bottom)) if same_row(piece.top, piece.bottom, top, bottom) => {
+                rows.last_mut().expect("a band belongs to a row").push(index);
+                band = Some((top.min(piece.top), bottom.max(piece.bottom)));
+            }
+            _ => {
+                rows.push(vec![index]);
+                band = Some((piece.top, piece.bottom));
+            }
+        }
+    }
+
+    rows
+}
+
+/// Whether a line sits on the same row as the one being built.
+///
+/// Compared against the row's own extent rather than the previous line's, so
+/// that a row of mixed type sizes does not chain away down the page.
+fn same_row(top: f32, bottom: f32, band_top: f32, band_bottom: f32) -> bool {
+    let overlap = bottom.min(band_bottom) - top.max(band_top);
+    let shortest = (bottom - top).min(band_bottom - band_top);
+
+    shortest > 0.0 && overlap > shortest * 0.5
+}
+
+fn reading_order(indices: &[usize], lines: &[&OcrLine]) -> Vec<usize> {
+    let mut order: Vec<usize> = indices.to_vec();
+    order.sort_by(|left, right| {
+        top_of(lines[*left])
+            .total_cmp(&top_of(lines[*right]))
+            .then(left_of(lines[*left]).total_cmp(&left_of(lines[*right])))
+    });
+
+    order
+}
+
+/// The boxes of `indices`, together, in the IR's coordinates.
+fn union(indices: &[usize], lines: &[&OcrLine], width: u32, height: u32) -> Rect {
+    let mut list = indices.iter().map(|index| extent(lines[*index]));
+    let (x0, y0, mut x1, mut y1) = list.next().unwrap_or((0.0, 0.0, 0.0, 0.0));
+
+    for (_, _, right, bottom) in list {
+        x1 = x1.max(right);
+        y1 = y1.max(bottom);
+    }
+
+    normalized(x0, y0, x1, y1, width, height)
+}
+
+fn least_confident(indices: &[usize], lines: &[&OcrLine]) -> f32 {
+    indices
+        .iter()
+        .map(|index| lines[*index].score.clamp(0.0, 1.0))
+        .fold(1.0, f32::min)
+}
+
+/// The height a page's lines are, in the middle of the ones that are here.
+fn median_height(indices: &[usize], lines: &[&OcrLine]) -> f32 {
+    let mut heights: Vec<f32> = indices
+        .iter()
+        .map(|index| {
+            let (_, top, _, bottom) = extent(lines[*index]);
+            bottom - top
+        })
+        .filter(|height| *height > 0.0)
+        .collect();
+
+    if heights.is_empty() {
+        return 0.0;
+    }
+
+    heights.sort_by(f32::total_cmp);
+    heights[heights.len() / 2]
+}
+
+/// A quad's extent, in pixels.
+///
+/// A quad is four arbitrary corners, because detection returns rotated boxes.
+/// Every comparison here is against an axis-aligned box, so the corners are
+/// reduced to their extent — right for near-horizontal text, and the only thing
+/// that can be right for anything else.
+fn extent(line: &OcrLine) -> (f32, f32, f32, f32) {
+    let xs = line.bbox.points.map(|point| point[0]);
+    let ys = line.bbox.points.map(|point| point[1]);
+
+    (
+        xs.iter().copied().fold(f32::INFINITY, f32::min),
+        ys.iter().copied().fold(f32::INFINITY, f32::min),
+        xs.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+        ys.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+    )
+}
+
+fn top_of(line: &OcrLine) -> f32 {
+    extent(line).1
+}
+
+fn bottom_of(line: &OcrLine) -> f32 {
+    extent(line).3
+}
+
+fn left_of(line: &OcrLine) -> f32 {
+    extent(line).0
+}
+
+fn right_of(line: &OcrLine) -> f32 {
+    extent(line).2
+}
+
+fn centre_x(line: &OcrLine) -> f32 {
+    let (left, _, right, _) = extent(line);
+    (left + right) / 2.0
+}
+
+fn normalized(x0: f32, y0: f32, x1: f32, y1: f32, width: u32, height: u32) -> Rect {
+    let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+
+    let left = (x0 / width).clamp(0.0, 1.0);
+    let top = (y0 / height).clamp(0.0, 1.0);
+    let right = (x1 / width).clamp(0.0, 1.0);
+    let bottom = (y1 / height).clamp(0.0, 1.0);
+
+    Rect::new(
+        left,
+        top,
+        (right - left).clamp(0.0, 1.0 - left),
+        (bottom - top).clamp(0.0, 1.0 - top),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rapidocr_core::types::Quad;
+
+    const WIDTH: u32 = 1000;
+    const HEIGHT: u32 = 2000;
+
+    fn engine() -> EngineId {
+        EngineId::from("rapidocr+layout")
+    }
+
+    fn line(text: &str, x0: f32, y0: f32, x1: f32, y1: f32) -> OcrLine {
+        OcrLine {
+            bbox: Quad::from_xyxy(x0, y0, x1, y1),
+            text: text.to_owned(),
+            score: 0.9,
+        }
+    }
+
+    fn region(kind: RegionKind, x0: f32, y0: f32, x1: f32, y1: f32) -> Region {
+        Region {
+            kind,
+            score: 0.95,
+            x0,
+            y0,
+            x1,
+            y1,
+        }
+    }
+
+    fn blocks(lines: &[OcrLine], regions: &[Region]) -> Vec<Block> {
+        blocks_from(lines, regions, WIDTH, HEIGHT, &engine())
+    }
+
+    fn kinds(found: &[Block]) -> Vec<BlockKind> {
+        found.iter().map(|block| block.kind.clone()).collect()
+    }
+
+    fn text_of(block: &Block) -> String {
+        block.text.clone()
+    }
+
+    /// Six numbers per region: the class, the score and the two corners.
+    #[test]
+    fn decoding_reads_the_class_the_score_and_the_box() {
+        let raw = [7.0, 0.97, 10.0, 20.0, 30.0, 40.0];
+
+        let found = decode(&raw);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, RegionKind::Formula);
+        assert_eq!(found[0].score, 0.97);
+        assert_eq!((found[0].x0, found[0].y0, found[0].x1, found[0].y1), (10.0, 20.0, 30.0, 40.0));
+    }
+
+    /// A guess about a heading lands in the document as a heading.
+    #[test]
+    fn decoding_drops_anything_the_model_is_not_sure_of() {
+        let raw = [
+            2.0, 0.49, 0.0, 0.0, 1.0, 1.0, //
+            2.0, 0.51, 0.0, 0.0, 1.0, 1.0,
+        ];
+
+        assert_eq!(decode(&raw).len(), 1);
+    }
+
+    #[test]
+    fn decoding_ignores_a_class_the_model_does_not_have() {
+        let raw = [20.0, 0.99, 0.0, 0.0, 1.0, 1.0];
+
+        assert!(decode(&raw).is_empty());
+    }
+
+    /// The model always returns its full set of slots, most of them empty.
+    #[test]
+    fn decoding_of_an_empty_page_finds_nothing() {
+        assert!(decode(&[]).is_empty());
+    }
+
+    #[test]
+    fn every_class_maps_to_a_kind() {
+        for (index, kind) in CLASSES.iter().enumerate() {
+            let raw = [index as f32, 0.9, 0.0, 0.0, 1.0, 1.0];
+
+            assert_eq!(decode(&raw)[0].kind, *kind, "class {index}");
+        }
+    }
+
+    #[test]
+    fn a_document_title_is_a_top_level_heading() {
+        assert_eq!(
+            BlockKind::from(RegionKind::Title),
+            BlockKind::Heading { level: 1 }
+        );
+        assert_eq!(
+            BlockKind::from(RegionKind::Section),
+            BlockKind::Heading { level: 2 }
+        );
+    }
+
+    /// The measurement this whole module exists for: prose with a heading over
+    /// it comes back as a heading and a paragraph, where the recogniser alone
+    /// produced two paragraphs.
+    #[test]
+    fn a_heading_region_becomes_a_heading() {
+        let lines = [
+            line("Annual Report", 100.0, 100.0, 400.0, 140.0),
+            line("Revenue increased by 12% this year.", 100.0, 300.0, 700.0, 330.0),
+        ];
+        let regions = [
+            region(RegionKind::Title, 90.0, 90.0, 420.0, 150.0),
+            region(RegionKind::Text, 90.0, 290.0, 720.0, 340.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+
+        assert_eq!(
+            kinds(&found),
+            vec![
+                BlockKind::Heading { level: 1 },
+                BlockKind::Paragraph
+            ]
+        );
+        assert_eq!(found[0].text, "Annual Report");
+    }
+
+    #[test]
+    fn blocks_come_back_top_to_bottom() {
+        let lines = [
+            line("second", 100.0, 400.0, 400.0, 430.0),
+            line("first", 100.0, 100.0, 400.0, 130.0),
+        ];
+        let regions = [
+            region(RegionKind::Text, 90.0, 390.0, 420.0, 440.0),
+            region(RegionKind::Text, 90.0, 90.0, 420.0, 140.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+
+        assert_eq!(text_of(&found[0]), "first");
+        assert_eq!(text_of(&found[1]), "second");
+    }
+
+    /// Two regions side by side are one column each, and the left is read
+    /// first. Reading order across more than one column is not solved here.
+    #[test]
+    fn regions_on_the_same_row_are_read_left_to_right() {
+        let lines = [
+            line("right", 600.0, 100.0, 900.0, 130.0),
+            line("left", 100.0, 100.0, 400.0, 130.0),
+        ];
+        let regions = [
+            region(RegionKind::Text, 590.0, 90.0, 920.0, 140.0),
+            region(RegionKind::Text, 90.0, 90.0, 420.0, 140.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+
+        assert_eq!(text_of(&found[0]), "left");
+        assert_eq!(text_of(&found[1]), "right");
+    }
+
+    /// The recogniser reports lines; a region is what says they were one
+    /// paragraph, and it says it without the gap heuristic the layout-free path
+    /// has to use.
+    #[test]
+    fn the_lines_of_one_region_are_one_block() {
+        let lines = [
+            line("a sentence that", 100.0, 100.0, 500.0, 130.0),
+            line("wraps onto a second line", 100.0, 131.0, 520.0, 161.0),
+        ];
+        let regions = [region(RegionKind::Text, 90.0, 90.0, 540.0, 170.0)];
+
+        let found = blocks(&lines, &regions);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].text, "a sentence that\nwraps onto a second line");
+    }
+
+    #[test]
+    fn a_block_is_only_as_confident_as_its_least_certain_line() {
+        let mut lines = [
+            line("sure", 100.0, 100.0, 400.0, 130.0),
+            line("unsure", 100.0, 131.0, 400.0, 161.0),
+        ];
+        lines[0].score = 0.99;
+        lines[1].score = 0.61;
+        let regions = [region(RegionKind::Text, 90.0, 90.0, 420.0, 170.0)];
+
+        assert_eq!(blocks(&lines, &regions)[0].confidence, Some(0.61));
+    }
+
+    /// A figure has no words, and is still worth carrying: its box is where the
+    /// picture is.
+    #[test]
+    fn an_empty_figure_keeps_its_box() {
+        let regions = [region(RegionKind::Figure, 100.0, 100.0, 900.0, 800.0)];
+
+        let found = blocks(&[], &regions);
+
+        assert_eq!(kinds(&found), vec![BlockKind::Figure]);
+        assert_eq!(found[0].confidence, Some(0.95));
+
+        let bbox = found[0].bbox.expect("bbox");
+        assert!((bbox.x - 0.1).abs() < 1e-6, "{bbox:?}");
+        assert!((bbox.h - 0.35).abs() < 1e-6, "{bbox:?}");
+    }
+
+    /// A heading with no words in it renders as a bare `#`.
+    #[test]
+    fn an_empty_region_of_any_other_kind_is_nothing() {
+        let regions = [
+            region(RegionKind::Title, 100.0, 100.0, 900.0, 200.0),
+            region(RegionKind::Table, 100.0, 300.0, 900.0, 800.0),
+        ];
+
+        assert!(blocks(&[], &regions).is_empty());
+    }
+
+    /// Not a reason to lose the words.
+    #[test]
+    fn a_word_no_region_claimed_is_still_a_paragraph() {
+        let lines = [line("stray", 100.0, 100.0, 400.0, 130.0)];
+
+        let found = blocks(&lines, &[]);
+
+        assert_eq!(kinds(&found), vec![BlockKind::Paragraph]);
+        assert_eq!(found[0].text, "stray");
+    }
+
+    #[test]
+    fn a_loose_word_keeps_its_place_in_the_order() {
+        let lines = [
+            line("first", 100.0, 100.0, 400.0, 130.0),
+            line("stray", 100.0, 500.0, 400.0, 530.0),
+            line("last", 100.0, 900.0, 400.0, 930.0),
+        ];
+        let regions = [
+            region(RegionKind::Text, 90.0, 90.0, 420.0, 140.0),
+            region(RegionKind::Text, 90.0, 890.0, 420.0, 940.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+
+        let texts: Vec<&str> = found.iter().map(|block| block.text.as_str()).collect();
+        assert_eq!(texts, vec!["first", "stray", "last"]);
+    }
+
+    /// A line that straddles two regions belongs to the one holding its middle.
+    #[test]
+    fn a_line_between_two_regions_goes_to_the_one_holding_its_middle() {
+        let lines = [line("overlap", 100.0, 140.0, 400.0, 170.0)];
+        let regions = [
+            region(RegionKind::Text, 90.0, 90.0, 420.0, 150.0),
+            region(RegionKind::Text, 90.0, 160.0, 420.0, 220.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+
+        assert_eq!(found.len(), 1);
+        // The second region's top, and the first's, decide which comes first;
+        // the point here is only that the line was claimed once.
+        assert_eq!(found[0].text, "overlap");
+    }
+
+    // The table is the thing the measurement turned on: 0 of 9 tables found
+    // before, 7 of 7 pages with tables found after. These are the tests for
+    // turning a found region into a table somebody can read.
+
+    fn table_lines() -> Vec<OcrLine> {
+        vec![
+            line("Item", 100.0, 260.0, 200.0, 290.0),
+            line("Qty", 500.0, 260.0, 560.0, 290.0),
+            line("Price", 800.0, 260.0, 900.0, 290.0),
+            line("Widget", 100.0, 320.0, 220.0, 350.0),
+            line("3", 500.0, 320.0, 520.0, 350.0),
+            line("12.00", 800.0, 320.0, 880.0, 350.0),
+            line("Gadget", 100.0, 380.0, 230.0, 410.0),
+            line("7", 500.0, 380.0, 520.0, 410.0),
+            line("4.50", 800.0, 380.0, 880.0, 410.0),
+        ]
+    }
+
+    fn table_region() -> Region {
+        region(RegionKind::Table, 90.0, 190.0, 920.0, 420.0)
+    }
+
+    fn cells(found: &Block) -> Vec<Vec<String>> {
+        found
+            .children
+            .iter()
+            .map(|row| {
+                row.children
+                    .iter()
+                    .map(|cell| cell.text.clone())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_table_region_becomes_rows_and_cells() {
+        let found = blocks(&table_lines(), &[table_region()]);
+
+        assert_eq!(kinds(&found), vec![BlockKind::Table]);
+        assert_eq!(
+            cells(&found[0]),
+            vec![
+                vec!["Item", "Qty", "Price"],
+                vec!["Widget", "3", "12.00"],
+                vec!["Gadget", "7", "4.50"],
+            ]
+        );
+    }
+
+    /// The failure this guards against is silent: a `Table` with no rows
+    /// renders as nothing at all, so a table that is not really a table loses
+    /// its words from the document.
+    #[test]
+    fn a_table_region_renders_as_a_markdown_table() {
+        use docfusion_core::ir::{DocMeta, Document, Page, PageProvenance, Size, SourceRef};
+
+        let found = blocks(&table_lines(), &[table_region()]);
+
+        let document = Document {
+            source: SourceRef {
+                path: std::path::PathBuf::from("scan.png"),
+                content_hash: "0".repeat(64),
+                mime: "image/png".to_owned(),
+                size: 0,
+                mtime: None,
+            },
+            pages: vec![Page {
+                index: 0,
+                size: Some(Size {
+                    w: WIDTH as f32,
+                    h: HEIGHT as f32,
+                }),
+                blocks: found,
+                provenance: PageProvenance {
+                    primary: engine(),
+                    engines: vec![engine()],
+                    verified: false,
+                },
+            }],
+            meta: DocMeta::default(),
+            conflicts: Vec::new(),
+        };
+
+        let markdown = docfusion_core::render::markdown(&document, "2026-01-01T00:00:00Z");
+
+        assert!(markdown.contains("| Item | Qty | Price |"), "{markdown}");
+        assert!(markdown.contains("| Widget | 3 | 12.00 |"), "{markdown}");
+        assert!(markdown.contains("| Gadget | 7 | 4.50 |"), "{markdown}");
+    }
+
+    /// A header row spanning the table crosses every column, so counting it as
+    /// evidence of where the columns are would weld them into one and lose the
+    /// table entirely.
+    #[test]
+    fn a_spanning_header_does_not_merge_the_columns() {
+        let mut lines = table_lines();
+        lines.push(line("Quarterly breakdown", 100.0, 200.0, 900.0, 230.0));
+
+        let found = blocks(&lines, &[table_region()]);
+
+        assert_eq!(kinds(&found), vec![BlockKind::Table]);
+        assert_eq!(cells(&found[0]).len(), 4, "the header is a row of its own");
+        assert!(
+            cells(&found[0])[0].iter().any(|cell| cell == "Quarterly breakdown"),
+            "{:?}",
+            cells(&found[0])
+        );
+    }
+
+    /// A cell whose own text wraps over two lines is one cell, not two.
+    #[test]
+    fn a_wrapped_cell_is_one_cell() {
+        let lines = [
+            line("Widgets and", 100.0, 200.0, 220.0, 230.0),
+            line("gadgets", 100.0, 231.0, 180.0, 261.0),
+            line("12.00", 800.0, 200.0, 880.0, 230.0),
+        ];
+        let regions = [region(RegionKind::Table, 90.0, 190.0, 920.0, 270.0)];
+
+        let found = blocks(&lines, &regions);
+
+        assert_eq!(cells(&found[0]), vec![vec!["Widgets and gadgets", "12.00"]]);
+    }
+
+    /// Rows of different heights still land on the same grid.
+    #[test]
+    fn rows_are_the_lines_at_the_same_height() {
+        let lines = [
+            line("a", 100.0, 200.0, 150.0, 220.0),
+            line("b", 500.0, 200.0, 550.0, 220.0),
+            line("tall", 100.0, 300.0, 200.0, 360.0),
+            line("c", 500.0, 310.0, 550.0, 330.0),
+        ];
+        let regions = [region(RegionKind::Table, 90.0, 190.0, 920.0, 400.0)];
+
+        let found = blocks(&lines, &regions);
+
+        assert_eq!(
+            cells(&found[0]),
+            vec![vec!["a", "b"], vec!["tall", "c"]]
+        );
+    }
+
+    /// A list is not a table, and calling it one would put a Markdown table in
+    /// the document that says nothing a sentence would not have said better.
+    #[test]
+    fn one_column_is_not_a_table() {
+        let lines = [
+            line("first", 100.0, 200.0, 400.0, 230.0),
+            line("second", 100.0, 260.0, 400.0, 290.0),
+        ];
+        let regions = [region(RegionKind::Table, 90.0, 190.0, 920.0, 320.0)];
+
+        let found = blocks(&lines, &regions);
+
+        assert_eq!(kinds(&found), vec![BlockKind::Paragraph]);
+        assert_eq!(found[0].text, "first\nsecond");
+    }
+
+    #[test]
+    fn one_line_is_not_a_table() {
+        let lines = [line("alone", 100.0, 200.0, 400.0, 230.0)];
+        let regions = [region(RegionKind::Table, 90.0, 190.0, 920.0, 320.0)];
+
+        assert_eq!(kinds(&blocks(&lines, &regions)), vec![BlockKind::Paragraph]);
+    }
+
+    #[test]
+    fn a_table_cell_carries_where_it_was() {
+        let found = blocks(&table_lines(), &[table_region()]);
+
+        let cell = &found[0].children[0].children[0];
+        let bbox = cell.bbox.expect("bbox");
+
+        assert!((bbox.x - 0.1).abs() < 1e-6, "{bbox:?}");
+        assert!((bbox.w - 0.1).abs() < 1e-6, "{bbox:?}");
+    }
+
+    /// The table's own text is what everything downstream of the renderer
+    /// reads, and a table with none would be a hole in the index.
+    #[test]
+    fn a_table_carries_its_words_as_text_too() {
+        let found = blocks(&table_lines(), &[table_region()]);
+
+        assert!(found[0].text.contains("Widget"), "{}", found[0].text);
+        assert!(found[0].text.contains("12.00"), "{}", found[0].text);
+    }
+
+    #[test]
+    fn a_page_with_nothing_on_it_produces_nothing() {
+        assert!(blocks(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn every_block_is_attributed_to_this_engine() {
+        let lines = table_lines();
+        let found = blocks(&lines, &[table_region()]);
+
+        assert!(found.iter().all(|block| block.engine.as_str() == "rapidocr+layout"));
+        assert!(
+            found[0]
+                .children
+                .iter()
+                .all(|row| row.engine.as_str() == "rapidocr+layout")
+        );
+    }
+
+    /// Reads a real page through the real weights.
+    ///
+    /// Ignored by default: it needs the 124 MB model downloaded and takes a
+    /// second a page. What it checks is the half the tests above cannot — that
+    /// the session loads, that the three inputs are the right three, and that
+    /// the boxes come back in the coordinates of the page rather than of the
+    /// square the model was fed.
+    #[test]
+    #[ignore = "needs the structure model downloaded"]
+    fn reads_structure_from_a_rendered_page() {
+        use docfusion_core::extract::PageSource;
+        use docfusion_core::extract::fixtures;
+
+        // Asked for by name, so the model had better be here: a test that
+        // quietly does nothing when it is missing is a test that passes by
+        // having run on nothing.
+        assert!(
+            available(),
+            "no model at {}; run `docfusion doctor --fetch` first",
+            model_path().display()
+        );
+
+        // A page with a shape to it rather than a line on a blank sheet: the
+        // detector is looking for the layout of a document, and a single word
+        // alone on a page is not one — measured, it finds nothing on that at
+        // all, and neither does the reference implementation.
+        let pdf = fixtures::pdf(&[
+            (22.0, "Annual Report"),
+            (11.0, "Revenue increased by twelve percent this year, and the"),
+            (11.0, "growth came from every region we operate in. Costs were"),
+            (11.0, "flat, so the margin widened slightly."),
+        ]);
+        let pages = docfusion_core::extract::pdf::RenderedPages::open(&pdf, 200.0).expect("open");
+        let page = pages.page(0).expect("render");
+
+        let rgb = image::RgbImage::from_raw(
+            page.width,
+            page.height,
+            page.pixels
+                .chunks_exact(4)
+                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+                .collect(),
+        )
+        .expect("rgb");
+
+        let detector = Detector::new(model_path());
+        let regions = detector.detect(&rgb).expect("detect");
+
+        assert!(
+            !regions.is_empty(),
+            "the model found nothing on a page with words on it"
+        );
+        assert!(
+            regions.iter().all(|region| {
+                region.x0 >= 0.0
+                    && region.y0 >= 0.0
+                    && region.x1 <= page.width as f32
+                    && region.y1 <= page.height as f32
+            }),
+            "a box is not in the coordinates of the page: {regions:?}"
+        );
+
+        // And not merely on the page. The boxes come out of the model in the
+        // coordinates of the square the page was squashed into, and reading
+        // them as page coordinates puts everything it finds in the middle of a
+        // page that is not square — which is still *inside* the page, and
+        // passed the check above for as long as that check was the only one.
+        //
+        // The numbers are what makes this a check rather than a formality. On
+        // this fixture the title's ink is a tenth of the way down the page and
+        // ends a third of the way across it. Read as page coordinates, the very
+        // same detection comes back reaching three quarters of the way across
+        // and a quarter of the way down — found, named correctly, and pointed
+        // at the wrong part of the page.
+        let (width, height) = (page.width as f32, page.height as f32);
+        let title = regions
+            .iter()
+            .find(|region| matches!(region.kind, RegionKind::Title | RegionKind::Section))
+            .expect("a title");
+
+        assert!(
+            title.y1 < height * 0.15,
+            "the title is not at the top of the page: {title:?}"
+        );
+        assert!(
+            title.x1 < width * 0.5,
+            "the title reaches too far across the page: {title:?}"
+        );
+    }
+}

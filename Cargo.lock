@@ -1279,6 +1279,7 @@ dependencies = [
  "blake3",
  "docfusion-core",
  "image",
+ "ort",
  "rapidocr-core",
  "rusqlite",
  "serde",

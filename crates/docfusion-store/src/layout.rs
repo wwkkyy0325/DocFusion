@@ -148,6 +148,14 @@ pub enum Outcome {
     Cancelled,
 }
 
+/// Where models that are not inside the binary live.
+///
+/// The same directory `build.rs` caches the embedded weights in, so that "where
+/// does DocFusion put models" has one answer rather than two.
+pub fn default_root() -> PathBuf {
+    crate::dirs::user_dir().join("models")
+}
+
 /// Where the model lives once it is here.
 pub fn path_in(root: &Path) -> PathBuf {
     root.join(STRUCTURE.file)

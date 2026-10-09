@@ -4,7 +4,122 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
-## 2026-10-09 — A layout model, measured before it was wired
+## 2026-10-09 — The layout model on the engine, and a page that stops being one column
+
+**What:** the second half of the layout work. The detector runs in the same
+process as the recogniser, the words it reads are put inside the regions the
+detector found, and the twenty classes become the block kinds the IR already
+had. **No endpoint, no vision model, nothing configured:**
+
+```
+## Annual Report
+
+Revenue increased by twelve percent this year, and the growth came
+from every region we operate in. Costs were flat, so the margin
+widened slightly, and the outlook for the coming year is unchanged.
+
+Table 1: Revenue by region
+
+| Region | Units | Revenue |
+| --- | --- | --- |
+| North | 1,204 | 412,000 |
+| South | 988 | 301,500 |
+| East | 1,733 | 556,900 |
+| West | 640 | 198,200 |
+```
+
+**The same page without it** is a heading that is not a heading, and a table read
+as a column of loose words — with the values in the wrong rows:
+
+```
+Annual Report
+
+...
+
+Region
+
+Units
+
+Revenue
+
+North
+
+1,204
+
+412,000
+
+South
+
+301,500
+
+988
+```
+
+**Cost, release build, one page:** 1.44 s without the model, 2.59 s with. Almost
+all of the difference is one-off — the 124 MB digest and the session load; the
+inference itself was measured at 405 ms a page.
+
+**The id changes when the model is here, and that is not a detail.** The local
+engine calls itself `rapidocr` or `rapidocr+layout`, and the engine identity is
+the cache key. Two different outputs under one name is a cache that serves one
+to a run that asked for the other — so a knowledge base read before the model
+arrived is read again after it, which is the correct thing for it to do.
+
+### The coordinate bug, and why the earlier measurement survived it
+
+**The model does not answer in the coordinates of the page.** Its `im_shape` and
+`scale_factor` inputs are named for mapping its boxes back, and measured they
+scale them by the ratio *twice over*: told a page is 2200 by 1700, it puts a
+title 4.5 times too far right and 7.6 times too far down. The reference snippet
+this was built from passes the page's shape and uses the boxes it gets back, and
+so did the probe here — which means the drawing used to justify the first
+measurement had boxes in the wrong places, and it was read as confirmation.
+
+**It was believable because a wrong box on a page that is nearly square lands
+near its own region.** On an A4 research report everything came out in the
+middle-left, which looks like a plausible place for a figure. It only became
+obvious on a page whose ink is in a corner.
+
+**The counts were unaffected.** The mapping is applied to the coordinates after
+the classes and scores are decided, so the "7 of 7 pages with tables" figure —
+counted by class, not by box — stands exactly as it was measured. Only the
+drawing was wrong.
+
+**The fix is to tell the model the truth, then do the arithmetic here.** It is
+given an 800×800 square, which it was, and told so; the boxes are scaled to the
+page in two multiplications that can be read. The probe was corrected to match,
+and now draws boxes on the ink.
+
+**The test that should have caught it did not.** "Every box is within the page"
+passed with the wrong mapping, because a box in the middle of a page is within
+the page. It now checks where the title is — a tenth of the way down and a third
+of the way across — which is the assertion the wrong answer fails.
+
+### Where the judgement is, and where it isn't
+
+**The twenty classes become seven kinds in one table, and that table is the
+whole of what this module thinks about a page.** Several of the classes could be
+argued either way: `header` and `footer` are running matter, and they are read
+as ordinary text because every other extractor in this project reads them as
+ordinary text. Dropping them only in the layout pass would be one rule, in one
+place, for no stated reason.
+
+**Columns before rows, and that order is why a wrapped cell stays one cell.**
+Two lines of one cell do not overlap at all, so read as lines first they are two
+rows — a row of `Widgets and` beside an empty cell and a row of `gadgets` beside
+an empty one. Grouped into a cell first, its box is as tall as both lines and
+the columns beside it land on it.
+
+**A table that cannot be reconstructed is a paragraph, not an empty table.**
+This is the one that loses data silently: `BlockKind::Table` with no rows
+renders as nothing at all, so a one-column region called a table would take its
+words out of the document. Three tests failed on exactly that before it was
+fixed, which is what they were for.
+
+**Reading order is top to bottom then left to right, and that is wrong for two
+columns.** A second column is read as a second row of the first. Named here
+rather than discovered later.
+
 
 **What:** `PP-DocLayout_plus-L` — the thing that finds headings, tables, headers
 and footers on a page — with a downloader to fetch it and a `doctor` line to ask

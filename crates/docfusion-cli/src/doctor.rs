@@ -28,14 +28,6 @@ use crate::{Cli, CliError, FAILED, OK, endpoint, engine_ids};
 const OCR_ONLY: &str = "ocr-only";
 const VISION: &str = "vision";
 
-/// Where models that are not inside the binary live.
-///
-/// The same directory `build.rs` caches the embedded ones in, so "where does
-/// DocFusion put models" has one answer rather than two.
-fn model_root() -> std::path::PathBuf {
-    docfusion_store::dirs::user_dir().join("models")
-}
-
 /// The line about the structure model, fetching it first when asked to.
 ///
 /// The one thing in this report that can be acted on here rather than
@@ -89,7 +81,7 @@ fn structure_line(root: &std::path::Path, fetch: bool) -> Result<String, CliErro
 
 pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
     let root = cli.root();
-    let model_root = model_root();
+    let model_root = docfusion_store::layout::default_root();
     let engines = engine_ids(cli)?;
     let endpoint = endpoint(cli)?;
 

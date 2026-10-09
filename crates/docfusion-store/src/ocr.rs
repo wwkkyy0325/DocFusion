@@ -11,6 +11,12 @@
 //!
 //! Lives here rather than in the core crate because it loads native libraries
 //! and model files, and core performs no I/O.
+//!
+//! What it produces on its own is a page of paragraphs and nothing else, which
+//! is all a text detector and a recogniser can produce. When the layout model
+//! from [`crate::structure`] has been fetched, this runs it first and puts the
+//! recognised words inside the regions it found, which is where headings and
+//! tables come from. Without it every page reads exactly as it did before.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,8 +29,18 @@ use rapidocr_core::RapidOcr;
 use rapidocr_core::config::RapidOcrConfig;
 use rapidocr_core::types::{OcrLine, OcrOutput};
 
+use crate::structure;
+
 const ENGINE_ID: &str = "rapidocr";
 const ENGINE_VERSION: &str = "1.0.0";
+
+/// What this engine calls itself when the structure model is here as well.
+///
+/// A different name and not a different version, because it is a different
+/// answer: the same page comes out of here with headings and tables that the
+/// recogniser alone cannot see, and two outputs of one name is a cache that
+/// serves one to a run that asked for the other.
+const STRUCTURED_ID: &str = "rapidocr+layout";
 
 /// Two lines belong to the same paragraph when the vertical gap between them is
 /// under this fraction of their height.
@@ -51,6 +67,12 @@ pub struct RapidOcrBackend {
     /// once spread out instead of all queueing on the same one.
     next: AtomicUsize,
     source: Source,
+    /// The layout detector, when its weights are here.
+    ///
+    /// This is what turns a page of lines into a page of headings, tables and
+    /// paragraphs. Absent by default and absent on most installations, because
+    /// it is 124 MB that somebody has to ask for — see `crate::layout`.
+    structure: Option<structure::Detector>,
 }
 
 /// How many pages this machine will read at once.
@@ -81,7 +103,13 @@ impl RapidOcrBackend {
     /// downloaded, nothing is configured, and it is offline from the moment it
     /// is installed.
     pub fn bundled() -> Self {
-        Self::with_source(Source::Bundled)
+        let mut backend = Self::with_source(Source::Bundled);
+
+        if structure::available() {
+            backend.structure = Some(structure::Detector::new(structure::model_path()));
+        }
+
+        backend
     }
 
     /// Reads pages using weights the caller located itself.
@@ -111,6 +139,7 @@ impl RapidOcrBackend {
             runners: (0..count).map(|_| Mutex::new(None)).collect(),
             next: AtomicUsize::new(0),
             source,
+            structure: None,
         }
     }
 
@@ -273,7 +302,10 @@ fn model_cache_dir() -> PathBuf {
 
 impl OcrBackend for RapidOcrBackend {
     fn id(&self) -> EngineId {
-        EngineId::from(ENGINE_ID)
+        match self.structure {
+            Some(_) => EngineId::from(STRUCTURED_ID),
+            None => EngineId::from(ENGINE_ID),
+        }
     }
 
     fn version(&self) -> &str {
@@ -294,19 +326,30 @@ impl OcrBackend for RapidOcrBackend {
 
     fn recognize(&self, request: &PageRequest<'_>) -> Result<Vec<Block>, BackendError> {
         let rgb = to_rgb(request.image);
+
+        // Found before the recogniser runs and not after it, so that the
+        // pipeline is not held for the half second the detector takes. A page
+        // with no structure model, or one the model finds nothing on, is read
+        // exactly as it always was — this is an improvement on top of the
+        // engine, never a way for a page not to be read.
+        let regions = match &self.structure {
+            Some(detector) => detector.detect(&rgb).unwrap_or_default(),
+            None => Vec::new(),
+        };
+
         let page = request.page;
+        let (width, height) = (request.image.width, request.image.height);
 
         self.with_runner(|runner| {
             let output = runner.run_image(&rgb).map_err(|error| {
                 BackendError::Failed(format!("the OCR pipeline failed on page {page}: {error}"))
             })?;
 
-            Ok(lines_to_blocks(
-                &output,
-                request.image.width,
-                request.image.height,
-                &self.id(),
-            ))
+            Ok(if regions.is_empty() {
+                lines_to_blocks(&output, width, height, &self.id())
+            } else {
+                structure::blocks_from(&output.lines, &regions, width, height, &self.id())
+            })
         })
     }
 }
