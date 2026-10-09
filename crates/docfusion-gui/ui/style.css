@@ -1,16 +1,32 @@
 /* Two tabs, one column of text. No framework: the document is rendered to HTML
    by the pipeline and this only has to put it somewhere readable. */
 
+/* Dark unless told otherwise, which is what `color-scheme` decides here.
+   Everything below names both of its colours in one place — `light-dark(light,
+   dark)` — and that one word picks between them, so the two themes cannot drift
+   apart the way two separate blocks of declarations would. It also tells the
+   webview which kind of controls to draw: the scrollbars, the password reveal
+   button and the text cursor are the browser's, and it gets them wrong when it
+   thinks this is a light page. */
 :root {
-  --ink: #0f172a;
-  --muted: #64748b;
-  --line: #e2e8f0;
-  --paper: #ffffff;
-  --wash: #f8fafc;
-  --accent: #1d4ed8;
-  --warn: #b45309;
-  --warn-wash: #fffbeb;
+  color-scheme: dark;
+
+  --ink: light-dark(#0f172a, #e3e9f2);
+  --muted: light-dark(#64748b, #93a1b5);
+  --line: light-dark(#e2e8f0, #2a3441);
+  --paper: light-dark(#ffffff, #151b23);
+  --wash: light-dark(#f8fafc, #1d2530);
+  --accent: light-dark(#1d4ed8, #7aa7ff);
+  /* The colour of text written on the accent. It flips with the theme like
+     everything else: white on a dark blue reads, white on a light blue does
+     not. */
+  --on-accent: light-dark(#ffffff, #10161e);
+  --warn: light-dark(#b45309, #e8b04b);
+  --warn-wash: light-dark(#fffbeb, #2a2113);
 }
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 
@@ -62,11 +78,37 @@ button {
 
 button:hover { background: var(--wash); }
 button:disabled { opacity: 0.5; cursor: default; }
-button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
 button.primary:hover { filter: brightness(1.08); }
 button.quiet { border-color: transparent; color: var(--muted); }
 
 /* ── tabs ───────────────────────────────────────────────────────────────── */
+
+/* ── the sun and the moon ───────────────────────────────────────────────── */
+
+/* One shape drawn twice, in the colour of whatever it sits on. Stated here
+   rather than on each path so the two cannot end up drawn differently. */
+.icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* An icon has no text to sit on a baseline with, so the button centres it. */
+#theme {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 9px;
+}
 
 .tabs { display: flex; gap: 2px; margin-left: 12px; }
 
@@ -215,6 +257,63 @@ main {
 
 .document code { font-size: 0.92em; }
 
+/* Until now links kept the browser's own colour, which is a dark blue chosen
+   for a white page. On a dark one it is very nearly invisible, so they are
+   given the accent, which is a colour that knows which page it is on. */
+.document a { color: var(--accent); }
+
+/* ── the report on a document ───────────────────────────────────────────── */
+
+.findings {
+  max-width: 78ch;
+  margin: 0 auto;
+  padding: 0 30px 56px;
+}
+
+.findings h2 {
+  margin: 0 0 6px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+  font-size: 1.05em;
+}
+
+.findings .note { margin: 0 0 22px; color: var(--muted); font-size: 13px; }
+
+.finding { margin-bottom: 26px; }
+
+.finding .where { margin: 0 0 10px; font-size: 13px; color: var(--warn); }
+
+/* Beside each other, because comparing them is the entire reason both are
+   shown. Stacks when the window is too narrow for two, which is what auto-fit
+   is for rather than a media query with a number in it. */
+.readings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.reading { min-width: 0; }
+
+.reading .engine { margin: 0 0 5px; font-size: 12px; }
+.reading .engine .id { margin-left: 6px; color: var(--muted); font-size: 11px; }
+
+/* Capped, because a disagreement about a whole page is two pages of text and
+   nobody can compare two pages on a screen. Scrolls within itself, so the
+   whole reading is still there for anyone who wants it. */
+.reading pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .failure {
   padding: 24px 30px;
   max-width: 78ch;
@@ -250,6 +349,22 @@ footer {
 
 footer .warn { color: var(--warn); }
 
+/* The count of places to look at, which goes there when pressed. A button that
+   looks like the sentence it replaced, with the affordance a sentence does not
+   have. */
+footer button.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--warn);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+footer button.link:hover { background: none; filter: brightness(1.15); }
+
 /* ── records ────────────────────────────────────────────────────────────── */
 
 #records {
@@ -278,3 +393,52 @@ footer .warn { color: var(--warn); }
 }
 
 #records .none { color: var(--muted); padding: 12px 10px; font-size: 13px; }
+
+/* ── settings ───────────────────────────────────────────────────────────── */
+
+#panel-settings { overflow: auto; }
+
+#settings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 20px 24px 40px;
+  max-width: 34rem;
+}
+
+#settings label {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#settings input {
+  font: inherit;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+#settings input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+#settings .hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+/* The one line that answers a button press. Coloured, because it appears
+   where nothing else changes and has to be noticed in passing. */
+#set-note:empty { display: none; }
+#set-note.ok { color: var(--accent); }
+#set-note.bad { color: var(--warn); }
+
+#settings .actions { margin-top: 18px; }

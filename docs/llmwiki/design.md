@@ -822,6 +822,10 @@ never be overridden by the file.
 `docfusion schema` publishes the path along with the keys, because an agent
 should not have to guess where the settings are.
 
+**The window writes this same file — see §11.3.** There is no second place for
+settings to live, because two places are two answers and the command line reads
+this one.
+
 ### 10.3 Agent contract
 
 Agents get the **complete** feature set. Four rules make the CLI safe to drive
@@ -936,7 +940,41 @@ P4 — that is a service in the true sense, and it would need a port, a port
 policy, and a story for a second copy. It would not be this GUI growing a
 backend.
 
-### 11.2 Language
+### 11.2 Settings
+
+A third tab, three fields, one button: endpoint, model, key. It exists so that
+pointing the tool at a model does not mean opening a TOML file — which is what
+it meant until now, and is why the endpoint was configured once and never
+changed.
+
+**It writes the same file the command line reads** (§10.2). A settings page with
+its own store would be two answers to one question, and the one that loses is
+the one the CLI acts on.
+
+**Edited in place, not rewritten.** Most of that file is the comments explaining
+it, and a save that deleted them would delete them silently. `toml_edit` changes
+the three keys and leaves everything else — including the note somebody wrote at
+the end of the line being changed, which has to be carried over by hand because
+assigning a value takes the trivia around it as well.
+
+**The key goes one way.** It is typed in the window and written to the file, and
+nothing reads it back: the view carries `has_key` and never the key, so there is
+nothing for a form to show and nothing for a screenshot to keep. That has one
+consequence worth stating — an empty key box means *I did not touch this*, not
+*delete it*, because a form that re-sent the key on every save would be a form
+that needs the key.
+
+**Turning the model off is clearing the endpoint.** `endpoint` and `model` are
+set together or not at all, since one endpoint may serve several models and
+guessing would silently read documents with whatever it happened to be serving.
+Clearing both puts the tool back on the bundled engine, and the key that stays
+behind in the file does nothing.
+
+**Saving takes effect immediately**, which is why the endpoint is behind a lock
+in the window's state. A settings page whose settings apply after a restart is
+not a settings page.
+
+### 11.3 Language
 
 The interface is in Chinese and English, and it opens in whichever one the
 machine is set to. Nothing has to be configured: `navigator.language` on a
@@ -971,19 +1009,104 @@ The command line is untouched by all of this and stays English. It is the agent
 surface (§10.2), and an agent reading a `Display` message is exactly the case
 the message is written for.
 
-### 11.3 Copy behavior
+### 11.4 Appearance
+
+**Dark, and light if asked.** Not "follow the system": this interface has one
+appearance decision to make and dark is the answer to it, so there is no third
+state to explain, no query to the system, and no way for the window to open in
+one theme and change its mind a moment later.
+
+**The button is a sun or a moon, and it says what pressing it gives you** — a
+sun while the window is dark — which is the rule the language button follows
+too, because the thing worth saying is the one you cannot see. Both are drawn
+inline as stroked `<svg>`: no icon font, no library, no emoji. Emoji were ruled
+out by eye before anything else — `☀` is one codepoint away from being rendered
+in colour by the system font, which is not a thing a button can decide.
+
+**A wordless button still needs words.** They go in `title` and `aria-label`,
+translated like everything else, because an icon has no accessible name of its
+own and "sun" is not the name — "switch to the light theme" is.
+
+**`hidden` does not work on an `<svg>`.** This cost an afternoon and belongs
+here rather than in a commit message. `hidden` is an IDL property of
+`HTMLElement`; `SVGElement` has no such property, so `svg.hidden = true` sets an
+ordinary JavaScript field on the object and never writes the attribute. The
+stylesheet's `[hidden]` therefore never matches, both shapes stay on screen, and
+reading `svg.hidden` back says `true` — so a check that asks the code what it
+thinks it did is told that everything is fine. Use `toggleAttribute("hidden",
+…)`, and check the attribute rather than the property when looking.
+
+**One palette, both themes, side by side.** Every colour is declared once as
+`light-dark(light, dark)`, and a single `color-scheme` on the root element
+decides which of the pair is used. The alternative — two blocks of declarations,
+one inside a media query — is the arrangement where somebody changes a colour in
+one and not the other and the themes quietly stop matching. Written this way the
+two values are on the same line, which is the only place they can be compared.
+
+**`color-scheme` is doing a second job.** It tells the webview what kind of
+controls to draw, and the scrollbars, the text cursor, the password reveal
+button and the autofill background are all the browser's rather than ours. A
+dark page that claims to be light gets all of them wrong, and no amount of
+`background-color` fixes it.
+
+**The window is darker than the page it is about to draw.** `backgroundColor` in
+`tauri.conf.json` is the same value as `--paper` in the dark theme, which is a
+duplication — the window exists for a moment before the webview paints, and that
+moment is white unless it is told otherwise. It is written down here because it
+is the one colour in two places.
+
+**Links in a document were the one thing that did not survive.** They had no
+rule at all until now, so they kept the browser's default, which is a dark blue
+chosen for a white page. On a dark one it is very nearly invisible.
+
+Renumbering follows: the settings tab is §11.2, language §11.3, appearance
+§11.4, and copy behaviour §11.5.
+
+### 11.5 Copy behavior
 
 The displayed Markdown is **rendered** (headings, tables, emphasis). A dedicated
 **Copy** action yields **plain text with formatting stripped** — what users
 actually paste into other tools. (Rendering is a view concern; copying is a
 content concern. They must not be the same code path.)
 
-### 11.4 Conflict review
+### 11.6 Conflict review
 
 The conflict panel is the GUI's main reason to exist. The CLI can report that
-three blocks disagree, but only a GUI can present the two engines' outputs
-side-by-side for a human to adjudicate. This is why the GUI complements rather
-than duplicates the CLI.
+three blocks disagree, but only a GUI can put the two engines' outputs beside
+each other for a person to adjudicate.
+
+**In the file they are one thing; on the screen they are two.** The Markdown
+ends with a `## Conflicts` section, and that is right for a file: a disagreement
+has to travel with the document it is about, and an agent reading the document
+should see the doubt as well as the text. On a screen it is wrong — a report
+about a document, sitting inside the document, reads as though somebody had
+written it into the page. So the window splits the Markdown at that heading and
+draws the two parts apart.
+
+**Nothing in the body points at the conflict.** That is still true and is still
+a gap: the window can say "one place" and take you to the report, but it cannot
+show you *where on the page* the engines parted company, because the Markdown
+carries no marker at that position. Closing it means the renderer emitting
+something at the block, which is a change to the artifact rather than to the
+window — the marker would end up in the text a pipeline indexes. Worth doing,
+not done.
+
+**Neither reading is presented as the right one.** The tool has no basis for
+preferring either, which is exactly why it reports the disagreement rather than
+settling it, and a panel that quietly picked a side would be the silent
+resolution this feature exists to prevent. Both are shown as each engine wrote
+them, labelled with what the engine is called here and what it is called
+everywhere else — `openai-compatible` is a protocol, not a name for anything a
+person can picture.
+
+**Each reading is capped in height and scrolls inside itself.** A disagreement
+about a whole page is two pages of text, and nobody can compare two pages on a
+screen. The cap is what keeps the panel usable; the scroll is what keeps the
+whole reading there for whoever wants it.
+
+**The two are side by side, which is the entire point.** A reading-order failure
+— the common one, and the one the local engine makes on multi-column pages — is
+indistinguishable from a good reading until the two are next to each other.
 
 ---
 

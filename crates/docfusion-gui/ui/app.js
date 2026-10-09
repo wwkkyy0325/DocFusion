@@ -19,6 +19,8 @@ const TEXT = {
     add: "Add a document",
     switch_lang: "中文",
     switch_title: "用中文显示界面",
+    to_dark: "Switch to the dark theme",
+    to_light: "Switch to the light theme",
 
     empty_lead: "Drop a document here, or add one.",
     empty_hint:
@@ -44,6 +46,35 @@ const TEXT = {
 
     dialog_title: "Choose a document",
 
+    settings: "Settings",
+    endpoint: "Endpoint",
+    model_label: "Model",
+    key: "Key",
+    save: "Save",
+    saved: "Saved.",
+    saving: "Saving…",
+    save_failed: "Could not save.",
+    key_set: "A key is set. Leave this empty to keep it.",
+    key_unset: "No key is set. One is only needed if the endpoint asks for it.",
+    settings_about:
+      "Clearing the endpoint reads documents with the engine inside this app and calls nothing.",
+    address_needs_scheme: "The address needs http:// or https:// in front of it.",
+    model_needed: "An endpoint needs a model: one endpoint can serve several.",
+    endpoint_needed: "A model needs an endpoint to be reached through.",
+
+    findings: "Places to check",
+    findings_note:
+      "Both engines read the same page and their text does not match. Neither reading is marked as the right one — that is not a judgement this tool can make — so both are here, as each engine wrote them.",
+    page: (n) => `Page ${n}`,
+    kinds: {
+      "the engines read it differently": "the two readings do not match",
+      "one engine found text the other did not": "one engine found text the other did not",
+    },
+    engine_names: {
+      "openai-compatible": "the configured endpoint",
+      rapidocr: "the engine inside this app",
+    },
+
     causes: {
       unsupported: "Nothing here can read this kind of file.",
       "engine-failed": "The engine that reads this kind of file failed.",
@@ -63,6 +94,8 @@ const TEXT = {
     add: "添加文档",
     switch_lang: "EN",
     switch_title: "Show the interface in English",
+    to_dark: "切换到暗色",
+    to_light: "切换到亮色",
 
     empty_lead: "把文档拖到这里，或者点「添加文档」。",
     empty_hint: "带文字层的文件直接读出文字。扫描件和照片由程序内置的引擎识别。",
@@ -86,6 +119,34 @@ const TEXT = {
     status: { done: "完成", partial: "部分完成", failed: "失败" },
 
     dialog_title: "选择文档",
+
+    settings: "设置",
+    endpoint: "端点地址",
+    model_label: "模型",
+    key: "密钥",
+    save: "保存",
+    saved: "已保存。",
+    saving: "保存中…",
+    save_failed: "保存失败。",
+    key_set: "已设置密钥，留空即不改动。",
+    key_unset: "还没有密钥。端点不要求的话可以空着。",
+    settings_about: "清空端点地址，就只用本机内置的引擎识别，不调用任何模型。",
+    address_needs_scheme: "地址前面要有 http:// 或 https://。",
+    model_needed: "填了端点就要填模型：一个端点上可以有多个模型。",
+    endpoint_needed: "填了模型就要填端点，否则连不上。",
+
+    findings: "待确认的地方",
+    findings_note:
+      "两个引擎读了同一页，读出来的文字对不上。哪一份对，这个工具不判断——它没有依据判断——所以两份都按各自的原样放在下面。",
+    page: (n) => `第 ${n} 页`,
+    kinds: {
+      "the engines read it differently": "两份读法的文字不一样",
+      "one engine found text the other did not": "一份读到了另一份没有的文字",
+    },
+    engine_names: {
+      "openai-compatible": "云端模型",
+      rapidocr: "本机识别",
+    },
 
     causes: {
       unsupported: "没有能读这种文件的引擎。",
@@ -119,10 +180,70 @@ let started = 0;
 const SPINNER_DELAY = 120;
 
 const LANG_KEY = "docfusion.lang";
+const THEME_KEY = "docfusion.theme";
 
 let lang = startingLang();
+let theme = startingTheme();
 
 const t = () => TEXT[lang];
+
+/// Dark, unless somebody has said otherwise.
+///
+/// Not an empty default waiting to be filled in from the system: dark is the
+/// answer, and light is the exception somebody asks for once. Which also means
+/// no query to the system, no third state, and no way for the window to open in
+/// one theme and change its mind.
+function startingTheme() {
+  try {
+    const chosen = localStorage.getItem(THEME_KEY);
+    if (chosen === "light" || chosen === "dark") return chosen;
+  } catch {
+    // Storage can be unavailable. Same as the language: the default is still a
+    // working answer.
+  }
+
+  return "dark";
+}
+
+function toggleTheme() {
+  theme = theme === "dark" ? "light" : "dark";
+
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    // The window still switches, it just does not remember.
+  }
+
+  applyTheme();
+}
+
+/// The theme is one attribute on the root element: everything else is a colour
+/// in the stylesheet that reads it.
+///
+/// The icon is the one pressing it gives you — a sun while the window is dark —
+/// which is what the language button does with its label too. What the button
+/// is worth saying is the thing you cannot see, not the thing you can.
+function applyTheme() {
+  document.documentElement.dataset.theme = theme;
+
+  const going_to_light = theme === "dark";
+
+  // `toggleAttribute`, not `.hidden`, and the difference is not a style
+  // preference: `hidden` is an IDL property of HTML elements, and an `<svg>` is
+  // not one. Assigning to it there quietly creates a JavaScript property on the
+  // object and never writes the attribute, so the stylesheet's `[hidden]` never
+  // matches and both shapes stay on screen — while reading `.hidden` back says
+  // `true` and reports that all is well.
+  el("icon-sun").toggleAttribute("hidden", !going_to_light);
+  el("icon-moon").toggleAttribute("hidden", going_to_light);
+
+  // An icon has no words, so the words it would have had go where they are
+  // read out instead of looked at: the tooltip, and the name a screen reader
+  // announces.
+  const label = el("theme");
+  label.title = going_to_light ? t().to_light : t().to_dark;
+  label.setAttribute("aria-label", label.title);
+}
 
 /// The language to open in: the last one chosen, or the one the machine is set
 /// to. Somebody who has never touched the switch gets their own language
@@ -161,11 +282,26 @@ function applyLang() {
 
   document.documentElement.lang = lang === "zh" ? "zh-Hans" : "en";
 
-  el("tab-document").textContent = words.document;
-  el("tab-records").textContent = words.records;
-  el("add").textContent = words.add;
-  el("lang").textContent = words.switch_lang;
+  for (const [id, text] of [
+    ["tab-document", words.document],
+    ["tab-records", words.records],
+    ["tab-settings", words.settings],
+    ["add", words.add],
+    ["lang", words.switch_lang],
+    ["lbl-endpoint", words.endpoint],
+    ["lbl-model", words.model_label],
+    ["lbl-key", words.key],
+    ["save", words.save],
+    ["set-about", words.settings_about],
+  ]) {
+    el(id).textContent = text;
+  }
+
   el("lang").title = words.switch_title;
+
+  // Last, because it writes a label of its own and that label is a word in the
+  // language that has just been chosen.
+  applyTheme();
 }
 
 // ── drawing ─────────────────────────────────────────────────────────────────
@@ -176,7 +312,23 @@ function draw(view) {
   drawProblem(view.problem);
   drawScreen(view);
   drawRecords(view.records);
+  drawSettings(view.model);
   drawStatus(view.screen);
+}
+
+/// Fills the settings form from the view.
+///
+/// The key box is emptied rather than filled: what comes back from the other
+/// side says only whether a key is set, and there is nothing to put in an input
+/// that would not be the secret on screen.
+function drawSettings(model) {
+  el("set-endpoint").value = model.endpoint;
+  el("set-model").value = model.model;
+  el("set-key").value = "";
+  el("set-hint").textContent = model.has_key ? t().key_set : t().key_unset;
+
+  // Whatever the last save said is about a form that no longer exists.
+  note("");
 }
 
 /// Something wrong with the installation rather than with a document, said once
@@ -231,7 +383,16 @@ function drawScreen(view) {
     // escaped there: extracted text is not trusted markup. Not translated, and
     // not translatable — it is the document.
     article.innerHTML = state.html;
-    box.replaceChildren(article);
+
+    // The report about the document goes after it, not inside it. In the file
+    // they are one thing, because a disagreement has to travel with what it is
+    // about; on a screen they are two, because a report on a document sitting
+    // in the middle of the document reads as though somebody had written it
+    // into the page.
+    const panes = [article];
+    if (state.report?.length > 0) panes.push(findings(state.report));
+
+    box.replaceChildren(...panes);
   } else {
     const failure = document.createElement("div");
     failure.className = "failure";
@@ -241,6 +402,56 @@ function drawScreen(view) {
   }
 
   box.scrollTop = 0;
+}
+
+/// The tool's report on the document: where two engines disagreed, and what
+/// each of them read.
+///
+/// Neither reading is presented as the right one, because the tool has no basis
+/// for preferring either — that is why it reports the disagreement instead of
+/// settling it. Side by side is the only arrangement that makes the comparison
+/// possible, and each reading is capped in height so that a disagreement about
+/// a whole page does not become two pages of text on the screen.
+function findings(report) {
+  const box = document.createElement("section");
+  box.className = "findings";
+  box.id = "findings";
+
+  box.append(node("h2", "", t().findings));
+  box.append(node("p", "note", t().findings_note));
+
+  for (const finding of report) {
+    const entry = document.createElement("div");
+    entry.className = "finding";
+    entry.append(
+      node("p", "where", `${t().page(finding.page)} · ${t().kinds[finding.kind] ?? finding.kind}`),
+    );
+
+    const readings = document.createElement("div");
+    readings.className = "readings";
+
+    for (const reading of finding.readings) {
+      const side = document.createElement("div");
+      side.className = "reading";
+
+      // What it is called here, and what it is called everywhere else — in the
+      // file, in the command line, in the settings — so that a person reading
+      // one can find the other.
+      const label = node("p", "engine", "");
+      label.append(
+        document.createTextNode(t().engine_names[reading.engine] ?? reading.engine),
+        node("span", "id", reading.engine),
+      );
+
+      side.append(label, node("pre", "", reading.text));
+      readings.append(side);
+    }
+
+    entry.append(readings);
+    box.append(entry);
+  }
+
+  return box;
 }
 
 function drawStatus(state) {
@@ -253,18 +464,33 @@ function drawStatus(state) {
   }
 
   status.hidden = false;
-  status.append(node("span", "", state.engines.join(" · ") || t().read));
+
+  // What each engine is called here, with the name it is called everywhere else
+  // kept one hover away. "openai-compatible" is the protocol its client speaks
+  // and says nothing to anybody about what it is.
+  const named = state.engines.map((id) => t().engine_names[id] ?? id);
+  const engines = node("span", "", named.join(" · ") || t().read);
+  engines.title = state.engines.join(" · ");
+  status.append(engines);
 
   if (state.reused) {
     status.append(node("span", "", t().already));
   }
 
+  // A button, because a count of places to look at that cannot be clicked is a
+  // count of places to go hunting for.
   if (state.conflicts > 0) {
-    status.append(node("span", "warn", t().disagreed(state.conflicts)));
+    status.append(button(t().disagreed(state.conflicts), "warn link", showFindings));
   }
 
   status.append(node("span", "spacer", ""));
   status.append(button(t().copy, "quiet", copyAll));
+}
+
+/// Instant rather than smooth. A smooth scroll is a promise to arrive that a
+/// person cannot see the end of, and the place it goes is one screen away.
+function showFindings() {
+  el("findings")?.scrollIntoView({ block: "start" });
 }
 
 function drawRecords(list) {
@@ -423,9 +649,61 @@ async function copyAll() {
 // ── tabs ────────────────────────────────────────────────────────────────────
 
 function showTab(which) {
-  for (const name of ["document", "records"]) {
+  for (const name of ["document", "records", "settings"]) {
     el(`tab-${name}`).setAttribute("aria-selected", String(name === which));
     el(`panel-${name}`).hidden = name !== which;
+  }
+}
+
+/// Writes the settings, having first refused the combinations that read
+/// nothing.
+///
+/// Refused here rather than in the other half because this is a form, and a
+/// form is the one place the person is looking when they get it wrong. The
+/// other half refuses a half-written pair as well, but its answer is a string
+/// in a language this side cannot choose.
+async function saveSettings(event) {
+  event.preventDefault();
+
+  const endpoint = el("set-endpoint").value.trim();
+  const model = el("set-model").value.trim();
+
+  if (endpoint && !/^https?:\/\//i.test(endpoint)) return note(t().address_needs_scheme, false);
+  if (endpoint && !model) return note(t().model_needed, false);
+  if (model && !endpoint) return note(t().endpoint_needed, false);
+
+  note(t().saving, true);
+
+  try {
+    draw(await invoke("save_model", { endpoint, model, key: el("set-key").value }));
+    note(t().saved, true);
+  } catch (error) {
+    // The other half had the last word, and it is the half that owns the file.
+    note(`${t().save_failed} ${error}`, false);
+  }
+}
+
+function note(text, ok = true) {
+  const element = el("set-note");
+
+  element.textContent = text;
+  element.className = `hint ${ok ? "ok" : "bad"}`;
+}
+
+/// The settings are a file this process is not the only writer of, so they are
+/// re-read when they are asked for rather than remembered — opening this tab
+/// after editing the file by hand shows what the file now says.
+///
+/// Like the records, only this panel is redrawn: the document on the other tab
+/// keeps its place.
+async function openSettings() {
+  showTab("settings");
+  try {
+    const view = await invoke("view");
+    current = view;
+    drawSettings(view.model);
+  } catch (error) {
+    note(String(error), false);
   }
 }
 
@@ -504,8 +782,11 @@ function fileLabel(path) {
 
 el("add").addEventListener("click", add);
 el("lang").addEventListener("click", toggleLang);
+el("theme").addEventListener("click", toggleTheme);
 el("tab-document").addEventListener("click", () => showTab("document"));
 el("tab-records").addEventListener("click", openRecords);
+el("tab-settings").addEventListener("click", openSettings);
+el("settings").addEventListener("submit", saveSettings);
 
 applyLang();
 

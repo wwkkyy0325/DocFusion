@@ -45,6 +45,12 @@ pub enum ConfigError {
 
     #[error("{} is not valid:\n{message}", path.display())]
     Malformed { path: PathBuf, message: String },
+
+    #[error("{} could not be written: {source}", path.display())]
+    Unwritable {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl Config {
@@ -76,6 +82,101 @@ impl Config {
             message: error.to_string(),
         })
     }
+
+    /// Writes the model settings into the file, leaving everything else in it
+    /// as it was.
+    ///
+    /// Edited rather than rewritten, because most of that file is the comments
+    /// explaining the settings in it. A window that deleted them on save would
+    /// be one nobody dares use twice, and the loss would be silent.
+    ///
+    /// An empty `api_key` means the key stays as it is rather than being
+    /// removed. A key is never read back into a window, so there is nothing a
+    /// form could show — which makes an empty box mean "I did not touch this",
+    /// not "delete it". Turning the model off is done by clearing the endpoint,
+    /// after which the key does nothing.
+    ///
+    /// Empty strings are removed rather than written as empty ones: every
+    /// reader of this file treats a missing setting as "not configured", and
+    /// `endpoint = ""` is not the same thing to a URL parser as no endpoint.
+    pub fn save_model(
+        path: &Path,
+        endpoint: &str,
+        model: &str,
+        api_key: &str,
+    ) -> Result<(), ConfigError> {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+            Err(source) => {
+                return Err(ConfigError::Unreadable {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        };
+
+        let mut document = text
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Malformed {
+                path: path.to_owned(),
+                message: error.to_string(),
+            })?;
+
+        set(&mut document, "endpoint", endpoint);
+        set(&mut document, "model", model);
+        if !api_key.trim().is_empty() {
+            set(&mut document, "api_key", api_key);
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| ConfigError::Unwritable {
+                path: path.to_owned(),
+                source,
+            })?;
+        }
+
+        crate::atomic::write_atomic(path, document.to_string().as_bytes()).map_err(|source| {
+            ConfigError::Unwritable {
+                path: path.to_owned(),
+                source,
+            }
+        })
+    }
+}
+
+/// Sets a top-level key, or removes it when the value is blank.
+///
+/// The trivia around the old value is put back on the new one. Assigning a
+/// value replaces the whitespace and the comments attached to it as well, so
+/// without this a note somebody wrote on that line — `# the old one` — would go
+/// with it, silently, which is the whole thing editing rather than rewriting was
+/// meant to avoid.
+fn set(document: &mut toml_edit::DocumentMut, key: &str, text: &str) {
+    let text = text.trim();
+
+    if text.is_empty() {
+        document.remove(key);
+        return;
+    }
+
+    let existing = document
+        .get(key)
+        .and_then(toml_edit::Item::as_value)
+        .map(|value| (value.decor().prefix().cloned(), value.decor().suffix().cloned()));
+
+    let mut replacement = toml_edit::value(text);
+
+    if let (Some((prefix, suffix)), Some(value)) = (existing, replacement.as_value_mut()) {
+        if let Some(prefix) = prefix {
+            value.decor_mut().set_prefix(prefix);
+        }
+        if let Some(suffix) = suffix {
+            value.decor_mut().set_suffix(suffix);
+        }
+    }
+
+    document[key] = replacement;
 }
 
 /// Where the configuration file lives.
@@ -173,6 +274,103 @@ mod tests {
         )
         .expect("valid");
 
+        assert_eq!(config.model.as_deref(), Some("deepseek-flash"));
+    }
+
+    /// The reason saving edits rather than rewrites. A config file a person
+    /// keeps is mostly the comments explaining it, and a save that deleted them
+    /// would delete them silently — the worst way to lose something.
+    ///
+    /// The shape here is the shape the file actually has: a block of comments
+    /// standing over each setting, a note written at the end of a line, a
+    /// setting that is not ours to touch, and one that is commented out.
+    #[test]
+    fn saving_keeps_the_comments_and_everything_else_in_the_file() {
+        let directory = write(
+            "# DocFusion settings.\n\
+             \n\
+             # Which endpoint to read scanned pages with.\n\
+             endpoint = \"http://old\"   # the one at work\n\
+             \n\
+             # Which model that endpoint should serve.\n\
+             model = \"old-model\"\n\
+             \n\
+             # The key for that endpoint, if it needs one.\n\
+             api_key = \"sk-old\"\n\
+             \n\
+             # ── Everything below is optional ─────────────\n\
+             \n\
+             # Default: doubt\n\
+             # verify = \"doubt\"\n\
+             verify = \"always\"\n",
+        );
+        let path = directory.path().join("config.toml");
+
+        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-new")
+            .expect("saved");
+
+        let text = fs::read_to_string(&path).expect("read back");
+        for kept in [
+            "# DocFusion settings.",
+            "# Which endpoint to read scanned pages with.",
+            "# the one at work",
+            "# Which model that endpoint should serve.",
+            "# The key for that endpoint, if it needs one.",
+            "# ── Everything below is optional ─────────────",
+            "# Default: doubt",
+            "# verify = \"doubt\"",
+            "verify = \"always\"",
+        ] {
+            assert!(text.contains(kept), "{kept} was lost:\n{text}");
+        }
+
+        let config = Config::from_path(&path).expect("valid");
+        assert_eq!(config.endpoint.as_deref(), Some("https://api.deepseek.com"));
+        assert_eq!(config.model.as_deref(), Some("deepseek-flash"));
+        assert_eq!(config.api_key.as_deref(), Some("sk-new"));
+        assert_eq!(config.verify.as_deref(), Some("always"));
+    }
+
+    /// A key goes one way — typed in, written out. Nothing reads it back, so an
+    /// empty box means the person did not touch it, not that they want it gone.
+    #[test]
+    fn an_empty_key_leaves_the_key_alone() {
+        let directory = write("api_key = \"sk-existing\"\n");
+        let path = directory.path().join("config.toml");
+
+        Config::save_model(&path, "http://localhost:8080", "local", "").expect("saved");
+
+        let config = Config::from_path(&path).expect("valid");
+        assert_eq!(config.api_key.as_deref(), Some("sk-existing"));
+        assert_eq!(config.endpoint.as_deref(), Some("http://localhost:8080"));
+    }
+
+    /// Clearing the endpoint is how the model is switched off. Removing it
+    /// rather than emptying it, because `endpoint = ""` is not what "no
+    /// endpoint" looks like to the code that reads this.
+    #[test]
+    fn an_empty_endpoint_is_removed_rather_than_emptied() {
+        let directory = write("endpoint = \"http://old\"\nmodel = \"old\"\n");
+        let path = directory.path().join("config.toml");
+
+        Config::save_model(&path, "  ", "", "").expect("saved");
+
+        let config = Config::from_path(&path).expect("valid");
+        assert!(config.endpoint.is_none());
+        assert!(config.model.is_none());
+    }
+
+    /// Saving is how the file comes to exist on a machine that has never run
+    /// the tool, so it makes the directory on the way.
+    #[test]
+    fn saving_creates_the_file_and_the_directory_it_goes_in() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("nested").join("config.toml");
+
+        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-1")
+            .expect("saved");
+
+        let config = Config::from_path(&path).expect("valid");
         assert_eq!(config.model.as_deref(), Some("deepseek-flash"));
     }
 }

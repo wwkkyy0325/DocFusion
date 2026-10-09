@@ -28,10 +28,37 @@
         >
           Records
         </button>
+        <button
+          id="tab-settings"
+          class="tab"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-settings"
+        >
+          Settings
+        </button>
       </nav>
       <span class="spacer"></span>
-      <!-- Both labels here are replaced at startup from the view's own
-           language, and are English only so that the markup reads on its own. -->
+      <!-- Drawn rather than typed: no icon font and no library, just two paths
+           stroked in whatever colour the button is using. The one shown is the
+           theme pressing it gives you, so a sun while the window is dark —
+           the same rule the language button follows. -->
+      <button id="theme" class="quiet" title="切换到亮色">
+        <svg id="icon-sun" class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="4" />
+          <path
+            d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M7.4 7.4 5.6 5.6M16.6 7.4l1.8-1.8M16.6 16.6l1.8 1.8M7.4 16.6l-1.8 1.8"
+          />
+        </svg>
+        <!-- The rim is a half circle from top to bottom; the bite back out of
+             it is a shallower arc between the same two points, whose centre is
+             off to the right. Both flags matter: the second arc is the near
+             side of its circle, not the far one, and taking the far one draws
+             almost a whole circle — which at sixteen pixels reads as a sun. -->
+        <svg id="icon-moon" class="icon" viewBox="0 0 24 24" aria-hidden="true" hidden>
+          <path d="M12 3A9 9 0 0 0 12 21 10.6 10.6 0 0 1 12 3Z" />
+        </svg>
+      </button>
       <button id="lang" class="quiet" title="用中文显示界面">中文</button>
       <button id="add" class="primary">Add a document</button>
     </header>
@@ -52,6 +79,45 @@
         hidden
       >
         <ul id="records"></ul>
+      </section>
+
+      <section
+        id="panel-settings"
+        class="panel"
+        role="tabpanel"
+        aria-labelledby="tab-settings"
+        hidden
+      >
+        <form id="settings">
+          <label for="set-endpoint"><span id="lbl-endpoint">Endpoint</span></label>
+          <input
+            id="set-endpoint"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="https://api.deepseek.com"
+          />
+
+          <label for="set-model"><span id="lbl-model">Model</span></label>
+          <input
+            id="set-model"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="deepseek-flash"
+          />
+
+          <label for="set-key"><span id="lbl-key">Key</span></label>
+          <input id="set-key" type="password" spellcheck="false" autocomplete="new-password" />
+
+          <p id="set-hint" class="hint"></p>
+          <p id="set-about" class="hint"></p>
+          <p id="set-note" class="hint"></p>
+
+          <div class="actions">
+            <button id="save" type="submit" class="primary">Save</button>
+          </div>
+        </form>
       </section>
     </main>
 

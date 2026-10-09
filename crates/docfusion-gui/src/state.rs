@@ -21,6 +21,21 @@ pub struct View {
     pub problem: Option<Trouble>,
     pub screen: Screen,
     pub records: Vec<Record>,
+    pub model: Model,
+}
+
+/// What the settings tab shows about reading with a model.
+///
+/// The key is not in here and never will be. It goes one way — typed in the
+/// window, written to the file — and nothing in this program wants it back, so
+/// there is nothing for a form to show, nothing for a screenshot to keep, and
+/// nothing for the window to leak. `has_key` says whether one is set, which is
+/// the only question the person typing actually has.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Model {
+    pub endpoint: String,
+    pub model: String,
+    pub has_key: bool,
 }
 
 /// Something that went wrong, split the way the window has to say it.
@@ -105,9 +120,41 @@ pub struct Opened {
     pub html: String,
     pub engines: Vec<String>,
     pub conflicts: usize,
+    /// What the tool had to say about the document, kept apart from it.
+    ///
+    /// The Markdown carries the same thing at the end, under a heading this
+    /// program writes, so that a disagreement travels with the document and an
+    /// agent reading it sees the doubt as well as the text. That is the right
+    /// place for it in a file. It is the wrong place for it on a screen, where
+    /// a report about the document sitting inside the document reads as though
+    /// somebody had written it into the page.
+    pub report: Vec<Conflict>,
     /// True when the answer came from the index rather than from reading the
     /// document again.
     pub reused: bool,
+}
+
+/// One place two engines read the same part of a page differently.
+///
+/// Neither reading is preferred and neither is marked as the right one. The
+/// tool has no basis for choosing — that is the whole reason it reports this
+/// rather than resolving it — so both are carried here and the person decides.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Conflict {
+    /// One-based, because it is said to a person rather than to a page index.
+    pub page: u32,
+    /// The kind of disagreement, in the words the report used. Matched against
+    /// a table of the kinds this program writes, and shown as it came when it
+    /// is one the table does not have.
+    pub kind: String,
+    pub readings: Vec<Reading>,
+}
+
+/// What one engine read, as it wrote it down.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Reading {
+    pub engine: String,
+    pub text: String,
 }
 
 /// One line of the records list.
@@ -147,6 +194,7 @@ impl View {
             problem: None,
             screen: Screen::Empty,
             records: Vec::new(),
+            model: Model::default(),
         }
     }
 
@@ -310,6 +358,7 @@ mod tests {
             html: "<h1>Report</h1>".to_owned(),
             engines: vec!["pdfium".to_owned()],
             conflicts: 0,
+            report: Vec::new(),
             reused: false,
         }
     }

@@ -4,6 +4,174 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-09 — The report on a document, told apart from the document
+
+**What:** A window showing a document with a disagreement was confusing in three
+ways at once. It said "one place" in the footer with nothing to press; it said
+`openai-compatible · rapidocr` and nothing about what those are; and the report
+itself was English prose at the end of the document, reading as though somebody
+had written it into the page.
+
+**A correction first.** I said earlier that the two readings were nowhere on
+screen. They were, at the end of the Markdown, under `## Conflicts` — I had
+counted with `grep -c conflict` and the heading is capitalised. The report
+existed; what did not exist was any way to get to it or any reason to think it
+belonged to us rather than to the document.
+
+**The window splits the Markdown at the heading this program writes.** In a file
+the two belong together — a disagreement has to travel with the document it is
+about, and an agent reading the document should see the doubt as well as the
+text — and that decision stands. On a screen it is wrong, so the document is
+drawn alone and the report is drawn after it as a section of its own.
+
+**Reading it back is a contract between two crates, so it is tested as one.**
+The test renders a document that really has a disagreement through the real
+renderer and reads it back the way the window does, which is the only test that
+can see both halves. Three more cover what the format actually looks like: every
+line of a reading is indented, including the empty ones, so an empty line is one
+of the reading's lines rather than the end of it — and the indentation is what
+stops a reading that mentions "Page 3" from being read as another finding.
+
+**The kind is kept as it was written rather than matched against a list here.**
+The frontend holds the table of kinds and shows anything outside it as it
+arrived, because a window that recognised two sentences and dropped a third
+would lose a finding without saying so.
+
+**`openai-compatible` is a protocol, not a name for anything.** The footer now
+says what each engine is — the configured endpoint, the engine inside this app —
+with the name it goes by everywhere else one hover away, and the panel labels
+each reading with both.
+
+**Neither reading is marked as the right one, and the two are side by side.**
+That is the entire reason to show them at all: a reading-order failure, which is
+the common one and the one this engine makes on multi-column pages, is
+indistinguishable from a good reading until they are next to each other. Each is
+capped in height and scrolls inside itself, because a disagreement about a whole
+page is two pages of text and nobody compares two pages on a screen.
+
+**Still missing, and named as missing:** nothing in the body points at the place
+the engines parted company. Closing that means the renderer emitting a marker at
+the block, which puts it in the text a pipeline indexes — a change to the
+artifact, not to the window. The design says so rather than leaving it implied.
+
+---
+
+## 2026-10-09 — The theme button, as a shape rather than a word
+
+**What:** The theme control is now a sun or a moon — a stroked `<svg>`, drawn in
+the button's own colour. No icon font, no library, and no emoji: `☀` is one
+codepoint away from the system font rendering it in colour, which is not
+something a button gets to decide.
+
+**A wordless button still needs words.** The sentence the label used to carry
+goes into `title` and `aria-label`, translated like the rest — an icon has no
+accessible name of its own, and "sun" is not the name anyway. "Switch to the
+light theme" is.
+
+**Two shapes, one wrong, and the picture was right about which.** The crescent's
+inner arc was taking the far side of its circle instead of the near one, which
+draws very nearly a whole circle, so at sixteen pixels it read as a sun. The fix
+is one flag in one path.
+
+**Then the real bug, which the picture found after the code had said it was
+fine.** `hidden` is an IDL property of `HTMLElement`. An `<svg>` is not an
+`HTMLElement`, so `svg.hidden = true` set a JavaScript field on the object and
+never wrote the attribute — the stylesheet's `[hidden]` never matched and both
+shapes stayed on screen at once. And because the diagnostic read `.hidden` back,
+it returned the value that had just been written and reported that everything
+was working. `toggleAttribute("hidden", …)` is what works; the probe now reads
+the attribute, because the property is the thing that lied.
+
+**The lesson is not about SVG.** A check that asks the code what it thinks it
+did will agree with the code. The picture could not: it showed a sun where a
+moon belonged, and no amount of reading would have.
+
+---
+
+## 2026-10-09 — Dark, because it was asked for
+
+**What:** The window opens dark. One button switches it to light and the choice
+is remembered. No system query: this interface has one appearance decision to
+make and dark is the answer to it, so there is no third state and no way for the
+window to open in one theme and change its mind a moment later.
+
+**One palette rather than two blocks.** Every colour is declared once as
+`light-dark(light, dark)`, and one `color-scheme` on the root element decides
+which of the pair is used. Two blocks of declarations is the arrangement where
+somebody changes a colour in one and not the other, and the themes quietly stop
+matching; written this way the two values sit on the same line, which is the
+only place they can be compared.
+
+**`color-scheme` does a second job that is easy to miss.** It tells the webview
+what kind of controls to draw. The scrollbars, the text cursor, the password
+reveal button and the autofill background are all the browser's rather than
+ours, and a dark page that claims to be light gets every one of them wrong — no
+`background-color` fixes that.
+
+**Links in a document had no rule at all.** They kept the browser's default,
+which is a dark blue chosen for a white page, and on a dark one it is very
+nearly invisible. The dark theme is what made it visible; it was wrong in light
+too, just less obviously.
+
+**The window is darker than the page it is about to draw.** `backgroundColor` in
+`tauri.conf.json` holds the same value as `--paper` in the dark theme. The
+window exists for a moment before the webview paints, and that moment is white
+unless it is told otherwise. This is the one colour that lives in two places,
+and it is written down in the design for that reason.
+
+**The check now has two axes, and paid for itself twice.** Every state is
+rendered in both themes, and the two boxes that use the warning wash — the
+settings-file banner and the engine's account of a failure — are checked in both
+because they are the two places a missing colour would be least obvious. The
+`flipped` shot boots dark and clicks, which is what proves the switch redraws
+rather than the pinned shots, which only prove the stylesheet has both palettes
+in it.
+
+---
+
+## 2026-10-09 — A settings tab that writes the file the command line reads
+
+**What:** A third tab with an endpoint, a model and a key, and a button. Before
+this, pointing the tool at a model meant opening a TOML file by hand — which is
+why the endpoint was set once and never touched again.
+
+**It writes `config.toml` itself, not a second file of its own.** Two stores for
+one setting are two answers, and the one that loses is the one the command line
+acts on.
+
+**Edited in place, and that took a fix.** `toml_edit` changes the three keys and
+leaves the rest, which is the whole point: most of that file is the comments
+explaining it, and a save that deleted them would delete them silently. The
+first version still lost something — assigning a value replaces the whitespace
+and comments attached to it, so a note written at the end of a line went with
+it. The trivia is now carried over by hand. The test fixture is the shape the
+real file has, trailing note and commented-out setting included, because a test
+against a tidier file than the one in use is a test of the wrong thing.
+
+**The key goes one way.** Typed in the window, written to the file, never read
+back: the view carries `has_key` and never the key. That is not only hygiene —
+it decides what the form means. An empty key box is *I did not touch this*, not
+*delete it*, because a form that re-sent the key on every save would be a form
+that needs the key.
+
+**Clearing the endpoint is how the model is switched off.** Endpoint and model
+are set together or not at all, since one endpoint can serve several models and
+guessing would silently read documents with whatever it happened to be serving.
+An empty value is removed from the file rather than written as `""`, which is a
+different thing to a URL parser.
+
+**Saving takes effect at once**, so the endpoint moved behind a lock in the
+window's state. A settings page whose settings apply on restart is not one.
+
+**The check caught the same mistake twice.** The first `badaddress` shot set the
+bad value before the tab had finished filling the form from the view, so the
+value was overwritten and the shot showed a successful save — a check that looks
+like it passed when it was never asked. It is the second time in this session a
+scenario was written in the wrong order, and both times the picture was the
+thing that said so.
+
+---
+
 ## 2026-10-09 — Chinese, and the kind of a failure rather than the sentence about it
 
 **What:** The window is in Chinese and English, opens in whichever the machine

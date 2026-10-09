@@ -24,7 +24,7 @@ use docfusion_store::pipeline::{Mode, Pipeline, PipelineError};
 
 use tauri::{AppHandle, Manager};
 
-use state::{Cause, Opened, Record, Trouble, View};
+use state::{Cause, Conflict, Model, Opened, Reading, Record, Trouble, View};
 
 /// The application's shared state.
 ///
@@ -33,7 +33,10 @@ use state::{Cause, Opened, Record, Trouble, View};
 /// alternative is two jobs competing for the same pipelines.
 pub struct App {
     root: PathBuf,
-    endpoint: Option<docfusion_store::endpoint::EndpointConfig>,
+    /// Behind a lock because the settings tab can change it while the window is
+    /// open. A window that only picked up a new endpoint after a restart would
+    /// be a window whose settings page does not work.
+    endpoint: Mutex<Option<docfusion_store::endpoint::EndpointConfig>>,
     policy: VerifyPolicy,
     readers: usize,
     view: Mutex<View>,
@@ -80,20 +83,7 @@ impl App {
         };
         policy.max_verify_pages = policy.max_verify_pages.max(1);
 
-        let endpoint = match (&config.endpoint, &config.model) {
-            (Some(url), Some(model)) => {
-                let mut endpoint = docfusion_store::endpoint::EndpointConfig::new(url, model);
-                if let Some(key) = config.api_key.clone() {
-                    endpoint = endpoint.with_api_key(key);
-                }
-                Some(endpoint)
-            }
-            // An endpoint without a model is a half-written setting. The
-            // command line refuses it; the window cannot be shown a refusal
-            // before it has drawn anything, so it reads documents with the
-            // bundled engine and `doctor` says what is missing.
-            _ => None,
-        };
+        let endpoint = endpoint_of(&config);
 
         let mut view = View::new(
             root.display().to_string(),
@@ -103,7 +93,7 @@ impl App {
 
         Self {
             root,
-            endpoint,
+            endpoint: Mutex::new(endpoint),
             policy,
             readers,
             view: Mutex::new(view),
@@ -111,10 +101,19 @@ impl App {
     }
 
     fn view(&self) -> View {
-        self.view
+        let mut view = self
+            .view
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+            .clone();
+
+        // The settings are read from the file rather than remembered from
+        // startup: it is a file people edit by hand and the command line reads
+        // it too, so the tab should show what the next document will actually
+        // be read with rather than what was there when the window opened.
+        view.model = self.model();
+
+        view
     }
 
     /// Reads one document, and puts what came of it on screen.
@@ -191,14 +190,59 @@ impl App {
     }
 
     fn pipeline(&self) -> Result<Pipeline, Trouble> {
-        let router = Router::new(engines::standard(
-            self.endpoint.clone(),
-            self.policy.clone(),
-            self.readers,
-        ));
+        let endpoint = self
+            .endpoint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+
+        let router = Router::new(engines::standard(endpoint, self.policy.clone(), self.readers));
 
         Pipeline::open(&self.root, router)
             .map_err(|error| Trouble::new(cause_of(&error), error.to_string()))
+    }
+
+    /// What the settings tab shows, read from the file rather than remembered.
+    ///
+    /// Remembered would drift: this is a file somebody edits by hand, and the
+    /// command line reads it too. Reading it here means the tab always shows
+    /// what the next document will actually be read with.
+    fn model(&self) -> Model {
+        match config::Config::load() {
+            Ok(config) => model_of(&config),
+            // The banner at the top already says the file is not usable. There
+            // is nothing to add by saying it twice, and blanks are honest about
+            // what is known.
+            Err(_) => Model::default(),
+        }
+    }
+
+    /// Writes the settings and starts using them.
+    ///
+    /// The file first: if it cannot be written, the window must not go on
+    /// reading documents with a setting the person believes they changed. An
+    /// endpoint with no model, or a model with no endpoint, is left as it was
+    /// and reported, since half of the pair reads nothing.
+    fn save_model(&self, endpoint: &str, model: &str, key: &str) -> Result<(), String> {
+        let (endpoint, model) = (endpoint.trim(), model.trim());
+
+        if endpoint.is_empty() != model.is_empty() {
+            return Err("the endpoint and the model are set together or not at all".to_owned());
+        }
+
+        config::Config::save_model(&config::path(), endpoint, model, key)
+            .map_err(|error| error.to_string())?;
+
+        // Re-read rather than reuse what was typed: when the key box was left
+        // empty the key that is now in effect is the one already in the file,
+        // and this is the only way to pick it up.
+        *self
+            .endpoint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            config::Config::load().ok().as_ref().and_then(endpoint_of);
+
+        Ok(())
     }
 
     /// Builds what the window shows for a document that is on disk.
@@ -217,6 +261,13 @@ impl App {
             .and_then(|value| value.trim().parse().ok())
             .unwrap_or(0);
 
+        // The document and the report about it are shown apart. In the file
+        // they belong together — a disagreement has to travel with the document
+        // it is about — but on a screen, a report on the document sitting
+        // inside the document reads as though somebody had written it into the
+        // page.
+        let (document, report) = split_report(&markdown);
+
         Ok(Opened {
             id: id.to_owned(),
             name: output
@@ -224,9 +275,10 @@ impl App {
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             output: output.display().to_string(),
-            html: render::html(&markdown),
+            html: render::html(document),
             engines,
             conflicts,
+            report: conflicts_of(report),
             reused,
         })
     }
@@ -238,6 +290,112 @@ impl App {
             view.records = records.iter().map(Record::from_stored).collect();
         }
     }
+}
+
+/// Where the report this program appends to a document begins.
+const REPORT_HEADING: &str = "## Conflicts";
+
+/// Splits a document from the report this program appends to it.
+///
+/// The heading is the marker, and it is a heading this program writes, so
+/// finding it is reading back what was written rather than guessing at somebody
+/// else's Markdown.
+fn split_report(markdown: &str) -> (&str, &str) {
+    let mut offset = 0;
+
+    for line in markdown.split_inclusive('\n') {
+        if line.trim_end() == REPORT_HEADING {
+            return (&markdown[..offset], &markdown[offset + line.len()..]);
+        }
+        offset += line.len();
+    }
+
+    (markdown, "")
+}
+
+/// Reads the report back into the findings it lists.
+///
+/// The shape is the one the renderer writes: a line at the left margin naming
+/// the page and the kind of disagreement, then one indented block per engine,
+/// the first line of it the engine's name and the rest of it what that engine
+/// read.
+///
+/// A report this does not understand yields nothing rather than something
+/// wrong. Nothing is lost by that: the document is still on screen either way,
+/// and what is missing is the separate view of the doubt rather than any text.
+fn conflicts_of(report: &str) -> Vec<Conflict> {
+    /// A reading being collected. Its lines are kept apart until the block
+    /// ends, because an empty line *inside* a reading is one of its lines and
+    /// not the end of it — the renderer indents every line it writes, so a line
+    /// at the left margin is the only thing that closes a block.
+    struct Open {
+        engine: String,
+        lines: Vec<String>,
+    }
+
+    fn close(conflicts: &mut [Conflict], open: &mut Option<Open>) {
+        let Some(open) = open.take() else { return };
+        let Some(conflict) = conflicts.last_mut() else {
+            return;
+        };
+
+        conflict.readings.push(Reading {
+            engine: open.engine,
+            text: open.lines.join("\n"),
+        });
+    }
+
+    let mut conflicts: Vec<Conflict> = Vec::new();
+    let mut open: Option<Open> = None;
+
+    for line in report.lines() {
+        match line.strip_prefix("    ") {
+            // Indented: either the name of a reading or one of its lines.
+            Some(indented) => match &mut open {
+                Some(open) => open.lines.push(indented.to_owned()),
+                None => {
+                    open = Some(Open {
+                        engine: indented.to_owned(),
+                        lines: Vec::new(),
+                    });
+                }
+            },
+            // At the left margin: whatever was being collected is finished, and
+            // this may be the start of the next finding.
+            None => {
+                close(&mut conflicts, &mut open);
+
+                if let Some((page, kind)) = page_and_kind(line) {
+                    conflicts.push(Conflict {
+                        page,
+                        kind,
+                        readings: Vec::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    close(&mut conflicts, &mut open);
+
+    conflicts
+}
+
+/// `Page 12: the engines read it differently.` — the line that starts a finding.
+///
+/// The kind is kept as it was written rather than turned into a variant here.
+/// This is a window reading back what the tool wrote, and one that recognised
+/// the sentences it knows and dropped the ones it did not would lose a finding
+/// without saying so. The frontend holds the table of kinds and shows anything
+/// outside it as it arrived.
+fn page_and_kind(line: &str) -> Option<(u32, String)> {
+    let rest = line.strip_prefix("Page ")?;
+    let (page, kind) = rest.split_once(": ")?;
+
+    Some((
+        page.trim().parse().ok()?,
+        kind.trim_end_matches('.').to_owned(),
+    ))
 }
 
 /// The engines a document was read by, taken from its own front matter.
@@ -257,6 +415,39 @@ fn engines_of(markdown: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The endpoint a configuration describes, or none when it describes half of
+/// one.
+///
+/// Half of one, because one endpoint may serve several models: taking the
+/// endpoint's word for which model to use would silently read documents with
+/// whatever it happened to be serving. The command line refuses the pair
+/// outright; the window cannot be shown a refusal before it has drawn anything,
+/// so it reads with the bundled engine and says what is missing.
+fn endpoint_of(config: &config::Config) -> Option<docfusion_store::endpoint::EndpointConfig> {
+    let (Some(url), Some(model)) = (&config.endpoint, &config.model) else {
+        return None;
+    };
+
+    let mut endpoint = docfusion_store::endpoint::EndpointConfig::new(url, model);
+    if let Some(key) = config.api_key.clone() {
+        endpoint = endpoint.with_api_key(key);
+    }
+
+    Some(endpoint)
+}
+
+/// What the settings tab shows. Never the key, only whether there is one.
+fn model_of(config: &config::Config) -> Model {
+    Model {
+        endpoint: config.endpoint.clone().unwrap_or_default(),
+        model: config.model.clone().unwrap_or_default(),
+        has_key: config
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty()),
+    }
 }
 
 /// What kind of failure this is, in the window's own terms.
@@ -350,6 +541,24 @@ async fn process(app: AppHandle, path: String) -> Result<View, String> {
     .map_err(|error| error.to_string())
 }
 
+/// Writes the model settings, and starts using them.
+///
+/// The key arrives here and goes no further. It is written to the file, which
+/// is where a secret belongs, and the view that comes back says only whether
+/// there is one.
+#[tauri::command]
+async fn save_model(
+    app: AppHandle,
+    endpoint: String,
+    model: String,
+    key: String,
+) -> Result<View, String> {
+    let state = app.state::<App>();
+    state.save_model(&endpoint, &model, &key)?;
+
+    Ok(state.view())
+}
+
 /// Opens something already in the knowledge base.
 #[tauri::command]
 async fn open(app: AppHandle, id: String, name: String) -> Result<View, String> {
@@ -369,7 +578,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(App::new())
-        .invoke_handler(tauri::generate_handler![view, records, choose_file, process, open])
+        .invoke_handler(tauri::generate_handler![
+            view,
+            records,
+            choose_file,
+            process,
+            open,
+            save_model
+        ])
         .run(tauri::generate_context!())
         .expect("the window could not start");
 }
@@ -451,6 +667,183 @@ mod tests {
 
         for (error, expected) in cases {
             assert_eq!(cause_of(&error), expected, "{error}");
+        }
+    }
+
+    /// Half a pair is not a setting. One endpoint may serve several models, so
+    /// taking the endpoint's word for it would silently read documents with
+    /// whatever it happened to be serving.
+    #[test]
+    fn an_endpoint_without_a_model_is_no_endpoint() {
+        let only_url = config::Config {
+            endpoint: Some("https://api.deepseek.com".to_owned()),
+            ..Default::default()
+        };
+        let only_model = config::Config {
+            model: Some("deepseek-flash".to_owned()),
+            ..Default::default()
+        };
+
+        assert!(endpoint_of(&only_url).is_none());
+        assert!(endpoint_of(&only_model).is_none());
+    }
+
+    #[test]
+    fn a_whole_pair_becomes_the_endpoint_it_describes() {
+        let config = config::Config {
+            endpoint: Some("https://api.deepseek.com".to_owned()),
+            model: Some("deepseek-flash".to_owned()),
+            api_key: Some("sk-example".to_owned()),
+            ..Default::default()
+        };
+
+        let endpoint = endpoint_of(&config).expect("a pair is a setting");
+
+        assert_eq!(endpoint.base_url, "https://api.deepseek.com");
+        assert_eq!(endpoint.model, "deepseek-flash");
+        assert_eq!(endpoint.api_key.as_deref(), Some("sk-example"));
+    }
+
+    /// Nothing reads a key back — not the form, not the view, not a screenshot.
+    /// Whether there is one is the only thing the window is told, and a key
+    /// that is present but blank is not a key.
+    #[test]
+    fn the_settings_never_carry_the_key_itself() {
+        let with_key = config::Config {
+            api_key: Some("sk-example".to_owned()),
+            ..Default::default()
+        };
+        let blank_key = config::Config {
+            api_key: Some("   ".to_owned()),
+            ..Default::default()
+        };
+
+        assert!(model_of(&with_key).has_key);
+        assert!(!model_of(&blank_key).has_key);
+        assert!(!model_of(&config::Config::default()).has_key);
+
+        let shown = serde_json::to_string(&model_of(&with_key)).unwrap();
+        assert!(!shown.contains("sk-example"), "{shown}");
+    }
+
+    // ── The report on a document ─────────────────────────────────────────────
+
+    /// The report is written by one crate and read back by another, so the two
+    /// have to agree. This is the test that can see both halves: it renders a
+    /// document that really does have a disagreement through the real renderer,
+    /// and then reads it back the way the window does.
+    #[test]
+    fn the_report_the_renderer_writes_is_the_one_the_window_reads() {
+        let markdown = render::markdown(&disagreeing_document(), "2026-10-09T00:00:00Z");
+
+        let (document, report) = split_report(&markdown);
+
+        // The text is the document and the report is not in it.
+        assert!(document.contains("Body text"), "{document}");
+        assert!(!document.contains("## Conflicts"), "{document}");
+
+        let conflicts = conflicts_of(report);
+
+        assert_eq!(conflicts.len(), 1, "{report}");
+        assert_eq!(conflicts[0].page, 1);
+        assert_eq!(conflicts[0].kind, "the engines read it differently");
+
+        let readings = &conflicts[0].readings;
+        assert_eq!(readings.len(), 2);
+        assert_eq!(readings[0].engine, "deepseek");
+        assert_eq!(readings[0].text, "Revenue increased by 13%");
+        assert_eq!(readings[1].engine, "rapidocr");
+        assert_eq!(readings[1].text, "Revenue increased by 12%");
+    }
+
+    #[test]
+    fn a_document_with_nothing_to_report_has_no_report_in_it() {
+        let markdown = "---\ntitle: Notes\n---\n\nJust the text.\n";
+
+        let (document, report) = split_report(markdown);
+
+        assert_eq!(document, markdown);
+        assert!(conflicts_of(report).is_empty());
+    }
+
+    /// Every line of a reading is indented, including the empty ones, so an
+    /// empty line is one of the reading's lines rather than the end of it.
+    #[test]
+    fn a_blank_line_inside_a_reading_is_kept() {
+        let report = "\nPage 1: the engines read it differently.\n\n    vision\n    first\n    \n    second\n\n";
+
+        let conflicts = conflicts_of(report);
+
+        assert_eq!(conflicts[0].readings[0].text, "first\n\nsecond");
+    }
+
+    /// The indentation is what protects this: a reading of a page that mentions
+    /// another page must not be read as the start of another finding.
+    #[test]
+    fn a_line_that_looks_like_a_finding_inside_a_reading_is_not_one() {
+        let report =
+            "\nPage 2: the engines read it differently.\n\n    vision\n    Page 3: nothing here.\n\n";
+
+        let conflicts = conflicts_of(report);
+
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].page, 2);
+        assert_eq!(conflicts[0].readings[0].text, "Page 3: nothing here.");
+    }
+
+    /// A report this does not understand yields nothing rather than something
+    /// wrong. The document is on screen either way; what is missing is the
+    /// separate view of the doubt, not any of the text.
+    #[test]
+    fn a_report_in_another_shape_is_no_findings_rather_than_a_wrong_one() {
+        assert!(conflicts_of("Something else entirely.\n").is_empty());
+        assert!(conflicts_of("Page one: not a number.\n").is_empty());
+    }
+
+    fn disagreeing_document() -> docfusion_core::ir::Document {
+        use docfusion_core::ir::{
+            Block, BlockKind, Conflict, ConflictKind, Document, EngineId, Page, PageProvenance,
+            SourceRef, Variant,
+        };
+
+        let variant = |engine: &str, text: &str| Variant {
+            engine: EngineId::from(engine),
+            text: text.to_owned(),
+        };
+
+        Document {
+            source: SourceRef {
+                path: "report.pdf".into(),
+                content_hash: "a".repeat(64),
+                mime: "application/pdf".into(),
+                size: 10,
+                mtime: None,
+            },
+            pages: vec![Page {
+                index: 0,
+                size: None,
+                blocks: vec![Block::text(
+                    BlockKind::Paragraph,
+                    "Body text",
+                    EngineId::from("deepseek"),
+                )],
+                provenance: PageProvenance {
+                    primary: EngineId::from("deepseek"),
+                    engines: vec![EngineId::from("deepseek"), EngineId::from("rapidocr")],
+                    verified: true,
+                },
+            }],
+            meta: docfusion_core::ir::DocMeta::default(),
+            conflicts: vec![Conflict {
+                page: 0,
+                bbox: None,
+                kind: ConflictKind::TextMismatch,
+                variants: vec![
+                    variant("deepseek", "Revenue increased by 13%"),
+                    variant("rapidocr", "Revenue increased by 12%"),
+                ],
+                resolved: None,
+            }],
         }
     }
 
