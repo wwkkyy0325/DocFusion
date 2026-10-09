@@ -4,6 +4,103 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-09 — A layout model, measured before it was wired
+
+**What:** `PP-DocLayout_plus-L` — the thing that finds headings, tables, headers
+and footers on a page — with a downloader to fetch it and a `doctor` line to ask
+about it. Not wired into the engine yet: measured first.
+
+**The measurement, on the project's own corpus.** The recognition engine finds
+tables on **0 of the 7 pages whose ground truth has one**. This model finds
+**all 7**. On a research report it put `table` on both real tables at 0.98 and
+0.97, `paragraph_title` on both section headings, and caught the header, the
+footer and a caption — eleven of eighteen regions that the engine reads as body
+paragraphs today, headers and footers included, which is a knowledge base
+quietly accumulating the same running head forty times.
+
+**405 ms a page**, against about 4.2 s of recognition: roughly a tenth.
+
+**Measured before it was wired, and that was the point.** Writing the ONNX
+session, the DETR decode and the spatial join is four hundred lines; running the
+same model from Python against the same pages is fifty. If the answer had been
+no, the four hundred would have been wasted. It was twelve minutes of work
+instead of a day to learn that this is worth doing.
+
+**The model's own configuration is wrong, and only running it says so.**
+`inference.yml` declares `mean 0, std 1, norm_type none`, which reads as "leave
+the bytes alone" — and that gives a best score of 0.049 and no boxes at all.
+Divided by 255 it gives 0.985. A file that describes the model is not the model.
+
+**124 MB, so it is fetched and not embedded.** The line is *can* against
+*nice*: 6.9 MB of recognition weights are embedded because they are the promise
+— a scan is readable with no setup and no network — and moving that promise
+behind a download would cost the whole of it to save 6.9 MB. The layout model is
+an improvement, and the tool reads every page without it.
+
+**The downloader follows Verse's decisions**, which the brief asked for: a
+state a caller can watch, resume rather than restart, mirrors in order, the
+digest checked before anything is trusted, and a failure reported *and*
+returned. The last one is the bug Verse's own comment says it shipped once —
+a fetch that returns an error without telling the callback leaves a window
+saying "downloading" for ever, because the return value is the thing the window
+does not read. Nine tests, against a local HTTP server, cover all of it,
+including the case that a server ignoring `Range` must get a file started over
+rather than appended to its own first half.
+
+**Two mirrors, and the digest is the reason to trust either.** ModelScope and
+Hugging Face serve byte-identical files — the hash computed from one is
+published by the other — and that agreement is the only evidence a pinned hash
+about a quarter of a gigabyte is the right one. Verified end to end by seeding
+half the file and asking for the rest: **12 seconds, resuming from 40 MB, and
+the digest matches**.
+
+---
+
+## 2026-10-09 — What a reading was made of, which the reading cannot say
+
+**The question was whether the local engine can find tables.** It cannot, and
+the answer was already on record twice: `ocr.rs` produces `BlockKind::Paragraph`
+and nothing else — one occurrence of `BlockKind::` in the whole file — and the
+project's own benchmark scored it 0 of 64 headings and 0 of 9 tables against 9
+and 7 for a vision model. That is what a text detector and a recogniser are:
+one finds boxes, the other reads them, and neither knows what a table is.
+
+**The real defect was that the evidence was thrown away.** `Variant` carried
+only `text`. The block kinds were known when the conflict was built and dropped
+on the way, so the two readings reached the screen as two columns of prose with
+nothing to tell them apart — and a person looking at that has no way to know
+whether the engine failed to find a table or whether there was no table.
+
+**So the shape travels with the reading.** `Variant` now carries counts —
+headings, lists, tables, text — taken from the blocks the reading was built
+from, written on the engine's line of the `## Conflicts` report, and read back
+by the window. The report is the artifact and the window is a view of it, so the
+answer is in the file rather than recomputed on screen.
+
+**Counted, not inferred.** `Shapes::of` walks the top level only, so a four-row
+table is one table rather than five. On the unknown side the parse is all four
+counts or none: half a shape is worse than no shape, because the zeroes nobody
+wrote would be a claim about the reading rather than a reading of the line. An
+older document with no counts on that line still shows its text and its engine
+name.
+
+**What could be done instead, and is not.** Glyph boxes have height, and a line
+set larger than the body can be *measured* rather than guessed at, so headings
+are within reach and the IR already has a `confidence` field to mark them with.
+Tables need a layout model, which is a dependency this project does not ship.
+Both are written down as available; neither is worth doing before the thing they
+would produce has been asked for, and a heuristic that occasionally invents a
+heading is a worse answer than a plain statement of what each engine finds.
+
+**The first version of the label made the comparison worse.** The sentence
+explaining that the local engine only ever produces text made one column three
+lines taller than the other, so the two readings no longer started at the same
+height — a panel whose whole purpose is comparison, made harder to compare. The
+explanation moved to the head of the panel, where it is said once, and each
+reading kept a one-line label.
+
+---
+
 ## 2026-10-09 — Whether it works, said and kept saying
 
 **What:** The settings page says whether the configuration *works*, not only

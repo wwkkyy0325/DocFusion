@@ -5,6 +5,7 @@
 //! view of this and nothing more: every branch the interface can take is a
 //! value here, and every one of them is reachable from a test.
 
+use docfusion_core::ir::Shapes;
 use docfusion_store::manifest::DocumentRecord;
 use serde::Serialize;
 
@@ -205,11 +206,20 @@ pub struct Conflict {
     pub readings: Vec<Reading>,
 }
 
-/// What one engine read, as it wrote it down.
+/// What one engine read, as it wrote it down, and as what.
+///
+/// The text and the shape of it are both here because neither is much use
+/// alone: two engines returning the same words have agreed about nothing if one
+/// read a table and the other read a paragraph, and the words are identical in
+/// both.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Reading {
     pub engine: String,
     pub text: String,
+    /// `None` for a report that did not say — an older document, or a line this
+    /// does not understand. The text is still worth showing; the shape is
+    /// simply not known.
+    pub shapes: Option<Shapes>,
 }
 
 /// One line of the records list.

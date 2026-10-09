@@ -93,9 +93,12 @@ const TEXT = {
     model_needed: "An endpoint needs a model: one endpoint can serve several.",
     endpoint_needed: "A model needs an endpoint to be reached through.",
 
+    shape_plain: (n) => `Text only · ${n} passages`,
+    shape_structured: (headings, lists, tables, text) =>
+      `${headings} headings · ${lists} lists · ${tables} tables · ${text} passages`,
     findings: "Places to check",
     findings_note:
-      "Both engines read the same page and their text does not match. Neither reading is marked as the right one — that is not a judgement this tool can make — so both are here, as each engine wrote them.",
+      "Both engines read the same page and their text does not match. Neither reading is marked as the right one — that is not a judgement this tool can make — so both are here, as each engine wrote them, with what each of them read it as. The engine inside this app detects text and then recognises it; neither of those knows what a table is, so its readings are always text and nothing else.",
     page: (n) => `Page ${n}`,
     kinds: {
       "the engines read it differently": "the two readings do not match",
@@ -196,9 +199,12 @@ const TEXT = {
     model_needed: "填了端点就要填模型：一个端点上可以有多个模型。",
     endpoint_needed: "填了模型就要填端点，否则连不上。",
 
+    shape_plain: (n) => `只有文字 · ${n} 段`,
+    shape_structured: (headings, lists, tables, text) =>
+      `${headings} 标题 · ${lists} 列表 · ${tables} 表格 · ${text} 段文字`,
     findings: "待确认的地方",
     findings_note:
-      "两个引擎读了同一页，读出来的文字对不上。哪一份对，这个工具不判断——它没有依据判断——所以两份都按各自的原样放在下面。",
+      "两个引擎读了同一页，读出来的文字对不上。哪一份对，这个工具不判断——它没有依据判断——所以两份都按各自的原样放在下面，并标出各自把它读成了什么。本机那个引擎是先检测文字再认读它，两者都不知道表格是什么，所以它的读法永远是纯文字。",
     page: (n) => `第 ${n} 页`,
     kinds: {
       "the engines read it differently": "两份读法的文字不一样",
@@ -529,6 +535,21 @@ function drawScreen(view) {
   box.scrollTop = 0;
 }
 
+/// What a reading was made of, said in the words that answer the question.
+///
+/// "Only text" is not a fault to go hunting for: the engine inside this app is
+/// a text detector and a recogniser, and neither of those knows what a table
+/// is. But a reader who cannot see the difference between that and a table
+/// reads the same paragraph off both and concludes something is broken.
+function shapeLine(shapes) {
+  if (!shapes) return "";
+
+  const structured = shapes.headings + shapes.lists + shapes.tables;
+  return structured === 0
+    ? t().shape_plain(shapes.text)
+    : t().shape_structured(shapes.headings, shapes.lists, shapes.tables, shapes.text);
+}
+
 /// The tool's report on the document: where two engines disagreed, and what
 /// each of them read.
 ///
@@ -568,7 +589,13 @@ function findings(report) {
         node("span", "id", reading.engine),
       );
 
-      side.append(label, node("pre", "", reading.text));
+      // What it read, and what it read it as. The second line is the whole
+      // answer to a question the first one cannot answer: two engines can
+      // return the same words having read completely different things.
+      const shape = shapeLine(reading.shapes);
+      if (shape) side.append(node("p", "shape", shape));
+
+      side.append(node("pre", "", reading.text));
       readings.append(side);
     }
 

@@ -101,9 +101,17 @@ fn conflicts_markdown(out: &mut String, document: &Document) {
         ));
 
         for variant in &conflict.variants {
-            out.push_str("    ");
-            out.push_str(variant.engine.as_str());
-            out.push('\n');
+            // The engine, and what it read the region as, on one line: it is
+            // the same sentence. `rapidocr` read this, and read it as running
+            // text and nothing else.
+            out.push_str(&format!(
+                "    {} — headings {}, lists {}, tables {}, text {}\n",
+                variant.engine.as_str(),
+                variant.shapes.headings,
+                variant.shapes.lists,
+                variant.shapes.tables,
+                variant.shapes.text,
+            ));
             for line in variant.text.lines() {
                 out.push_str("    ");
                 out.push_str(line);
@@ -477,7 +485,7 @@ pub fn slug(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Conflict, DocMeta, EngineId, Page, PageProvenance, SourceRef, Variant};
+    use crate::ir::{Conflict, DocMeta, EngineId, Page, PageProvenance, Shapes, SourceRef, Variant};
     use comrak::nodes::NodeValue;
     use comrak::{Arena, Options, parse_document};
     use std::path::PathBuf;
@@ -522,6 +530,13 @@ mod tests {
                 .map(|(engine, text)| Variant {
                     engine: EngineId::from(*engine),
                     text: (*text).to_owned(),
+                    // One paragraph, which is what a reading of a few words by
+                    // an engine that has no other kind of block is.
+                    shapes: Shapes::of(&[Block::text(
+                        BlockKind::Paragraph,
+                        *text,
+                        EngineId::from(*engine),
+                    )]),
                 })
                 .collect(),
             resolved: None,
@@ -717,6 +732,14 @@ mod tests {
         assert!(markdown.contains("Revenue increased by 12%"));
         assert!(markdown.contains("vision"));
         assert!(markdown.contains("ocr"));
+
+        // And what each of them read it as, which the text cannot say: the same
+        // words are a row of a table from one engine and a line of prose from
+        // the other, and there is nothing else on the page to tell them apart.
+        assert!(
+            markdown.contains("vision — headings 0, lists 0, tables 0, text 1"),
+            "{markdown}"
+        );
     }
 
     #[test]

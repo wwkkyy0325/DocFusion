@@ -271,6 +271,61 @@ pub enum ConflictKind {
 pub struct Variant {
     pub engine: EngineId,
     pub text: String,
+    /// What this reading was made of, which its text cannot say.
+    ///
+    /// "The engines read it differently" is the same eight words whether the
+    /// difference is a character or a shape: one engine returning a row of a
+    /// table and the other returning the same words as prose is a disagreement
+    /// the text alone hides completely. The readings are shown side by side so
+    /// that somebody can tell — and until this was carried, there was nothing
+    /// on screen to tell it from.
+    pub shapes: Shapes,
+}
+
+/// Counts of what a run of blocks is made of.
+///
+/// Four numbers rather than the kinds themselves, because the question being
+/// answered is "does this engine find structure at all", and the answer to that
+/// is a count and not a list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shapes {
+    pub headings: u32,
+    pub lists: u32,
+    pub tables: u32,
+    /// Everything else: running text, and the kinds that are neither of the
+    /// three above and are not headings or tables either.
+    pub text: u32,
+}
+
+impl Shapes {
+    /// Counts a run of blocks.
+    ///
+    /// Top level only. A table's rows and cells live inside it, and counting
+    /// them would report one four-row table as five tables.
+    pub fn of(blocks: &[Block]) -> Self {
+        let mut shapes = Self::default();
+
+        for block in blocks {
+            match block.kind {
+                BlockKind::Heading { .. } => shapes.headings += 1,
+                BlockKind::ListItem => shapes.lists += 1,
+                BlockKind::Table => shapes.tables += 1,
+                _ => shapes.text += 1,
+            }
+        }
+
+        shapes
+    }
+
+    /// Whether this reading is running text and nothing else.
+    ///
+    /// The question a person comparing two readings has. A local engine that
+    /// can only produce paragraphs is not a broken one — it is a text detector
+    /// and a recogniser, and neither of those knows what a table is — but a
+    /// reader who cannot see the difference will keep looking for a bug.
+    pub fn is_plain(&self) -> bool {
+        self.headings == 0 && self.lists == 0 && self.tables == 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -494,10 +549,20 @@ mod tests {
                     Variant {
                         engine: pdfium,
                         text: "Annual Report".into(),
+                        shapes: Shapes::of(&[Block::text(
+                            BlockKind::Heading { level: 1 },
+                            "Annual Report",
+                            EngineId::from("pdfium"),
+                        )]),
                     },
                     Variant {
                         engine: glm,
                         text: "Annual Reports".into(),
+                        shapes: Shapes::of(&[Block::text(
+                            BlockKind::Paragraph,
+                            "Annual Reports",
+                            EngineId::from("glm"),
+                        )]),
                     },
                 ],
                 resolved: Some(Resolution {

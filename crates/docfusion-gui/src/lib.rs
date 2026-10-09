@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use docfusion_core::backend::{PageRequest, VisionBackend};
+use docfusion_core::ir::Shapes;
 use docfusion_core::extract::{ExtractError, Router};
 use docfusion_core::render;
 use docfusion_core::verify::{VerifyMode, VerifyPolicy};
@@ -398,9 +399,12 @@ fn conflicts_of(report: &str) -> Vec<Conflict> {
             return;
         };
 
+        let (engine, shapes) = engine_and_shapes(&open.engine);
+
         conflict.readings.push(Reading {
-            engine: open.engine,
+            engine,
             text: open.lines.join("\n"),
+            shapes,
         });
     }
 
@@ -438,6 +442,39 @@ fn conflicts_of(report: &str) -> Vec<Conflict> {
     close(&mut conflicts, &mut open);
 
     conflicts
+}
+
+/// `rapidocr — headings 0, lists 0, tables 0, text 12` — the name of an engine
+/// and what it read the region as.
+///
+/// The counts are kept out of the name rather than folded into it, because the
+/// name is what everything else calls this engine and the counts are about one
+/// reading. A line that named an engine and then said something this does not
+/// understand keeps the name: the name is the part worth having.
+fn engine_and_shapes(line: &str) -> (String, Option<Shapes>) {
+    let Some((engine, counts)) = line.split_once(" — ") else {
+        return (line.to_owned(), None);
+    };
+
+    let count = |label: &str| -> Option<u32> {
+        counts
+            .split(", ")
+            .find_map(|part| part.strip_prefix(label)?.trim().parse().ok())
+    };
+
+    // All four or none: a line that gave three of the counts did not give the
+    // shape, and a shape with a zero in it that nobody wrote would be a claim
+    // about the reading rather than a reading of the line.
+    let shapes = (|| {
+        Some(Shapes {
+            headings: count("headings ")?,
+            lists: count("lists ")?,
+            tables: count("tables ")?,
+            text: count("text ")?,
+        })
+    })();
+
+    (engine.to_owned(), shapes)
 }
 
 /// `Page 12: the engines read it differently.` — the line that starts a finding.
@@ -919,6 +956,40 @@ mod tests {
         assert_eq!(readings[1].text, "Revenue increased by 12%");
     }
 
+    /// The line that names an engine also says what it read the region as, and
+    /// that is the only place the shape of a reading is written down.
+    #[test]
+    fn a_reading_line_gives_the_engine_and_what_it_read() {
+        let (engine, shapes) =
+            engine_and_shapes("rapidocr — headings 0, lists 0, tables 0, text 12");
+
+        assert_eq!(engine, "rapidocr");
+        assert_eq!(
+            shapes,
+            Some(Shapes {
+                headings: 0,
+                lists: 0,
+                tables: 0,
+                text: 12,
+            })
+        );
+    }
+
+    /// An engine name is not lost to a line this cannot read. The name is what
+    /// everything else calls it; the counts are one reading's.
+    #[test]
+    fn an_engine_named_on_a_line_this_cannot_read_is_still_named() {
+        // No dash at all: an older document, or another program's report.
+        assert_eq!(engine_and_shapes("rapidocr"), ("rapidocr".to_owned(), None));
+
+        // A dash, and something after it that is not all four counts. Half a
+        // shape is worse than none: the zeroes nobody wrote would be a claim
+        // about the reading rather than a reading of the line.
+        let (engine, shapes) = engine_and_shapes("rapidocr — headings 0, lists 0");
+        assert_eq!(engine, "rapidocr");
+        assert_eq!(shapes, None);
+    }
+
     #[test]
     fn a_document_with_nothing_to_report_has_no_report_in_it() {
         let markdown = "---\ntitle: Notes\n---\n\nJust the text.\n";
@@ -972,6 +1043,12 @@ mod tests {
         let variant = |engine: &str, text: &str| Variant {
             engine: EngineId::from(engine),
             text: text.to_owned(),
+            // One paragraph each, which is what these two readings are.
+            shapes: Shapes::of(&[Block::text(
+                BlockKind::Paragraph,
+                text,
+                EngineId::from(engine),
+            )]),
         };
 
         Document {

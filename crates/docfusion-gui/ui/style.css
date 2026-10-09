@@ -298,6 +298,10 @@ main {
 .reading .engine { margin: 0 0 5px; font-size: 12px; }
 .reading .engine .id { margin-left: 6px; color: var(--muted); font-size: 11px; }
 
+/* What the reading was made of. Its own line under the engine, because it is
+   about the reading rather than about the engine. */
+.reading .shape { margin: 0 0 6px; font-size: 11px; line-height: 1.45; color: var(--muted); }
+
 /* Capped, because a disagreement about a whole page is two pages of text and
    nobody can compare two pages on a screen. Scrolls within itself, so the
    whole reading is still there for anyone who wants it. */

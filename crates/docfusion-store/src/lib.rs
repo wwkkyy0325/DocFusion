@@ -15,6 +15,7 @@ pub mod dirs;
 pub mod engines;
 pub mod endpoint;
 pub mod hash;
+pub mod layout;
 pub mod manifest;
 pub mod memory;
 pub mod ocr;

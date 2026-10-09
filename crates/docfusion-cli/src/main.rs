@@ -76,6 +76,14 @@ struct Cli {
     #[arg(long, global = true, env = "DOCFUSION_OCR_PIPELINES")]
     max_ocr_pipelines: Option<usize>,
 
+    /// Download the structure model, if it is not already here.
+    ///
+    /// Not needed to read a page — the engine inside this app reads every page
+    /// without it — but it is what finds headings, tables, headers and footers
+    /// on a scanned one. 124 MB, once.
+    #[arg(long, global = true)]
+    fetch: bool,
+
     /// Let the model think before it answers. Slower and dearer, and no better
     /// at transcribing a page. Only needed for an endpoint that rejects a
     /// request carrying a field it does not know, since asking for thinking to

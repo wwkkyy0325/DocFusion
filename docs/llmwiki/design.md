@@ -1231,6 +1231,60 @@ something at the block, which is a change to the artifact rather than to the
 window — the marker would end up in the text a pipeline indexes. Worth doing,
 not done.
 
+**A reading says what it was made of, not only what it said.** This was a real
+question asked of a real screen: two readings that both looked like prose, and
+no way to tell that one of them had read a table. The counts live on the
+`Variant` — headings, lists, tables, text — and are written on the engine's line
+of the report, so the answer travels with the document rather than being
+recomputed on screen.
+
+**The local engine finds no structure, and that is what it is, not a fault.**
+`ocr.rs` produces `BlockKind::Paragraph` and only that: a text detector finds
+boxes and a recogniser reads them, and neither knows what a table is. The
+project's own benchmark has said so since it was run — 0 of 64 headings and 0 of
+9 tables, against 9 and 7 for a vision model — and `Caps` could not even express
+it, carrying only geometry and confidence. What was missing was not the ability
+but the *visibility*: a person reading two columns of prose has no way to see
+that one engine would have shown a table if there had been one.
+
+**The fix is a layout model, downloaded rather than embedded.** Measured on the
+project's own corpus: the recognition engine finds **0 of the 7 pages whose
+ground truth has a table**; `PP-DocLayout_plus-L` finds **all 7**, plus 20
+classes of heading, caption, header, footer and formula, at **405 ms a page** —
+about a tenth of what a page of recognition costs.
+
+**It is 124 MB, so it is not in the binary.** The line is drawn at *can* rather
+than *nice*. `build.rs` embeds the 6.9 MB of recognition weights because they
+are the promise — a scan is readable with no setup and no network — and moving
+that promise to "after the first download" would cost the whole of it to save
+6.9 MB. The layout model is an improvement: the tool reads every page it ever
+read without it, and simply finds no headings or tables, which is what a text
+detector and a recogniser are.
+
+**So it is fetched on request and never on its own.** No startup fetch, no
+background refresh: `docfusion doctor --fetch` or nothing. The downloader
+follows the same decisions as the one in the Verse project — a state a caller
+can watch, resume rather than restart, mirrors tried in order, the digest
+checked before anything is trusted, and **a failure reported *and* returned**.
+That last one is written down because it is the one that fails silently: a fetch
+that returns an error without telling the callback leaves a window saying
+"downloading" for ever, because the return value is the thing the window does
+not read.
+
+**Where it came from is part of the spec.** Both mirrors serve byte-identical
+files — the digest was computed from the ModelScope copy and published by the
+Hugging Face copy, which agrees — and that agreement is the only reason to
+believe a pinned hash about a quarter of a gigabyte is the right one.
+
+**Inferring structure from the page is possible and is not done here.** Glyph
+boxes carry height, and a line set larger than the body text can be measured
+rather than guessed at — headings could be named that way and marked with the
+lower confidence the IR already has room for. Tables are further off: a grid
+needs a layout model, which is a dependency this project does not ship. Neither
+is worth doing before somebody has asked for the thing they would produce, and
+until then saying plainly what each engine finds is worth more than a heuristic
+that occasionally invents a heading.
+
 **Neither reading is presented as the right one.** The tool has no basis for
 preferring either, which is exactly why it reports the disagreement rather than
 settling it, and a panel that quietly picked a side would be the silent

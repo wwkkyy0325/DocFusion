@@ -28,8 +28,68 @@ use crate::{Cli, CliError, FAILED, OK, endpoint, engine_ids};
 const OCR_ONLY: &str = "ocr-only";
 const VISION: &str = "vision";
 
+/// Where models that are not inside the binary live.
+///
+/// The same directory `build.rs` caches the embedded ones in, so "where does
+/// DocFusion put models" has one answer rather than two.
+fn model_root() -> std::path::PathBuf {
+    docfusion_store::dirs::user_dir().join("models")
+}
+
+/// The line about the structure model, fetching it first when asked to.
+///
+/// The one thing in this report that can be acted on here rather than
+/// described: 124 MB is a decision, and `--fetch` is how somebody makes it.
+fn structure_line(root: &std::path::Path, fetch: bool) -> Result<String, CliError> {
+    use docfusion_store::layout::{State, STRUCTURE};
+
+    let megabytes = STRUCTURE.bytes / (1024 * 1024);
+
+    if docfusion_store::layout::present(root) {
+        return Ok(format!(
+            "structure       present, {megabytes} MB — finds headings, tables, headers and footers"
+        ));
+    }
+
+    if !fetch {
+        return Ok(format!(
+            "structure       not downloaded; `docfusion doctor --fetch` gets it ({megabytes} MB)"
+        ));
+    }
+
+    // Progress on stderr, redrawn in place. It reports every four megabytes,
+    // which is about thirty lines for this file — thirty appended lines would
+    // bury everything else the command said.
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+
+    let outcome = docfusion_store::layout::ensure(
+        root,
+        &mut |state| match state {
+            State::Fetching { received, total, .. } => {
+                eprint!("\r  fetching {megabytes} MB… {}%", received * 100 / (*total).max(1));
+            }
+            State::Verifying => eprint!("\r  checking the digest…      "),
+            _ => {}
+        },
+        &cancelled,
+    );
+
+    eprintln!();
+
+    match outcome {
+        Ok(docfusion_store::layout::Outcome::Ready(_)) => Ok(format!(
+            "structure       present, {megabytes} MB — finds headings, tables, headers and footers"
+        )),
+        Ok(docfusion_store::layout::Outcome::Cancelled) => {
+            Ok("structure       stopped, and nothing is wrong".to_owned())
+        }
+        Err(error) => Err(CliError::Usage(error.to_string())),
+    }
+}
+
 pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
     let root = cli.root();
+    let model_root = model_root();
     let engines = engine_ids(cli)?;
     let endpoint = endpoint(cli)?;
 
@@ -122,6 +182,11 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
         }
         None => lines.push("endpoint        none configured".to_owned()),
     }
+
+    // Reported whether or not it is here, because "it read your scan and found
+    // no headings" and "it read your scan and finds headings" are different
+    // answers, and only one of them is worth looking for a bug in.
+    lines.push(structure_line(&model_root, cli.fetch)?);
 
     lines.push(format!("capability      {tier}"));
 

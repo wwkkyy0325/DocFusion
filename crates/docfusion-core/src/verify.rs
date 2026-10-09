@@ -12,7 +12,7 @@
 
 use regex::RegexSet;
 
-use crate::ir::{Block, Conflict, ConflictKind, Rect, Variant};
+use crate::ir::{Block, Conflict, ConflictKind, Rect, Shapes, Variant};
 
 /// Below this, a block is one the engine was unsure of itself.
 const DEFAULT_CONFIDENCE: f32 = 0.85;
@@ -291,6 +291,9 @@ fn aligned_by_text(page: u32, primary: &[Block], secondary: &[Block]) -> Vec<Con
             blocks.first().map(|block| Variant {
                 engine: block.engine.clone(),
                 text: text.clone(),
+                // The whole side, not the first block of it: this variant is
+                // the page, and its shape is the page's.
+                shapes: Shapes::of(blocks),
             })
         })
         .collect();
@@ -337,6 +340,7 @@ fn conflict(page: u32, kind: ConflictKind, blocks: &[&Block]) -> Conflict {
             .map(|block| Variant {
                 engine: block.engine.clone(),
                 text: block_text(block),
+                shapes: Shapes::of(std::slice::from_ref(block)),
             })
             .collect(),
         resolved: None,
