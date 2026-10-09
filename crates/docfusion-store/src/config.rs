@@ -28,6 +28,13 @@ pub struct Config {
     /// A secret. The file it lives in is per user and outside any repository,
     /// because a key beside the documents is a key that gets committed.
     pub api_key: Option<String>,
+    /// Whether to let the model think before it answers.
+    ///
+    /// Absent means no, and no means the request asks for thinking to be turned
+    /// off — the provider's default is on, and it dominates the output tokens.
+    /// Set it to `true` for a provider that rejects a field it does not know,
+    /// since the request is what carries the setting.
+    pub reasoning: Option<bool>,
     /// One of `off`, `doubt`, `fields` or `always`.
     pub verify: Option<String>,
     pub max_verify_pages: Option<u32>,
@@ -104,6 +111,7 @@ impl Config {
         endpoint: &str,
         model: &str,
         api_key: &str,
+        reasoning: bool,
     ) -> Result<(), ConfigError> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
@@ -129,6 +137,11 @@ impl Config {
             set(&mut document, "api_key", api_key);
         }
 
+        // Written either way, because a flag has no blank value that could mean
+        // "leave it alone": not writing it would leave the opposite of what was
+        // just chosen in a file somebody had set it in before.
+        place(&mut document, "reasoning", toml_edit::value(reasoning));
+
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|source| ConfigError::Unwritable {
                 path: path.to_owned(),
@@ -145,13 +158,7 @@ impl Config {
     }
 }
 
-/// Sets a top-level key, or removes it when the value is blank.
-///
-/// The trivia around the old value is put back on the new one. Assigning a
-/// value replaces the whitespace and the comments attached to it as well, so
-/// without this a note somebody wrote on that line — `# the old one` — would go
-/// with it, silently, which is the whole thing editing rather than rewriting was
-/// meant to avoid.
+/// Sets a top-level key to a string, or removes it when the value is blank.
 fn set(document: &mut toml_edit::DocumentMut, key: &str, text: &str) {
     let text = text.trim();
 
@@ -160,14 +167,23 @@ fn set(document: &mut toml_edit::DocumentMut, key: &str, text: &str) {
         return;
     }
 
+    place(document, key, toml_edit::value(text));
+}
+
+/// Puts a value at a top-level key, keeping the trivia that was around whatever
+/// was there before.
+///
+/// Assigning a value replaces the whitespace and the comments attached to it as
+/// well, so without this a note somebody wrote on that line — `# the old one` —
+/// would go with it, silently, which is the whole thing editing rather than
+/// rewriting was meant to avoid.
+fn place(document: &mut toml_edit::DocumentMut, key: &str, mut item: toml_edit::Item) {
     let existing = document
         .get(key)
         .and_then(toml_edit::Item::as_value)
         .map(|value| (value.decor().prefix().cloned(), value.decor().suffix().cloned()));
 
-    let mut replacement = toml_edit::value(text);
-
-    if let (Some((prefix, suffix)), Some(value)) = (existing, replacement.as_value_mut()) {
+    if let (Some((prefix, suffix)), Some(value)) = (existing, item.as_value_mut()) {
         if let Some(prefix) = prefix {
             value.decor_mut().set_prefix(prefix);
         }
@@ -176,7 +192,7 @@ fn set(document: &mut toml_edit::DocumentMut, key: &str, text: &str) {
         }
     }
 
-    document[key] = replacement;
+    document[key] = item;
 }
 
 /// Where the configuration file lives.
@@ -306,7 +322,7 @@ mod tests {
         );
         let path = directory.path().join("config.toml");
 
-        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-new")
+        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-new", false)
             .expect("saved");
 
         let text = fs::read_to_string(&path).expect("read back");
@@ -338,7 +354,7 @@ mod tests {
         let directory = write("api_key = \"sk-existing\"\n");
         let path = directory.path().join("config.toml");
 
-        Config::save_model(&path, "http://localhost:8080", "local", "").expect("saved");
+        Config::save_model(&path, "http://localhost:8080", "local", "", false).expect("saved");
 
         let config = Config::from_path(&path).expect("valid");
         assert_eq!(config.api_key.as_deref(), Some("sk-existing"));
@@ -353,7 +369,7 @@ mod tests {
         let directory = write("endpoint = \"http://old\"\nmodel = \"old\"\n");
         let path = directory.path().join("config.toml");
 
-        Config::save_model(&path, "  ", "", "").expect("saved");
+        Config::save_model(&path, "  ", "", "", false).expect("saved");
 
         let config = Config::from_path(&path).expect("valid");
         assert!(config.endpoint.is_none());
@@ -367,7 +383,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         let path = directory.path().join("nested").join("config.toml");
 
-        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-1")
+        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-1", false)
             .expect("saved");
 
         let config = Config::from_path(&path).expect("valid");

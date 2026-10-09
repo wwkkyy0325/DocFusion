@@ -77,6 +77,23 @@ model    = "deepseek-flash"
 api_key  = "sk-..."
 ```
 
+There is a **Test** button on the settings page that shows the endpoint a drawn
+page with a number on it and says whether the answer contained the number. Use
+it: an address that answers is not the same as a model that can see, and the
+ones that cannot answer in fluent text about nothing.
+
+**Thinking mode is asked to be off, and you should leave it that way.** The
+provider's default is on at high effort, and it is most of what the model
+writes — asked for a single word, `deepseek-flash` spent 24 of its 26 output
+tokens on it, and 1 with it turned off. It also makes `temperature` meaningless,
+which is the setting that keeps a model from paraphrasing. Turn it on only if
+your endpoint refuses a request carrying a field it does not recognise, which is
+how the request carries this one:
+
+```toml
+reasoning = true
+```
+
 `deepseek-flash` is the only model on that API that accepts images —
 `deepseek-v4-pro` is text-only, and asking it to read a page fails. Check with:
 

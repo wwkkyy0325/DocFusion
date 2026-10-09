@@ -76,6 +76,13 @@ struct Cli {
     #[arg(long, global = true, env = "DOCFUSION_OCR_PIPELINES")]
     max_ocr_pipelines: Option<usize>,
 
+    /// Let the model think before it answers. Slower and dearer, and no better
+    /// at transcribing a page. Only needed for an endpoint that rejects a
+    /// request carrying a field it does not know, since asking for thinking to
+    /// be off is how the request carries it.
+    #[arg(long, global = true, env = "DOCFUSION_REASONING")]
+    reasoning: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -140,6 +147,9 @@ impl Cli {
             .filter(|key| !key.trim().is_empty());
         self.max_verify_pages = self.max_verify_pages.or(config.max_verify_pages);
         self.max_ocr_pipelines = self.max_ocr_pipelines.or(config.max_ocr_pipelines);
+        // A flag that is either there or not cannot say "the file did not
+        // mention it", so the file is consulted only when the flag is absent.
+        self.reasoning |= config.reasoning.unwrap_or(false);
 
         if self.verify.is_none()
             && let Some(name) = config.verify.as_deref()
@@ -490,7 +500,7 @@ fn endpoint(cli: &Cli) -> Result<Option<OpenAiEndpoint>, CliError> {
         ))
     })?;
 
-    let mut config = EndpointConfig::new(url, model);
+    let mut config = EndpointConfig::new(url, model).with_reasoning(cli.reasoning);
     if let Some(key) = &cli.api_key {
         config = config.with_api_key(key.clone());
     }
@@ -600,7 +610,7 @@ fn schema() -> Value {
         "config": {
             "path": docfusion_store::config::path().display().to_string(),
             "format": "TOML; a misspelt key is an error rather than a setting quietly ignored",
-            "keys": ["root", "endpoint", "model", "api_key", "verify", "max_verify_pages", "max_ocr_pipelines"],
+            "keys": ["root", "endpoint", "model", "api_key", "reasoning", "verify", "max_verify_pages", "max_ocr_pipelines"],
             "precedence": "flag, then environment variable, then this file, then the built-in default",
             "override": "DOCFUSION_CONFIG"
         },

@@ -89,7 +89,13 @@
         hidden
       >
         <form id="settings">
-          <h2 id="set-title">Model</h2>
+          <div class="title-row">
+            <h2 id="set-title">Model</h2>
+            <!-- Whether this is known to work, which is not the same as whether
+                 it is saved, and is the question somebody setting it up
+                 actually has. -->
+            <span id="health" class="badge" data-state="untested"></span>
+          </div>
           <p id="set-about" class="lead"></p>
 
           <div class="field">
@@ -99,19 +105,35 @@
               type="text"
               spellcheck="false"
               autocomplete="off"
+              aria-describedby="set-endpoint-error"
               placeholder="https://api.deepseek.com"
             />
+            <p id="set-endpoint-error" class="error" hidden></p>
           </div>
 
           <div class="field">
             <label id="lbl-model" for="set-model">Model</label>
-            <input
-              id="set-model"
-              type="text"
-              spellcheck="false"
-              autocomplete="off"
-              placeholder="deepseek-flash"
-            />
+            <!-- One of the two shows, never both. Which one is `drawModelField`
+                 in app.js: the list once the endpoint has said what it serves,
+                 and the text field when there is nothing to choose from. -->
+            <div class="with-affix">
+              <input
+                id="set-model"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="deepseek-flash"
+              />
+              <select id="set-model-choice" hidden></select>
+              <span id="model-mark" class="mark" aria-hidden="true" hidden>
+                <svg class="icon" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></svg>
+              </span>
+            </div>
+            <p id="set-model-error" class="error" hidden></p>
+            <p class="hint">
+              <span id="set-model-hint">Not sure what goes here?</span>
+              <button id="fetch-models" type="button" class="link">Ask the endpoint</button>
+            </p>
           </div>
 
           <div class="field">
@@ -143,8 +165,17 @@
             <p id="set-hint" class="hint"></p>
           </div>
 
+          <div class="field">
+            <label class="check">
+              <input id="set-reasoning" type="checkbox" />
+              <span id="lbl-reasoning">Let the model think first</span>
+            </label>
+            <p id="set-reasoning-hint" class="hint"></p>
+          </div>
+
           <div class="actions">
             <button id="save" type="submit" class="primary">Save</button>
+            <button id="test" type="button">Test</button>
             <span id="set-note" class="hint"></span>
           </div>
         </form>

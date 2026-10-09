@@ -4,6 +4,262 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-09 — Whether it works, said and kept saying
+
+**What:** The settings page says whether the configuration *works*, not only
+whether it is saved: a dot and a word at the end of the title row, and errors
+that appear under the field they are about.
+
+**Saved and working are different questions.** Saving is local and instant.
+Whether the settings work is a remote question that costs a model call, so it is
+a button and not a side effect of saving — a save that sometimes takes a minute
+is a save nobody presses twice. What was missing was not an automatic test but
+*the answer staying put*: the test's result used to be a sentence that scrolled
+away, and a person who tested, wandered off and came back knew nothing.
+
+**The mark goes back to untested when anything it was about changes.** A tick
+that survives an edit is a tick about settings that are no longer there, which
+is worse than no tick at all. Editing also now says there are unsaved changes,
+so what is on file and what is on screen are never quietly different.
+
+**Three answers, not two.** Read the number is working; answering something
+*else* is not working, however healthy the connection is — a model that cannot
+see is exactly the case this page exists to catch, and calling it "connected"
+would be the wrong reassurance.
+
+**Errors moved to the fields.** The form used to say what was wrong in the last
+line of the page, which means walking from the sentence to the thing it is
+about, and a reader who does not make that walk concludes the form is broken.
+Now the sentence is under the field and the field's border says which one.
+
+**And this round's own bug was caught by the check, not by reading.** A field
+error rendered as `TypeError: Cannot set properties of null`: the paragraph in
+the markup was `id="model-error"` while the code looked up `set-model-error`,
+and nothing but running it was ever going to say so. The failure showed up in
+the note line of the Test button, which is where a thrown exception in that
+handler lands — the designed path doing its job on an undesigned mistake.
+
+---
+
+## 2026-10-09 — The dropdown, thrown away for the one that cannot break
+
+**What:** The hand-written model dropdown is gone. It is a `select` now, and the
+closed control looks exactly like the text fields beside it.
+
+**The bug could not be reproduced, and that is the whole story.** A diagnostic
+was built that drives a real click through the list and draws any uncaught error
+on the page: the option was clicked, the value was set, the list closed, nothing
+threw. Two rounds of guessing at the cause had already gone by. A third would
+have been the same guess with more conviction.
+
+**The instrument broke twice on the way.** The first version registered its
+error box on `load`, and errors happen after `load`, so it could never show
+anything; the second lost a backslash to shell escaping and turned `\n` inside a
+template literal into a real newline, which is a syntax error, which took out
+the whole stub and made the application report `invoke is not a function`. Both
+times the report was about the tool. It is the third time this session that a
+broken instrument has lied about the thing under it.
+
+**So the component was replaced with the one that has no failure mode left.**
+Keyboard, screen readers, type-ahead, popup placement, scrolling and the dark
+popup are all the browser's and have been for thirty years. `appearance: none`
+plus a chevron of this program's own makes the closed control identical to the
+text fields around it. About a hundred and twenty lines of hand-written control
+code were deleted to make room for it.
+
+**Two controls now, one showing.** The `select` when the endpoint has said what
+it serves; the text field when it has not, because a model nobody listed can
+only be typed. The model already set stays in the list even when the endpoint
+does not list it or lists it as blind, since dropping it would change the
+setting without saying so.
+
+**A vendored library was the other option and was not taken.** No build chain
+means a component arrives as a file plus its styles, in a window that currently
+carries no third-party code at all — and it would still be code that can be dead
+to a click. The trade is written down in the design for whoever wants the
+custom popup badly enough.
+
+---
+
+## 2026-10-09 — Models that cannot see, and a list that swallows the mouse
+
+**What:** The model list offers only models that can be shown a page, and the
+list's interaction stopped doing the thing that made it feel like it was holding
+the mouse.
+
+**The endpoint had been saying it all along, and `probe()` was throwing it
+away.** `GET /v1/models` on DeepSeek answers with `input_modalities` per model —
+`deepseek-flash` is `["text","image"]`, `deepseek-v4-pro` is `["text"]` — and
+`Probe::Models` kept only the `id`. So the window offered a model that fails on
+every scanned page, which is the failure this whole tool exists to make loud.
+The setup guide has said `deepseek-flash` is the only model on that API that
+accepts images since the day it was written; the interface ignored a fact that
+was already written down two files away.
+
+**A model that says nothing is still offered.** Most OpenAI-compatible servers
+report nothing about their models, so reading silence as a refusal would hide
+every model on every one of them. It is a yes, a no, or nobody said — and only
+the no is left out, with a count in the sentence so that leaving it out is said
+rather than done quietly.
+
+**`doctor` gained the same check, and it is the one that matters.** A configured
+model that cannot see produces a problem before anything is read, rather than a
+document-long discovery. Checked against the real endpoint with
+`--model deepseek-v4-pro`, which is the model that prompted this.
+
+**The interaction: nothing swallows the press any more.** The usual way to stop
+a list closing before a click lands is to `preventDefault` the mousedown, and
+that is a known way to leave a page feeling like it is holding the mouse. The
+list is closed by *blur* instead, guarded so a click on the list is not leaving
+the field — which needs the options to be focusable, so they carry
+`tabindex="-1"`. Plus a press anywhere else closes it, which is what everything
+that opens over a page does.
+
+**And one more thing that would have reopened the list under the pointer:**
+focusing the field at the end of a choice fires the focus handler, which opens
+the list. A `choosing` flag covers it. *Could not be reproduced from here* — the
+harness has no mouse — so this is the mechanism removed plus the two ways it is
+known to go wrong, not a confirmed diagnosis.
+
+---
+
+## 2026-10-09 — The list is ours, and a build that was never delivered
+
+**What:** The model list is drawn by this page rather than by the browser, the
+hints say what is now known rather than what was known an hour ago, and the two
+overlapping buttons were a build that never reached anybody.
+
+**The overlap was not a bug in the code, it was a bug in the delivery.**
+`cargo test` compiles a test binary for `src/main.rs`; it does not produce
+`docfusion-app.exe`. So the change that moved the button out of the field was
+written, rendered in the harness, and never compiled into the program anybody
+was running. The fix had been right for two turns. Building the binary is what
+makes a frontend change real, and the harness rendering it correctly is not
+evidence that the application has it — they are two different consumers of the
+same three files.
+
+**The browser's list could not have been styled, so it was replaced.** A
+`datalist` popup is drawn by the browser, outside the page, and no stylesheet
+can reach it — it would have been a system menu in the middle of a page with its
+own type, spacing, corners and colours. `#models` is now an ordinary `<ul>` with
+`role="listbox"`, positioned under the field, in the same colours as everything
+else, and it is *capturable* — which the browser's popup is not, and which is
+most of the reason it was worth doing.
+
+**The behaviour a native one would have given had to be written out:** opening on
+focus, filtering only once somebody has typed (a field holding a model name, on
+being opened, would otherwise show exactly that one model and look broken),
+arrow keys, Enter, Escape, and closing on blur. The filter keys off `picking`
+rather than off the text being non-empty, and that distinction is the whole of
+it.
+
+**The hints now say what the measurement says.** The thinking hint had the token
+counts from the first experiment; it has the page timings from the second one,
+which is the finding that actually decides the question — 1m55s against 1m13s
+with an identical body.
+
+---
+
+## 2026-10-09 — The model list, and what thinking actually buys
+
+**What:** A button under the model field that asks the endpoint which models it
+serves and offers them, plus an experiment that answered a question about
+gating thinking — with a result that argues against the gate.
+
+**The model name is the one field no amount of care can fill in.** It is a
+string that either exists on the far end or does not, and nothing a person can
+remember or check will say which. The endpoint knows, and has said so since the
+day `probe()` was written — the listing has been in the store all along and used
+by `doctor`, and the window had never asked.
+
+**A button under the field rather than an icon inside it.** The first attempt put
+an icon in the field, and the browser draws its own arrow there for an input
+with a `list` — two affordances in one place, one on top of the other. Hiding the
+browser's did not take, so the field keeps the arrow everybody already knows and
+the action became a word underneath it. Which is also more discoverable: a
+labelled button beats a small picture.
+
+**The experiment: the same newspaper page, read with thinking off and on.**
+
+| | time | output | conflicts |
+|---|---|---|---|
+| off | 1m13s | 20548 B | 1 |
+| on | 1m55s | 21299 B | 1 |
+
+**Every word of the body is identical.** The only difference is that with
+thinking on the model added `## SECURITIES AND EXCHANGE COMMISSION` and
+`### Submission for OMB Review` — it classified the headings. The conflict
+against the local engine did not move.
+
+**Which answers the question that prompted it.** The proposal was to gate
+thinking: read everything without it, and escalate where a conflict appears.
+Measured, that gate would have fired on exactly this page and changed nothing
+about the disagreement, because thinking alters *structural interpretation* and
+a conflict is usually a *reading* disagreement. It would have spent 1.6× the
+time to arrive at the same text.
+
+**What thinking does buy is heading structure**, which is a real column in the
+project's own benchmark and a real thing to want — but it is a trade to make
+once per installation, not a gate to open per conflict. And it is one page and
+one run: the honest way to settle it is `docfusion bench` over the corpus both
+ways, which costs money and has not been run.
+
+---
+
+## 2026-10-09 — Thinking was on, and costing most of the bill
+
+**What:** A Test button on the settings page, a switch for the model's thinking
+mode, and the answer to a question that turned out to be worth more than the
+feature.
+
+**The question was whether thinking mode was on.** It was, because the request
+never mentioned it and the provider's default is on at high effort. Asked to
+reply with one word, `deepseek-flash` spent **24 of its 26 output tokens
+reasoning**; with thinking asked off, the same request spent **1**. That is not
+a rounding error and it applies to every page of every document.
+
+**Two things fell out of the measurement that are worse than the bill.**
+`temperature` is *ignored* while thinking is on — a reasoning model takes no
+sampling temperature — so the `temperature: 0` this client has always sent, with
+a comment calling it load-bearing, was doing nothing at all. And the design
+leans on the content hash pinning which engine reads a document, on the premise
+that the same bytes produce the same answer; a model deliberating at high effort
+is a worse fit for that premise than one that is not.
+
+**Measured rather than read.** The docs were unreachable from here and the
+search summaries were hedged and mentioned retired model names, so the endpoint
+was asked directly. It is a better instrument than a documentation page: it
+answers about the account, the model and the version actually in use.
+
+**The request carries the setting, so it is a switch and not a constant.**
+`thinking` is DeepSeek's spelling. Servers that do not know the field ignore it
+— checked, by sending DeepSeek an invented one and getting a normal answer back
+— but a strict provider rejects an unrecognised argument outright. So the switch
+sends *nothing* when it is on rather than sending a different value, because
+"do not send it" is the only version of this that a provider which has never
+heard of the field can accept.
+
+**The Test button shows the endpoint a picture.** A connection check cannot see
+the failure that matters: a model served without its multimodal projector is
+reachable, listed, fast, and blind, and answers every request in fluent text
+about nothing. Asking it to read a number off a page separates "reachable" from
+"can see", and it is the one question somebody configuring this by hand cannot
+ask. Three outcomes are said apart, including "it answered something else", with
+both answers shown so the failure is visible rather than described.
+
+**The picture is drawn rather than shipped.** A five-by-seven bitmap font and
+ten glyphs, scaled up — no font, no asset, nothing to go missing or turn out to
+be the wrong file. It also has the property a corpus page would lose after the
+first run: the tool has never seen it before.
+
+**And it was checked against the real endpoint before being wired to a button.**
+The live test reads 4321 off the drawn page, which is the only way to know that
+a glyph has no bit in the wrong place and that the picture is large enough not
+to be mistaken for a page whose image never arrived. It is kept as a test that
+does not run by itself, because it spends money and needs a key.
+
+---
+
 ## 2026-10-09 — The key field, and a settings page that looks finished
 
 **What:** The key is masked, with an eye to reveal it, and the settings page was

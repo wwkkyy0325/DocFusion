@@ -43,7 +43,19 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
 
         match endpoint.probe() {
             Ok(Probe::Models(models)) => {
-                serves = models;
+                // Asked before anything else, because it is the failure that
+                // costs a document to discover: a model that says it cannot be
+                // shown an image will answer every scan with fluent text about
+                // nothing, and answer it confidently.
+                if let Some(model) = models.iter().find(|model| model.id == *wanted)
+                    && !model.reads_images()
+                {
+                    problems.push(format!(
+                        "`{wanted}` does not accept images, so it cannot read a scanned page"
+                    ));
+                }
+
+                serves = models.into_iter().map(|model| model.id).collect();
                 listed = serves.iter().any(|served| served == wanted);
                 if !listed {
                     problems.push(format!(

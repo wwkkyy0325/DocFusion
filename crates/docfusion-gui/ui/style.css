@@ -21,6 +21,7 @@
      everything else: white on a dark blue reads, white on a light blue does
      not. */
   --on-accent: light-dark(#ffffff, #10161e);
+  --ok: light-dark(#15803d, #4ade80);
   --warn: light-dark(#b45309, #e8b04b);
   --warn-wash: light-dark(#fffbeb, #2a2113);
 }
@@ -349,10 +350,10 @@ footer {
 
 footer .warn { color: var(--warn); }
 
-/* The count of places to look at, which goes there when pressed. A button that
-   looks like the sentence it replaced, with the affordance a sentence does not
-   have. */
-footer button.link {
+/* A button that looks like the sentence it replaced, with the affordance a
+   sentence does not have. Used where an action belongs inside a line of prose
+   rather than beside it. */
+button.link {
   padding: 0;
   border: 0;
   background: none;
@@ -363,7 +364,7 @@ footer button.link {
   cursor: pointer;
 }
 
-footer button.link:hover { background: none; filter: brightness(1.15); }
+button.link:hover { background: none; filter: brightness(1.15); }
 
 /* ── records ────────────────────────────────────────────────────────────── */
 
@@ -407,7 +408,37 @@ footer button.link:hover { background: none; filter: brightness(1.15); }
   padding: 28px 24px 48px;
 }
 
-#settings h2 { margin: 0 0 8px; font-size: 1.15em; }
+#settings h2 { margin: 0; font-size: 1.15em; }
+
+/* The title and the state of what is under it, at opposite ends of one line. */
+.title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+/* A dot and a word. Colour carries it, so the word only has to be read by
+   somebody who cannot see the colour. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.badge[data-state="works"] { color: var(--ok); }
+.badge[data-state="failed"] { color: var(--warn); }
 
 #settings .lead {
   margin: 0 0 28px;
@@ -417,6 +448,26 @@ footer button.link:hover { background: none; filter: brightness(1.15); }
 }
 
 .field { margin-bottom: 20px; }
+
+/* The label wraps the box so the whole line is the target, which is what
+   every other checkbox on the machine does. */
+#settings .check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 0;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+/* A checkbox is not a text field, whatever the rule above says about the
+   inputs in this form. */
+#settings .check input {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
 
 #settings label {
   display: block;
@@ -446,8 +497,13 @@ footer button.link:hover { background: none; filter: brightness(1.15); }
 
 /* The eye inside the field's right edge, which is where every other field with
    a reveal keeps it and therefore where it is looked for. */
+/* Relative for the two things that sit inside a field's right edge: the eye on
+   the key, and the arrow on the model. */
 .with-affix { position: relative; }
-.with-affix input { padding-right: 44px; }
+
+/* Room for the eye, on the field that has one. Not on every field in the
+   wrapper: the model's text field is in here too and has nothing at its edge. */
+#set-key { padding-right: 44px; }
 
 .icon-button {
   position: absolute;
@@ -474,7 +530,55 @@ footer button.link:hover { background: none; filter: brightness(1.15); }
   line-height: 1.5;
 }
 
-/* Set apart, so the one control that changes something is not one more field. */
+#settings .hint button { margin-left: 6px; }
+
+/* Under the field it is about, rather than at the foot of the form where the
+   thing that is wrong is a walk away from the sentence saying so. */
+#settings .error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--warn);
+}
+
+#settings input[aria-invalid="true"],
+#settings select[aria-invalid="true"] { border-color: var(--warn); }
+
+/* ── the model list ─────────────────────────────────────────────────── */
+
+/* The arrow is drawn here rather than by the browser, so that `appearance` can
+   be turned off and the control takes the same shape as every text field on the
+   page. Only the closed control: what opens when it is pressed belongs to the
+   browser, which is the point of using it. */
+#settings select {
+  appearance: none;
+  font: inherit;
+  width: 100%;
+  padding: 9px 38px 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+#settings select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+.with-affix .mark {
+  position: absolute;
+  inset: 1px 1px 1px auto;
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.with-affix .mark .icon { width: 15px; height: 15px; }
+
 #settings .actions {
   display: flex;
   align-items: center;
@@ -483,6 +587,12 @@ footer button.link:hover { background: none; filter: brightness(1.15); }
   padding-top: 20px;
   border-top: 1px solid var(--line);
 }
+
+/* The buttons keep their shape and the sentence beside them takes the room it
+   needs. Without this they are squeezed into vertical lettering by a long
+   answer, which is what a flex item does when it is allowed to shrink. */
+#settings .actions button { flex: none; }
+#settings .actions .hint { margin: 0; }
 
 /* The line that answers a button press. Coloured, because it appears where
    nothing else changes and has to be noticed in passing. */

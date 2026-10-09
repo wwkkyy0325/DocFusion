@@ -41,6 +41,14 @@ pub struct Model {
     pub model: String,
     /// In characters, because it is a count of dots a person looks at.
     pub key_length: usize,
+    /// Whether the model has been told it may think before answering.
+    ///
+    /// Off unless somebody says otherwise, because the provider's default is on
+    /// and it spends the majority of the output tokens. There is a switch
+    /// rather than a constant because the request carries the setting, and a
+    /// provider that rejects a field it does not recognise needs to be able to
+    /// not have it sent.
+    pub reasoning: bool,
 }
 
 /// Something that went wrong, split the way the window has to say it.
@@ -137,6 +145,48 @@ pub struct Opened {
     /// True when the answer came from the index rather than from reading the
     /// document again.
     pub reused: bool,
+}
+
+/// What asking the endpoint which models it serves turned up.
+///
+/// Three outcomes, because the three need different things said about them.
+/// "It does not list them" is not a fault and must not read like one — a server
+/// that reads pages perfectly well is under no obligation to implement a
+/// listing, and telling somebody to go and repair it would be sending them
+/// after the wrong thing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum Remote {
+    /// The models it is serving that can be shown a page, and how many it named
+    /// that cannot.
+    ///
+    /// The blind ones are left out rather than listed and disabled: they are
+    /// not choices somebody declines, they are models that cannot do the job at
+    /// all. The count is carried so that leaving them out is said rather than
+    /// done silently.
+    Models { names: Vec<String>, blind: usize },
+    /// It answered, and does not list its models.
+    Unlisted { detail: String },
+    /// It could not be reached, or refused. The detail is its own account.
+    Failed { detail: String },
+}
+
+/// What came of asking the endpoint to read a page it has never seen.
+///
+/// Three outcomes rather than a yes and a no, because "it answered and the
+/// answer was wrong" is the one a person most needs told apart and the one a
+/// connection check cannot see: a model served without its vision half answers
+/// every request in fluent text about nothing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum Test {
+    /// It read what it was shown.
+    Read,
+    /// It answered, and the answer was not what it was shown.
+    Misread { said: String, expected: String },
+    /// It never got as far as answering. The detail is the endpoint's own
+    /// account of why.
+    Failed { detail: String },
 }
 
 /// One place two engines read the same part of a page differently.

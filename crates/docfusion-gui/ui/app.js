@@ -52,13 +52,41 @@ const TEXT = {
     model_label: "Model",
     key: "Key",
     save: "Save",
+    health_untested: "Not tested",
+    health_works: "Working",
+    health_failed: "Not working",
+    health_note_untested: "Nothing has been read with these settings yet.",
+    health_note_works: "The last test read the number off the test page.",
+    health_note_failed: "The last test did not get the number back.",
+    changed: "Changed since it was saved.",
     saved: "Saved.",
     saving: "Saving…",
     save_failed: "Could not save.",
+    fetch_models: "Ask the endpoint",
+    fetching_models: "Asking the endpoint which models it serves…",
+    models_found: (n) => `The endpoint lists ${n}. Open the field to pick one.`,
+    models_none: "The endpoint answered, and lists no models.",
+    models_blind: (n) =>
+      `${n} of them accept text only and are not listed — they cannot be shown a page.`,
+    none_can_see: "None of these models accept images, so none of them can read a scan.",
+    models_unlisted:
+      "The endpoint works but does not list its models, so this one has to be typed. Its own documentation will name it.",
+    models_failed: "Could not reach the endpoint:",
+    endpoint_first: "Fill in the endpoint first.",
+    model_hint: "Not sure what goes here?",
+    test: "Test",
+    testing: "Asking the endpoint to read a test page…",
+    test_read: "It read the number. This endpoint works.",
+    test_misread: (said, expected) =>
+      `It answered, but not with what it was shown: it said “${said}” and the page says ${expected}. The model probably cannot see images.`,
+    test_failed: "The endpoint did not answer:",
     show_key: "Show the key",
     hide_key: "Hide the key",
     key_set: "A key is set. Leave this box empty to keep it.",
     key_unset: "No key is set. One is only needed if the endpoint asks for it.",
+    reasoning_label: "Let the model think before it answers",
+    reasoning_hint:
+      "Off. Measured on one page: 1m55s with it, 1m13s without, and not one word of the body different — all it changed was how the headings were classified. Turn it on only if your endpoint refuses a request it does not recognise.",
     settings_about:
       "Let a model on the other end read scanned pages, and have the engine inside this app check what it read. Clearing the endpoint turns it off and calls nothing.",
     address_needs_scheme: "The address needs http:// or https:// in front of it.",
@@ -129,13 +157,39 @@ const TEXT = {
     model_label: "模型",
     key: "密钥",
     save: "保存",
+    health_untested: "未测试",
+    health_works: "可用",
+    health_failed: "不可用",
+    health_note_untested: "还没有用这套设置读过任何东西。",
+    health_note_works: "上次测试读出了测试图上的数字。",
+    health_note_failed: "上次测试没有把数字读回来。",
+    changed: "有改动还没保存。",
     saved: "已保存。",
     saving: "保存中…",
     save_failed: "保存失败。",
+    fetch_models: "问端点",
+    fetching_models: "正在问端点有哪些模型…",
+    models_found: (n) => `端点报了 ${n} 个模型，点开就能选。`,
+    models_none: "端点答了，但一个模型也没报。",
+    models_blind: (n) => `另有 ${n} 个只收文字，没有列出来——它们看不了图片。`,
+    none_can_see: "这些模型都不接受图片，没有一个能读扫描件。",
+    models_unlisted: "端点能用，但它不提供模型列表，这个只能手填——它自己的文档里会写。",
+    models_failed: "连不上端点：",
+    endpoint_first: "先填端点地址。",
+    model_hint: "不知道填什么？",
+    test: "测试",
+    testing: "正在让端点读一张测试图…",
+    test_read: "数字读出来了，这个端点能用。",
+    test_misread: (said, expected) =>
+      `端点答了，但答的不是图上写的东西：它说「${said}」，图上写的是 ${expected}。这个模型多半看不见图片。`,
+    test_failed: "端点没能回答：",
     show_key: "显示密钥",
     hide_key: "隐藏密钥",
     key_set: "已设置密钥，这个框留空即不改动。",
     key_unset: "还没有密钥。端点不要求的话可以空着。",
+    reasoning_label: "让模型先想一遍再回答",
+    reasoning_hint:
+      "关着。同一页实测：开着要 1 分 55 秒，关着 1 分 13 秒，正文一个字都没变——它改的只是标题怎么分级。除非端点会拒绝它不认识的参数，不用打开。",
     settings_about:
       "让远端的模型读扫描件，再由本机内置的识别去印证它读了什么。清空端点地址就关掉它，不调用任何模型。",
     address_needs_scheme: "地址前面要有 http:// 或 https://。",
@@ -300,7 +354,12 @@ function applyLang() {
     ["lbl-endpoint", words.endpoint],
     ["lbl-model", words.model_label],
     ["lbl-key", words.key],
+    ["lbl-reasoning", words.reasoning_label],
+    ["set-reasoning-hint", words.reasoning_hint],
     ["save", words.save],
+    ["test", words.test],
+    ["set-model-hint", words.model_hint],
+    ["fetch-models", words.fetch_models],
     ["set-about", words.settings_about],
   ]) {
     el(id).textContent = text;
@@ -308,9 +367,10 @@ function applyLang() {
 
   el("lang").title = words.switch_title;
 
-  // The eye's tooltip is a phrase in the language too, and it was written by
-  // the last `drawReveal`.
+  // Both of these write words of their own, and both were written in the
+  // language that was just replaced.
   drawReveal();
+  drawHealth();
 
   // Last, because it writes a label of its own and that label is a word in the
   // language that has just been chosen.
@@ -341,7 +401,7 @@ function draw(view) {
 /// "delete it". Deleting it is what clearing the endpoint is for.
 function drawSettings(model) {
   el("set-endpoint").value = model.endpoint;
-  el("set-model").value = model.model;
+  drawModelField(model);
 
   const key = el("set-key");
   key.value = "";
@@ -349,6 +409,11 @@ function drawSettings(model) {
   key.placeholder = "•".repeat(model.key_length);
 
   el("set-hint").textContent = model.key_length > 0 ? t().key_set : t().key_unset;
+  el("set-reasoning").checked = model.reasoning;
+
+  // A fresh view is what is on file, so nothing in the form is a change yet.
+  clearFieldErrors();
+  drawHealth();
 
   revealed = false;
   drawReveal();
@@ -722,26 +787,265 @@ function showTab(which) {
 /// form is the one place the person is looking when they get it wrong. The
 /// other half refuses a half-written pair as well, but its answer is a string
 /// in a language this side cannot choose.
+/// Returns whether it got as far as writing, so that a caller which needs the
+/// settings to be on file — the test does — can stop when they are not.
 async function saveSettings(event) {
-  event.preventDefault();
+  event?.preventDefault();
 
   const endpoint = el("set-endpoint").value.trim();
-  const model = el("set-model").value.trim();
+  const model = chosenModel();
 
-  if (endpoint && !/^https?:\/\//i.test(endpoint)) return note(t().address_needs_scheme, false);
-  if (endpoint && !model) return note(t().model_needed, false);
-  if (model && !endpoint) return note(t().endpoint_needed, false);
+  clearFieldErrors();
+
+  if (endpoint && !/^https?:\/\//i.test(endpoint)) {
+    fieldError("set-endpoint", t().address_needs_scheme);
+    return false;
+  }
+  if (endpoint && !model) {
+    fieldError("set-model", t().model_needed);
+    return false;
+  }
+  if (model && !endpoint) {
+    fieldError("set-endpoint", t().endpoint_needed);
+    return false;
+  }
 
   note(t().saving, true);
 
   try {
-    draw(await invoke("save_model", { endpoint, model, key: el("set-key").value }));
+    draw(
+      await invoke("save_model", {
+        endpoint,
+        model,
+        key: el("set-key").value,
+        reasoning: el("set-reasoning").checked,
+      }),
+    );
     note(t().saved, true);
+    return true;
   } catch (error) {
     // The other half had the last word, and it is the half that owns the file.
     note(`${t().save_failed} ${error}`, false);
+    return false;
   }
 }
+
+/// Asks the endpoint to read a page it has never seen.
+///
+/// Saves first, because the test uses what is on file — the address, the model
+/// and the key the window is reading with are the ones the file holds, and a
+/// test that quietly used what was typed would be answering about a different
+/// setup from the one that will run.
+async function testModel() {
+  const button = el("test");
+  button.disabled = true;
+  note(t().testing, true);
+
+  try {
+    // The message is already on screen when it does not save.
+    if (!(await saveSettings())) return;
+    showTest(await invoke("test_model"));
+  } catch (error) {
+    note(`${t().test_failed} ${error}`, false);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/// Three outcomes, said apart.
+///
+/// "It answered and the answer was wrong" is the one worth telling apart from a
+/// plain failure and the one nothing but a picture can find: a model served
+/// without its vision half answers every request in fluent text about nothing.
+function showTest(result) {
+  // Read, misread and failed all leave the badge, because all three are the
+  // answer to "does this work" and only the first is a yes. A model that
+  // answers something other than what it was shown is a model that cannot see,
+  // which is not a working configuration however healthy the connection is.
+  health = result.outcome === "read" ? "works" : "failed";
+  drawHealth();
+
+  if (result.outcome === "read") return note(t().test_read, true);
+  if (result.outcome === "misread") return note(t().test_misread(result.said, result.expected), false);
+
+  note(`${t().test_failed} ${result.detail}`, false);
+}
+
+/// Asks the endpoint which models it serves, and puts them on the field.
+///
+/// Uses what is in the form rather than what is on file, because this is asked
+/// while somebody is filling the form in — often before anything has been
+/// saved, and often about an address they have just changed.
+async function fetchModels() {
+  const endpoint = el("set-endpoint").value.trim();
+
+  if (!endpoint) return note(t().endpoint_first, false);
+
+  const button = el("fetch-models");
+  button.disabled = true;
+  note(t().fetching_models, true);
+
+  try {
+    const remote = await invoke("probe_models", {
+      endpoint,
+      // Empty means the key already on file. The window does not hold it.
+      key: el("set-key").value,
+    });
+
+    if (remote.outcome === "models") {
+      offered = remote.names;
+      drawModelField({ model: chosenModel() });
+
+      // Nothing to offer is not the same as nothing reported: an endpoint whose
+      // every model is text-only has answered, and answered that it cannot do
+      // this job.
+      const usable = offered.length > 0;
+      const said = usable
+        ? t().models_found(offered.length)
+        : remote.blind > 0
+          ? t().none_can_see
+          : t().models_none;
+
+      note(usable && remote.blind > 0 ? `${said} ${t().models_blind(remote.blind)}` : said, usable);
+      return;
+    }
+
+    const said = remote.outcome === "unlisted" ? t().models_unlisted : t().models_failed;
+    note(`${said} ${remote.detail}`, false);
+  } catch (error) {
+    note(String(error), false);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// ── the model list ────────────────────────────────────────────────────
+
+/// What the endpoint said it serves, or nothing if it was never asked.
+let offered = [];
+
+/// Whether these settings are known to work.
+///
+/// `untested`, `works`, or `failed`. Kept apart from whether they are *saved*,
+/// because saving and working are different questions and the second is the one
+/// somebody setting this up has. Nothing sets it to `works` except a model
+/// reading the number off a test page.
+///
+/// It goes back to `untested` the moment anything it was about changes. A tick
+/// that survived an edit would be a tick about the settings that used to be
+/// there.
+let health = "untested";
+
+function drawHealth() {
+  const words = {
+    untested: t().health_untested,
+    works: t().health_works,
+    failed: t().health_failed,
+  };
+
+  const badge = el("health");
+  badge.dataset.state = health;
+  badge.textContent = words[health];
+  badge.title = t()[`health_note_${health}`];
+}
+
+/// A change to anything the test was about makes the answer about something
+/// else.
+function forgetHealth() {
+  if (health !== "untested") {
+    health = "untested";
+    drawHealth();
+  }
+
+  // And the settings are no longer what is on file.
+  if (dirty()) note(t().changed, false);
+}
+
+/// Whether the form differs from what is on file.
+function dirty() {
+  const saved = current?.model;
+  if (!saved) return false;
+
+  return (
+    el("set-endpoint").value.trim() !== saved.endpoint ||
+    chosenModel() !== saved.model ||
+    el("set-key").value !== ""
+  );
+}
+
+/// A message under the field it is about, and the field marked.
+function fieldError(id, message) {
+  const field = el(id);
+  const error = el(`${id}-error`);
+
+  error.textContent = message ?? "";
+  error.hidden = !message;
+
+  if (message) field.setAttribute("aria-invalid", "true");
+  else field.removeAttribute("aria-invalid");
+}
+
+function clearFieldErrors() {
+  fieldError("set-endpoint", null);
+  fieldError("set-model", null);
+}
+
+/// Shows the list when there is one to choose from, and the text field when
+/// there is not.
+///
+/// Two controls rather than one that is both, because the two cases are not the
+/// same job. Picking one of a list the endpoint just gave us is what a `select`
+/// is for, and the browser has been getting that right for thirty years —
+/// keyboard, screen readers, type-ahead, a popup that knows which way the
+/// window opens. Naming a model nobody listed is a text field, because there is
+/// nothing to pick from.
+///
+/// There was a made-up one here before, on the theory that a `datalist` looks
+/// nothing like the rest of the page. It was replaced with a list of this
+/// program's own, which rendered correctly in every check and was, on somebody
+/// else's machine, dead to the pointer. Neither of those is a thing to fix
+/// twice.
+function drawModelField(model) {
+  const field = el("set-model");
+  const choice = el("set-model-choice");
+
+  // The model that is set stays choosable even when the endpoint does not list
+  // it — because it is blind, or because it was named before the endpoint was
+  // asked. Dropping it from the list would silently change the setting.
+  const names = offered.length === 0 || offered.includes(model.model) || model.model === ""
+    ? offered
+    : [model.model, ...offered];
+
+  if (names.length === 0) {
+    field.hidden = false;
+    field.value = model.model;
+    choice.hidden = true;
+    el("model-mark").hidden = true;
+    return;
+  }
+
+  choice.replaceChildren(
+    ...names.map((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      return option;
+    }),
+  );
+  choice.value = model.model;
+
+  field.hidden = true;
+  choice.hidden = false;
+  el("model-mark").hidden = false;
+}
+
+/// The model as it stands, from whichever of the two controls is showing.
+function chosenModel() {
+  return el("set-model-choice").hidden
+    ? el("set-model").value.trim()
+    : el("set-model-choice").value;
+}
+
 
 function note(text, ok = true) {
   const element = el("set-note");
@@ -848,6 +1152,16 @@ el("tab-records").addEventListener("click", openRecords);
 el("tab-settings").addEventListener("click", openSettings);
 el("settings").addEventListener("submit", saveSettings);
 el("reveal").addEventListener("click", toggleReveal);
+el("test").addEventListener("click", testModel);
+el("fetch-models").addEventListener("click", fetchModels);
+
+// Anything the answer was about: changing it makes the answer about something
+// that is no longer on screen.
+for (const id of ["set-endpoint", "set-model", "set-model-choice", "set-key"]) {
+  el(id).addEventListener("input", forgetHealth);
+  el(id).addEventListener("change", forgetHealth);
+}
+
 
 applyLang();
 

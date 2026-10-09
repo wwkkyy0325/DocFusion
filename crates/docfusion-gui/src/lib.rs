@@ -14,6 +14,7 @@ mod state;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use docfusion_core::backend::{PageRequest, VisionBackend};
 use docfusion_core::extract::{ExtractError, Router};
 use docfusion_core::render;
 use docfusion_core::verify::{VerifyMode, VerifyPolicy};
@@ -24,7 +25,7 @@ use docfusion_store::pipeline::{Mode, Pipeline, PipelineError};
 
 use tauri::{AppHandle, Manager};
 
-use state::{Cause, Conflict, Model, Opened, Reading, Record, Trouble, View};
+use state::{Cause, Conflict, Model, Opened, Reading, Record, Remote, Test, Trouble, View};
 
 /// The application's shared state.
 ///
@@ -202,6 +203,58 @@ impl App {
             .map_err(|error| Trouble::new(cause_of(&error), error.to_string()))
     }
 
+    /// Asks the endpoint to read a number off a page.
+    ///
+    /// The smallest question that tells "reachable" from "can see". A model
+    /// behind a correct address with a correct key and no vision answers this
+    /// with confident nonsense about nothing, and a person who finds that out
+    /// by pointing the tool at a real document has spent a document finding
+    /// out.
+    fn test(&self) -> Test {
+        // Shorter than the timeout a real page gets. A button that can hang for
+        // three minutes on an address with nothing behind it is a button
+        // somebody concludes is broken.
+        const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+        let Some(config) = self
+            .endpoint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        else {
+            return Test::Failed {
+                detail: "no endpoint is configured".to_owned(),
+            };
+        };
+
+        let endpoint = docfusion_store::endpoint::OpenAiEndpoint::new(config.with_timeout(TEST_TIMEOUT));
+        let page = docfusion_core::image::number_page(TEST_NUMBER);
+        let request = PageRequest {
+            image: &page,
+            page: 0,
+        };
+
+        match endpoint.parse(&request) {
+            Ok(blocks) => {
+                let said = blocks
+                    .iter()
+                    .map(|block| block.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let expected = TEST_NUMBER.to_string();
+
+                if said.contains(&expected) {
+                    Test::Read
+                } else {
+                    Test::Misread { said, expected }
+                }
+            }
+            Err(error) => Test::Failed {
+                detail: error.to_string(),
+            },
+        }
+    }
+
     /// What the settings tab shows, read from the file rather than remembered.
     ///
     /// Remembered would drift: this is a file somebody edits by hand, and the
@@ -223,14 +276,14 @@ impl App {
     /// reading documents with a setting the person believes they changed. An
     /// endpoint with no model, or a model with no endpoint, is left as it was
     /// and reported, since half of the pair reads nothing.
-    fn save_model(&self, endpoint: &str, model: &str, key: &str) -> Result<(), String> {
+    fn save_model(&self, endpoint: &str, model: &str, key: &str, reasoning: bool) -> Result<(), String> {
         let (endpoint, model) = (endpoint.trim(), model.trim());
 
         if endpoint.is_empty() != model.is_empty() {
             return Err("the endpoint and the model are set together or not at all".to_owned());
         }
 
-        config::Config::save_model(&config::path(), endpoint, model, key)
+        config::Config::save_model(&config::path(), endpoint, model, key, reasoning)
             .map_err(|error| error.to_string())?;
 
         // Re-read rather than reuse what was typed: when the key box was left
@@ -291,6 +344,12 @@ impl App {
         }
     }
 }
+
+/// The number the test page shows, and the number the answer has to contain.
+///
+/// Four digits and no repeats, so an answer that reads the right shapes in the
+/// wrong order is still wrong and still caught by looking for the whole number.
+const TEST_NUMBER: u32 = 4_321;
 
 /// Where the report this program appends to a document begins.
 const REPORT_HEADING: &str = "## Conflicts";
@@ -430,7 +489,9 @@ fn endpoint_of(config: &config::Config) -> Option<docfusion_store::endpoint::End
         return None;
     };
 
-    let mut endpoint = docfusion_store::endpoint::EndpointConfig::new(url, model);
+    let mut endpoint = docfusion_store::endpoint::EndpointConfig::new(url, model)
+        .with_reasoning(config.reasoning.unwrap_or(false));
+
     if let Some(key) = config.api_key.clone() {
         endpoint = endpoint.with_api_key(key);
     }
@@ -446,6 +507,7 @@ fn model_of(config: &config::Config) -> Model {
         endpoint: config.endpoint.clone().unwrap_or_default(),
         model: config.model.clone().unwrap_or_default(),
         key_length: key.chars().count(),
+        reasoning: config.reasoning.unwrap_or(false),
     }
 }
 
@@ -540,6 +602,68 @@ async fn process(app: AppHandle, path: String) -> Result<View, String> {
     .map_err(|error| error.to_string())
 }
 
+/// Asks the endpoint which models it is serving.
+///
+/// Takes the address and the key from the form rather than from the file,
+/// because the question is asked while somebody is filling the form in — often
+/// before anything has been saved, and often about an address they have just
+/// changed.
+///
+/// An empty key means the one already on file, for the same reason the key
+/// field is empty: the window never holds it.
+#[tauri::command]
+async fn probe_models(endpoint: String, key: String) -> Remote {
+    let key = if key.trim().is_empty() {
+        config::Config::load().ok().and_then(|config| config.api_key)
+    } else {
+        Some(key)
+    };
+
+    let mut config = docfusion_store::endpoint::EndpointConfig::new(endpoint, "")
+        .with_timeout(std::time::Duration::from_secs(20));
+
+    if let Some(key) = key.filter(|key| !key.trim().is_empty()) {
+        config = config.with_api_key(key);
+    }
+
+    let probe = docfusion_store::endpoint::OpenAiEndpoint::new(config).probe();
+
+    match probe {
+        Ok(docfusion_store::endpoint::Probe::Models(models)) => {
+            // Only what can be shown a page is offered. A model that cannot see
+            // answers every scan with fluent text about nothing, so offering it
+            // is offering a configuration that fails on the first page. What
+            // said nothing is offered, because most servers say nothing and
+            // hiding on silence would hide everything.
+            let (offered, blind): (Vec<_>, Vec<_>) =
+                models.into_iter().partition(|model| model.reads_images());
+
+            Remote::Models {
+                names: offered.into_iter().map(|model| model.id).collect(),
+                blind: blind.len(),
+            }
+        }
+        Ok(docfusion_store::endpoint::Probe::Unlisted(detail)) => Remote::Unlisted { detail },
+        Err(error) => Remote::Failed {
+            detail: error.to_string(),
+        },
+    }
+}
+
+/// Asks the endpoint to read a page it has never seen, and says what came of
+/// it.
+///
+/// Off the main thread, because it is a network call with a model at the far
+/// end of it and the window has to stay drawn while it happens.
+#[tauri::command]
+async fn test_model(app: AppHandle) -> Result<Test, String> {
+    let handle = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || Ok(handle.state::<App>().test()))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// The key itself, for the one case that needs it: somebody pressed the eye.
 ///
 /// Deliberately not part of the view, which is serialised for every command the
@@ -565,9 +689,10 @@ async fn save_model(
     endpoint: String,
     model: String,
     key: String,
+    reasoning: bool,
 ) -> Result<View, String> {
     let state = app.state::<App>();
-    state.save_model(&endpoint, &model, &key)?;
+    state.save_model(&endpoint, &model, &key, reasoning)?;
 
     Ok(state.view())
 }
@@ -598,7 +723,9 @@ pub fn run() {
             process,
             open,
             save_model,
-            reveal_key
+            reveal_key,
+            probe_models,
+            test_model
         ])
         .run(tauri::generate_context!())
         .expect("the window could not start");
@@ -742,6 +869,24 @@ mod tests {
 
         let shown = serde_json::to_string(&model_of(&with_key)).unwrap();
         assert!(!shown.contains("sk-example"), "{shown}");
+    }
+
+    /// Does not run by itself: it reaches a paid endpoint with whatever key is
+    /// in the configuration on this machine.
+    ///
+    /// Run it by hand after touching anything about the request —
+    /// `cargo test -p docfusion-gui -- --ignored` — because the only way to
+    /// know whether a model can read a picture is to show it one. In
+    /// particular it is the check on the drawn page: a glyph with a bit in the
+    /// wrong place is a number the model reads differently, and nothing that
+    /// does not look at the picture can tell.
+    #[test]
+    #[ignore = "reaches the network and spends money"]
+    fn the_configured_endpoint_can_read_the_test_page() {
+        match App::new().test() {
+            Test::Read => {}
+            other => panic!("{other:?}"),
+        }
     }
 
     // ── The report on a document ─────────────────────────────────────────────

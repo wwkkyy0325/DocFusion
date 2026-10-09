@@ -21,6 +21,91 @@ pub struct PageImage {
     pub pixels: Vec<u8>,
 }
 
+/// A picture of a number, big and plain, on a page-sized canvas.
+///
+/// Drawn here rather than shipped as a file: a fixture is a thing that goes
+/// missing, or turns out to be the wrong one, or drifts away from what it was a
+/// picture of. This is a handful of rectangles and a number nobody can mistake
+/// for anything else.
+///
+/// It exists to ask an endpoint whether it can *see*. A model can be reachable,
+/// listed, fast and blind — answering every request with fluent text about
+/// nothing — and no amount of asking it which models it serves will say so.
+/// Asking it to read a number is the smallest question that can.
+pub fn number_page(number: u32) -> PageImage {
+    /// Five wide, seven tall, one bit per pixel, most significant bit left.
+    const GLYPHS: [[u8; 7]; 10] = [
+        [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E], // 0
+        [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E], // 1
+        [0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F], // 2
+        [0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E], // 3
+        [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02], // 4
+        [0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E], // 5
+        [0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E], // 6
+        [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08], // 7
+        [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E], // 8
+        [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C], // 9
+    ];
+
+    /// How many pixels each bit of a glyph becomes. Large enough that the
+    /// number is unmistakable at whatever size a vision encoder reduces it to,
+    /// and small enough that the picture is not worth thinking about.
+    const SCALE: u32 = 24;
+    const GLYPH_WIDTH: u32 = 5;
+    const GLYPH_HEIGHT: u32 = 7;
+    const SPACING: u32 = 1;
+
+    let digits: Vec<u8> = number
+        .to_string()
+        .bytes()
+        .filter_map(|byte| byte.checked_sub(b'0'))
+        .filter(|digit| *digit < 10)
+        .collect();
+
+    let columns = digits.len() as u32 * (GLYPH_WIDTH + SPACING);
+    let margin = SCALE * 3;
+
+    let width = columns.saturating_sub(SPACING) * SCALE + margin * 2;
+    let height = GLYPH_HEIGHT * SCALE + margin * 2;
+
+    // White paper, black ink: the way round every page this tool will ever be
+    // shown is.
+    let mut pixels = vec![255u8; (width * height * 4) as usize];
+
+    for (position, digit) in digits.iter().enumerate() {
+        let glyph = GLYPHS[*digit as usize];
+        let left = margin + position as u32 * (GLYPH_WIDTH + SPACING) * SCALE;
+
+        for (row, bits) in glyph.iter().enumerate() {
+            for column in 0..GLYPH_WIDTH {
+                // Bit 4 is the leftmost of the five.
+                if bits & (1 << (GLYPH_WIDTH - 1 - column)) == 0 {
+                    continue;
+                }
+
+                let x = left + column * SCALE;
+                let y = margin + row as u32 * SCALE;
+                fill(&mut pixels, width, x, y, SCALE);
+            }
+        }
+    }
+
+    PageImage {
+        width,
+        height,
+        pixels,
+    }
+}
+
+fn fill(pixels: &mut [u8], width: u32, x: u32, y: u32, size: u32) {
+    for dy in 0..size {
+        for dx in 0..size {
+            let offset = (((y + dy) * width) + x + dx) as usize * 4;
+            pixels[offset..offset + 4].copy_from_slice(&[0, 0, 0, 255]);
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ImageError {
     #[error("the image could not be decoded: {0}")]
@@ -206,5 +291,40 @@ mod tests {
             pixels: Vec::new(),
         };
         assert!(image.is_empty());
+    }
+
+    /// The picture has to be a picture: ink on paper, and a number's worth of
+    /// it rather than a smudge or a blank page.
+    #[test]
+    fn the_test_page_is_a_number_drawn_in_ink_on_paper() {
+        let page = number_page(4_321);
+
+        assert!(
+            page.width > 400 && page.height > 200,
+            "{}x{}",
+            page.width,
+            page.height
+        );
+
+        let pixel = |index: usize| page.pixels[index * 4];
+        let dark = (0..page.pixels.len() / 4)
+            .filter(|index| pixel(*index) == 0)
+            .count();
+        let light = (0..page.pixels.len() / 4)
+            .filter(|index| pixel(*index) == 255)
+            .count();
+
+        assert!(dark > 10_000, "only {dark} pixels of ink");
+        assert!(light > dark * 4, "the page is mostly ink");
+    }
+
+    /// Two different numbers have to look different. The caller shows this to a
+    /// model and looks for the number in the answer, so a page that drew the
+    /// same thing whatever it was asked for would pass against a model that
+    /// reads nothing at all.
+    #[test]
+    fn different_numbers_are_drawn_differently() {
+        assert_ne!(number_page(1_234).pixels, number_page(4_321).pixels);
+        assert_ne!(number_page(4_321).pixels, number_page(1_234).pixels);
     }
 }

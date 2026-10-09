@@ -982,9 +982,137 @@ guessing would silently read documents with whatever it happened to be serving.
 Clearing both puts the tool back on the bundled engine, and the key that stays
 behind in the file does nothing.
 
+**Saved and working are different questions, and both are answered.** Saving is
+local and instant and says so. Whether the settings *work* is a remote question
+that costs a model call, so it is a button rather than a side effect — and its
+answer is a mark that stays: a dot and a word at the end of the title row,
+grey for untested, green for read the number, amber for did not.
+
+**The mark goes back to untested the moment anything it was about changes.**
+A tick that survived an edit would be a tick about the settings that used to be
+there, which is worse than no tick. Editing anything also says there are
+unsaved changes, so "on file" and "on screen" are never quietly different.
+
+**Errors land on the field they are about.** A form that says what is wrong at
+the foot of the page makes the reader walk from the sentence to the thing, and
+a reader who does not make that walk concludes the form is broken. The address
+that is missing its scheme gets a sentence under the address and a marked
+border, which is what every form anyone has used well does.
+
+**One place where the testing reflex was overruled.** Saving does not test. A
+test is a real model call that takes seconds to a minute, and a save that
+sometimes takes a minute is a save nobody presses twice — while a green tick
+nobody asked for is a green tick nobody trusts. The badge says untested, and the
+button beside it is one press away.
+
 **Saving takes effect immediately**, which is why the endpoint is behind a lock
 in the window's state. A settings page whose settings apply after a restart is
 not a settings page.
+
+**The model is picked from a `select`, and that is the end of a detour.**
+There was a hand-written dropdown here: an absolute `<ul role="listbox">` with
+filtering, arrow keys, Enter, Escape, a blur guard and a click-outside handler,
+written because a `datalist` popup cannot be styled. It rendered correctly in
+every check, and on the machine it was written for it was dead to the pointer.
+It could not be reproduced — the checks have no mouse — and after two rounds of
+guessing at it, guessing a third time was the wrong answer.
+
+A `select` is the mature component for choosing one of a known short list, and
+it is the one that cannot be dead to a click: keyboard, screen readers,
+type-ahead, popup placement and scrolling have been somebody else's problem for
+thirty years. `appearance: none` and a chevron of our own make the closed
+control identical to the text fields beside it; the popup is the browser's and
+follows `color-scheme`. About a hundred and twenty lines of this program's own
+control code were deleted to put it in.
+
+**Two controls, one of them showing.** A `select` once the endpoint has listed
+what it serves, and a text field when it has not — because a model nobody has
+listed can only be typed. The model that is set stays in the list even when the
+endpoint does not list it, or lists it as blind, because dropping it would
+change the setting silently.
+
+**A library was the other way to do this and was not taken.** The frontend has
+no build chain on purpose, so a component means vendoring a file and its styles
+— forty to fifty kilobytes of somebody else's code inside a window that
+currently has none — and it would still be code that can be dead to a click. If
+a custom-styled popup is ever wanted badly enough to pay that, this is the
+trade to revisit.
+
+**The model name is asked for rather than typed.** It is the one field on the
+page that no amount of care can fill in — a string that either exists on the far
+end or does not, and nothing a person can remember or check will say which. The
+endpoint lists its own models, and has since `probe()` was written; the window
+simply had never asked it. The field keeps the browser's arrow for a list and
+the action is a word underneath it, because an icon inside the field is drawn
+under the arrow the browser puts there.
+
+**Only models that can be shown a page are offered.** The endpoint says which
+those are — `input_modalities` per model, which DeepSeek reports and `probe()`
+used to discard — and a model that cannot see answers every scan with fluent
+text about nothing, so offering it is offering a configuration that fails on the
+first page. This is the failure the whole tool exists to make loud, and it would
+have been embarrassing to hand somebody the switch for it.
+
+Silence is not a refusal. Most OpenAI-compatible servers say nothing about their
+models, and reading that as a no would hide every model on every one of them.
+Three states, not two: yes, no, and nobody said — and only the no is left out,
+with the count in the sentence so that leaving it out is said rather than done
+quietly. `doctor` makes the same check on the *configured* model, which is the
+place it costs least to find out.
+
+**No catalogue is bundled, and that is a decision rather than an omission.**
+There are maintained ones — `models.dev`, LiteLLM's price and context table —
+and they update by being JSON in a repository, fetched from a CDN. Every one of
+them describes the *provider's* catalogue, and what matters here is what *the
+endpoint configured on this machine* serves. A bundled list is wrong about a
+self-hosted server from the moment it is built, and a fetched one adds a third
+party to a tool whose whole premise is that it works with nothing configured and
+no network. Prices, which is what the catalogues mostly add, are not something
+this tool has ever needed. The endpoint's own listing cannot be stale, and where
+it is silent — whether a model can *see* — the Test button answers by asking.
+
+**Thinking buys structure, not reading, and that is measured.** The same
+newspaper page read both ways produced an identical body; the only difference
+was that with thinking on the model classified the headings. The disagreement
+with the local engine did not move. So the tempting policy — read everything
+without thinking and escalate where a conflict appears — would spend 1.6× the
+time on exactly the pages where it changes nothing, because a conflict is a
+reading disagreement and thinking alters structural interpretation. It is a
+trade to make once, not a gate to open per conflict. One page, one run, and the
+way to settle it properly is `docfusion bench` both ways, which has not been
+run.
+
+**The test button shows the endpoint a picture of a number.** Not a connection
+check — a model can be reachable, listed, fast, and *blind*, answering every
+request in fluent text about nothing, which is what a GGUF model served without
+its multimodal projector does. Asking it to read a number off a page is the
+smallest question that separates "reachable" from "can see", and it is the one
+question a person configuring this by hand cannot ask. Three outcomes are said
+apart: it read it, it answered something else (with both, so the failure is
+visible), or it never answered (with its own account of why).
+
+**The picture is drawn, not shipped.** A fixture is a thing that goes missing,
+or turns out to be the wrong one, or drifts away from what it was a picture of.
+`image::number_page` is a five-by-seven bitmap font, ten glyphs of it, scaled up.
+It is also a page the tool has never been shown, which a corpus image would not
+be after the first run.
+
+**Thinking is asked to be off, and that is a measurement.** Asked to reply with
+one word, `deepseek-flash` spent 24 of its 26 output tokens reasoning; with
+thinking turned off the same request spent 1. The default is on, at high effort.
+Two things follow that are worth knowing beyond the bill: `temperature` is
+*ignored* while thinking is on — a reasoning model takes no sampling
+temperature — so the zero this client has always sent was doing nothing at all;
+and the content hash pins which engine reads a document, on the premise that the
+same bytes produce the same answer, which a model deliberating at high effort is
+a worse fit for than one that is not.
+
+**It is a switch rather than a constant**, because the request is what carries
+it: `thinking` is DeepSeek's spelling, servers that do not know the field ignore
+it (measured — DeepSeek ignores an invented one), and a strict provider rejects
+an unrecognised argument outright. Turning the switch on sends no field at all
+rather than a different one, which is the only version of "off" a provider that
+has never heard of it can accept.
 
 ### 11.3 Language
 

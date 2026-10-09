@@ -59,6 +59,20 @@ pub struct EndpointConfig {
     pub api_key: Option<String>,
     pub prompt: String,
     pub timeout: Duration,
+    /// Whether the model may think before it answers.
+    ///
+    /// Off, and that is a measurement rather than a preference. Asked to reply
+    /// with one word, `deepseek-flash` spent 24 of its 26 output tokens
+    /// reasoning; with thinking turned off the same request spent 1. The
+    /// default is on, at high effort.
+    ///
+    /// Transcription is not a task reasoning improves. This tool transcribes a
+    /// page and then has a second engine read it again, which is where its
+    /// confidence comes from — thinking about the first reading is not a
+    /// substitute for a second one. And thinking mode *ignores* `temperature`,
+    /// so the zero this client has always sent was doing nothing at all, which
+    /// is worth knowing about a value the code calls load-bearing.
+    pub reasoning: bool,
 }
 
 impl EndpointConfig {
@@ -69,6 +83,7 @@ impl EndpointConfig {
             api_key: None,
             prompt: DEFAULT_PROMPT.to_owned(),
             timeout: DEFAULT_TIMEOUT,
+            reasoning: false,
         }
     }
 
@@ -86,6 +101,11 @@ impl EndpointConfig {
         self.prompt = prompt.into();
         self
     }
+
+    pub fn with_reasoning(mut self, reasoning: bool) -> Self {
+        self.reasoning = reasoning;
+        self
+    }
 }
 
 /// What asking the endpoint what it serves turned up.
@@ -96,9 +116,34 @@ impl EndpointConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Probe {
     /// The models the endpoint says it is serving.
-    Models(Vec<String>),
+    Models(Vec<Model>),
     /// The endpoint answered, and does not list its models.
     Unlisted(String),
+}
+
+/// One model an endpoint says it serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Model {
+    pub id: String,
+    /// Whether it accepts images, as far as it has said.
+    ///
+    /// `None` is not a no. Most OpenAI-compatible servers report nothing about
+    /// their models, and reading silence as a refusal would hide every model on
+    /// every one of them. It is a yes, a no, or nobody said.
+    pub sees: Option<bool>,
+}
+
+impl Model {
+    /// Whether this is worth offering to somebody about to read scanned pages.
+    ///
+    /// A model that cannot be shown an image answers every scan with fluent
+    /// text about nothing, so offering it is offering a configuration that
+    /// fails on the first page — and fails in the way this tool exists to make
+    /// loud. What has not said is offered: hiding on silence would hide
+    /// everything on most servers.
+    pub fn reads_images(&self) -> bool {
+        self.sees != Some(false)
+    }
 }
 
 pub struct OpenAiEndpoint {
@@ -160,7 +205,7 @@ impl OpenAiEndpoint {
             .map_err(|error| self.unreadable(error))?;
 
         Ok(Probe::Models(
-            listing.data.into_iter().map(|model| model.id).collect(),
+            listing.data.into_iter().map(Model::from).collect(),
         ))
     }
 
@@ -230,19 +275,7 @@ impl VisionBackend for OpenAiEndpoint {
             .map_err(|error| BackendError::Failed(error.to_string()))?;
         let data_url = format!("data:image/png;base64,{}", BASE64.encode(&png));
 
-        let body = json!({
-            "model": self.config.model,
-            // Recognition is not a creative act, and a model that paraphrases
-            // is worse than one that does not.
-            "temperature": 0,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    { "type": "text", "text": self.config.prompt },
-                    { "type": "image_url", "image_url": { "url": data_url } },
-                ],
-            }],
-        });
+        let body = self.body(&data_url);
 
         let mut call = self
             .agent
@@ -266,6 +299,45 @@ impl VisionBackend for OpenAiEndpoint {
 }
 
 impl OpenAiEndpoint {
+    /// What this client sends for one page.
+    ///
+    /// A function of its own so that the request can be read in a test. Whether
+    /// thinking is asked for is the difference between a page costing one
+    /// output token and costing twenty-five, and nothing outside can see it.
+    fn body(&self, data_url: &str) -> serde_json::Value {
+        let mut body = json!({
+            "model": self.config.model,
+            // Recognition is not a creative act, and a model that paraphrases
+            // is worse than one that does not.
+            //
+            // No effect while thinking is on, which is the provider's default:
+            // a reasoning model takes no sampling temperature. Sending it is
+            // still right, because it is what a provider without a thinking
+            // mode will honour.
+            "temperature": 0,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": self.config.prompt },
+                    { "type": "image_url", "image_url": { "url": data_url } },
+                ],
+            }],
+        });
+
+        // Asked for rather than left to the provider, whose default is on and
+        // spends the majority of the output. See `EndpointConfig::reasoning`.
+        //
+        // This is DeepSeek's spelling of it. Servers that do not know the field
+        // ignore it — measured, against DeepSeek, which ignores an invented one
+        // — but a strict provider rejects an unrecognised argument outright,
+        // which is what `reasoning = true` is for.
+        if !self.config.reasoning {
+            body["thinking"] = json!({ "type": "disabled" });
+        }
+
+        body
+    }
+
     fn to_blocks(&self, completion: Completion, page: u32) -> Result<Vec<Block>, BackendError> {
         let Completion { choices, usage } = completion;
 
@@ -388,12 +460,31 @@ struct Usage {
 #[derive(Debug, Deserialize)]
 struct ModelList {
     #[serde(default)]
-    data: Vec<Model>,
+    data: Vec<Listed>,
 }
 
+/// A model as the listing spells it.
+///
+/// A type of its own rather than the public one, because this is the shape
+/// somebody else's server sends and the public one is the shape this program
+/// means. The two are allowed to differ, and the day they do is the day this
+/// being separate saves a confusing edit.
 #[derive(Debug, Deserialize)]
-struct Model {
+struct Listed {
     id: String,
+    #[serde(default)]
+    input_modalities: Option<Vec<String>>,
+}
+
+impl From<Listed> for Model {
+    fn from(listed: Listed) -> Self {
+        Self {
+            sees: listed
+                .input_modalities
+                .map(|modalities| modalities.iter().any(|modality| modality == "image")),
+            id: listed.id,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -627,14 +718,60 @@ mod tests {
 
     #[test]
     fn probing_lists_the_models_the_endpoint_serves() {
+        // No modalities reported, which is what most servers do.
         let address = serving(r#"{"data":[{"id":"paddleocr-vl"},{"id":"glm-ocr"}]}"#);
 
         let probe = endpoint(&address).probe().expect("probe");
 
         assert_eq!(
             probe,
-            Probe::Models(vec!["paddleocr-vl".to_owned(), "glm-ocr".to_owned()])
+            Probe::Models(vec![
+                Model {
+                    id: "paddleocr-vl".to_owned(),
+                    sees: None,
+                },
+                Model {
+                    id: "glm-ocr".to_owned(),
+                    sees: None,
+                },
+            ])
         );
+    }
+
+    /// The listing that says which of its models can be shown a page. This is
+    /// the difference between offering a model that reads scans and offering one
+    /// that answers every scan with fluent text about nothing.
+    #[test]
+    fn the_listing_says_which_models_can_be_shown_a_page() {
+        let address = serving(
+            r#"{"data":[
+                {"id":"sees","input_modalities":["text","image"]},
+                {"id":"blind","input_modalities":["text"]}
+            ]}"#,
+        );
+
+        let probe = endpoint(&address).probe().expect("probe");
+        let Probe::Models(models) = probe else {
+            panic!("expected a listing, got {probe:?}");
+        };
+
+        assert_eq!(models[0].id, "sees");
+        assert!(models[0].reads_images());
+        assert_eq!(models[1].id, "blind");
+        assert!(!models[1].reads_images());
+    }
+
+    /// Silence is not a refusal. Most OpenAI-compatible servers say nothing
+    /// about their models, and reading that as a no would hide every model on
+    /// every one of them.
+    #[test]
+    fn a_model_that_says_nothing_is_not_a_model_that_cannot_see() {
+        let silent = Model {
+            id: "local".to_owned(),
+            sees: None,
+        };
+
+        assert!(silent.reads_images());
     }
 
     /// Nothing requires an endpoint to implement the listing, and a server that
@@ -773,6 +910,32 @@ mod tests {
 
         assert_eq!(blocks[0].kind, BlockKind::Heading { level: 1 });
         assert_eq!(blocks[0].text, "Results and discussion");
+    }
+
+    /// The provider's default is to think, and thinking is most of what it
+    /// writes. Measured: asked for one word, `deepseek-flash` spent 24 of its
+    /// 26 output tokens reasoning, and 1 with this asked for. Nothing outside
+    /// the request can see the difference, so this is where it is pinned.
+    #[test]
+    fn thinking_is_asked_to_be_off() {
+        let body = endpoint("http://127.0.0.1:1").body("data:image/png;base64,AAAA");
+
+        assert_eq!(body["thinking"]["type"], "disabled");
+        // The prompt and the picture both have to survive it.
+        assert!(body["messages"][0]["content"][1]["image_url"]["url"].is_string());
+    }
+
+    /// And asking for the opposite means asking for nothing, rather than asking
+    /// for thinking in a spelling the provider might not know. A provider that
+    /// rejects an unrecognised argument gets a request it recognises.
+    #[test]
+    fn a_provider_that_does_not_know_the_field_is_not_sent_it() {
+        let config = EndpointConfig::new("http://127.0.0.1:1", "local").with_reasoning(true);
+        let body = OpenAiEndpoint::new(config).body("data:image/png;base64,AAAA");
+
+        assert!(body.get("thinking").is_none(), "{body}");
+        // Still a request, not an empty one.
+        assert_eq!(body["temperature"], 0);
     }
 
     #[test]
