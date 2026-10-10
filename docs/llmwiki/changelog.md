@@ -4,6 +4,28 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — A heading is written on one line
+
+**What:** A heading whose words ran onto a second line on the page was written
+with the break left in, and Markdown ends a heading at the first newline — so a
+two-line heading came out as a heading followed by a paragraph, and its second
+half matched nothing. Measured: headings 21 of 64 to **25 of 64**, mean loss
+0.313 to **0.300**.
+
+**Why it looked like a reading fault and was not:** the front matter's title
+held both lines the whole time — `SECURITIES AND EXCHANGE
+COMMISSION` — which is
+how it was found. The block was right and the writing of it was wrong.
+
+**The trade it makes:** a newspaper page has a kicker above a headline, the
+layout model puts both in one region, and that reference calls them two headings
+where the other one calls its two lines one. Joining gains 071 four and costs
+081 one. The two cases differ in **font size** — a wrapped heading's lines are
+the same size and a kicker's are not — and that is the one thing the renderer
+cannot see. Acting on it needs the block built where the lines are.
+
+---
+
 ## 2026-10-10 — Reading a table from its rules, built and not taken
 
 **What:** Nothing shipped. A table was read from the lines a form is drawn with,

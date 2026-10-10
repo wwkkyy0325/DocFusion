@@ -26,7 +26,7 @@ Fixed in the scorer, the same way and for the same reason as the table row that
 Markdown had split across two lines. The words still have to be the words; only
 the depth is dropped.
 
-### 2. A heading written over two lines is cut in half — not done
+### 2. A heading written over two lines is cut in half — done
 
 The biggest single loss is 071, a Security and Exchange Commission notice with
 three columns and seven headings, of which the engine finds none. Looked at
@@ -46,8 +46,23 @@ Comment Request
 Review;`. The layout model marks the first line as a heading and the second as
 body text, so the heading loses its last word or two and matches nothing.
 
-That is an engine fault and a fixable one: a heading region whose next line sits
-directly under it, at a comparable size, is the same heading continued.
+That was **not** the engine's reading but its writing. The front matter's title
+held both lines the whole time — `SECURITIES AND EXCHANGE
+COMMISSION` — so the
+block was right and the renderer wrote it with the break left in, and Markdown
+ends a heading at the first newline. One line fixes it: 071 goes from 0 of 7 to
+**4 of 7**, the corpus from 21 of 64 to **25 of 64**, the mean loss from 0.313 to
+**0.300**.
+
+**One case gets worse, and the two cases are genuinely different.** A newspaper
+page has a kicker above a headline —
+`中宣部、中央文明办等14部委下发通知要求` over `2011年深入开展文化科技卫生"三下乡"活动`
+— the layout model puts both in one region, and that reference calls them two
+headings, where 071's reference calls its two lines one. The difference that
+tells them apart is the one thing the renderer cannot see: the two lines of a
+wrapped heading are the same size and a kicker is not. 081 goes from 5 of 13 to
+4, and acting on the heights needs the block built where the lines are rather
+than where they are written.
 
 **Two of the seven are unreachable whatever is done.** The reference has
 `Submlsslon for OMB Revlew; Comment Request` — the ground truth itself carries
