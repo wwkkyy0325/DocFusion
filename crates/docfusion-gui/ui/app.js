@@ -44,6 +44,20 @@ const TEXT = {
     to_review: (n) => `${n} to review`,
     status: { done: "done", partial: "partial", failed: "failed" },
 
+    view_record: "View",
+    delete_record: "Delete",
+    ask_title: "What should happen to this document?",
+    ask_about: (name) => `“${name}” is in the knowledge base.`,
+    remove_record: "Remove from the list",
+    ask_remove_what:
+      "Take it out of the list and leave its Markdown where it is. Reading the document again puts it back.",
+    ask_delete_what: (path) => `Delete ${path} as well. This cannot be undone.`,
+    ask_delete_nothing:
+      "Its Markdown is no longer on disk, so there is no file to delete.",
+    ask_source:
+      "Neither one touches the document you chose: it was never copied into the knowledge base.",
+    cancel: "Cancel",
+
     dialog_title: "Choose a document",
 
     settings: "Settings",
@@ -137,6 +151,7 @@ const TEXT = {
       "nothing-to-read": "It was read, and there was nothing in it.",
       download:
         "The models this app reads pages with are not here, or could not be downloaded. Open Settings — Models on this machine, and download them.",
+      delete: "The document could not be taken out of the knowledge base.",
       unknown: "Something went wrong.",
     },
   },
@@ -170,6 +185,18 @@ const TEXT = {
     nothing: "还没有记录。",
     to_review: (n) => `${n} 处待确认`,
     status: { done: "完成", partial: "部分完成", failed: "失败" },
+
+    view_record: "查看",
+    delete_record: "删除",
+    ask_title: "这份文档怎么处理？",
+    ask_about: (name) => `「${name}」已经在知识库里。`,
+    remove_record: "移出列表",
+    ask_remove_what:
+      "只把它从列表里去掉，Markdown 文件留在原处。把原文档再加进来，它就会回来。",
+    ask_delete_what: (path) => `连 ${path} 一起删掉，无法恢复。`,
+    ask_delete_nothing: "它的 Markdown 已经不在磁盘上了，没有文件可以删。",
+    ask_source: "两种做法都不会动你选的那份原文档：它从来没有被复制进知识库。",
+    cancel: "取消",
 
     dialog_title: "选择文档",
 
@@ -262,6 +289,7 @@ const TEXT = {
       "nothing-to-read": "读出来了，但里面是空的。",
       download:
         "本机模型还没装好，或者没下载成功。到「设置 — 本机模型」把它下载下来。",
+      delete: "这份文档没能从知识库里拿掉。",
       unknown: "出错了。",
     },
   },
@@ -412,6 +440,13 @@ function applyLang() {
     ["local-hint", words.local_hint],
     ["get-local", words.local_get],
     ["stop-local", words.local_stop],
+    ["ask-title", words.ask_title],
+    ["ask-remove-label", words.remove_record],
+    ["ask-delete-label", words.delete_record],
+    ["ask-source", words.ask_source],
+    ["ask-cancel", words.cancel],
+    ["ask-remove", words.remove_record],
+    ["ask-delete", words.delete_record],
   ]) {
     el(id).textContent = text;
   }
@@ -693,6 +728,17 @@ function showFindings() {
   el("findings")?.scrollIntoView({ block: "start" });
 }
 
+/// The list of what has been read, newest first.
+///
+/// A row is not a button. It was one, which made clicking anywhere on it a way
+/// of leaving the list — and the two things somebody actually wants from a row
+/// here, look at it again and get rid of it, are not the same act and were not
+/// worth sharing a target.
+///
+/// The buttons are drawn rather than hidden until hover, which is the opposite
+/// of what the row's own clickability would have wanted. With the row itself
+/// inert, a control that appears only under the pointer is a control that
+/// cannot be found; the destructive one is quiet enough at rest not to shout.
 function drawRecords(list) {
   const records = el("records");
   records.replaceChildren();
@@ -704,26 +750,93 @@ function drawRecords(list) {
 
   for (const record of [...list].reverse()) {
     const item = document.createElement("li");
-    const open = button("", "", () => openRecord(record));
+    item.className = "record";
 
     // A status this frontend does not know is shown as it arrived rather than
     // hidden: the three it does know are the three the index can hold, and
     // anything else is worth seeing.
     const status = t().status[record.status] ?? record.status;
 
-    open.append(node("span", "name", record.name));
-    open.append(
-      node(
-        "span",
-        "meta",
-        [status, record.conflicts ? t().to_review(record.conflicts) : null, record.created_at]
-          .filter(Boolean)
-          .join(" · "),
-      ),
+    // The row shows one line of it, so the rest has to be somewhere: a name cut
+    // off with nothing to reveal it is a name that cannot be told from another.
+    const name = node("span", "name", record.name);
+    name.title = record.name;
+
+    item.append(
+      describe("what", [
+        name,
+        node(
+          "span",
+          "meta",
+          [status, record.conflicts ? t().to_review(record.conflicts) : null, record.created_at]
+            .filter(Boolean)
+            .join(" · "),
+        ),
+      ]),
+      describe("row-actions", [
+        button(t().view_record, "small", () => openRecord(record)),
+        button(t().delete_record, "small danger", () => askAbout(record)),
+      ]),
     );
 
-    item.append(open);
     records.append(item);
+  }
+}
+
+/// The record a question is being asked about, or `null`.
+///
+/// Deleting a file cannot be undone and taking a record out of the list can,
+/// and they are two different sentences. So one button asks which was meant
+/// rather than guessing between them: a button that guessed would be a button
+/// that sometimes deleted a document.
+let asking = null;
+
+/// Opens the question, filled in for this record.
+function askAbout(record) {
+  asking = record;
+
+  el("ask-about").textContent = t().ask_about(record.name);
+  el("ask-remove-what").textContent = t().ask_remove_what;
+
+  // Said in the row rather than left to a button that does nothing when
+  // pressed, which is a thing people press twice.
+  el("ask-delete-what").textContent = record.on_disk
+    ? t().ask_delete_what(record.output)
+    : t().ask_delete_nothing;
+  el("ask-delete").disabled = !record.on_disk;
+
+  el("record-question").showModal();
+}
+
+/// Does whichever of the two was asked for.
+///
+/// The command takes the id rather than the row's position, and the question is
+/// not asked again on the other side: a command that popped its own
+/// confirmation could not be driven by anything but a person.
+async function answer(to) {
+  const record = asking;
+  if (!record) return;
+
+  el("record-question").close();
+  asking = null;
+
+  try {
+    const view = await invoke(to, { id: record.id });
+    const was_showing = current?.screen?.kind === "ready" && current.screen.id === record.id;
+
+    current = view;
+    drawProblem(view.problem);
+    drawRecords(view.records);
+
+    // The pane only when what it was showing has just gone, which the other
+    // side has already decided: redrawing it otherwise scrolls a long document
+    // back to the top, and looking at the list was not meant to cost that.
+    if (was_showing) {
+      drawScreen(view);
+      drawStatus(view.screen);
+    }
+  } catch (error) {
+    failed(record.name, error);
   }
 }
 
@@ -1366,6 +1479,15 @@ el("fetch-models").addEventListener("click", fetchModels);
 el("set-enabled").addEventListener("change", drawEnabled);
 el("get-local").addEventListener("click", getLocalModels);
 el("stop-local").addEventListener("click", stopLocalModels);
+
+el("ask-cancel").addEventListener("click", () => el("record-question").close());
+el("ask-remove").addEventListener("click", () => answer("forget_record"));
+el("ask-delete").addEventListener("click", () => answer("delete_record"));
+
+// Escape and a press outside both close a modal `dialog` without running any
+// of the code above, so the row the question was about is dropped here instead
+// — otherwise the next Delete would act on whatever was asked about last.
+el("record-question").addEventListener("close", () => (asking = null));
 
 // Anything the answer was about: changing it makes the answer about something
 // that is no longer on screen.

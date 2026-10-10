@@ -978,6 +978,8 @@ documented commands rather than something that could be verified here.
 docfusion add <paths...>       Process and ingest
 docfusion show <id|path>       Emit Markdown to stdout
 docfusion list [--status]      List documents
+docfusion forget <id|path>     Take it out of the index; the Markdown stays
+docfusion delete <id|path>     Delete it and its Markdown; never the source
 docfusion reconcile            Repair the index against the file tree
 docfusion reindex --stale      Reprocess after an engine/model/prompt change
 docfusion bench --set <dir>    Compare backends on a golden corpus
@@ -1073,13 +1075,55 @@ Document tab                   Records tab
 ├──────────────────────┤      ├──────────────────────┤
 │ # 2024 Annual Report │      │ annual report.pdf    │
 │ Revenue 1.2B, +12%   │      │ done · 2 to review   │
-│ ┌────┬──────┬─────┐  │      │                      │
-│ │Year│ Rev  │ YoY │  │      │ scan-0007.png        │
-│ └────┴──────┴─────┘  │      │ done                 │
-├──────────────────────┤      │                      │
-│ rapidocr · ⚠ 3  [Copy]│     │                      │
+│ ┌────┬──────┬─────┐  │      │         [查看][删除] │
+│ │Year│ Rev  │ YoY │  │      │                      │
+│ └────┴──────┴─────┘  │      │ scan-0007.png        │
+├──────────────────────┤      │ done                 │
+│ rapidocr · ⚠ 3  [Copy]│     │         [查看][删除] │
 └──────────────────────┘      └──────────────────────┘
 ```
+
+**A row is not a button.** It was one, and clicking anywhere on it opened the
+document — which made reading a list of what had been read into a way of
+accidentally leaving it, and left the two things somebody actually wants from a
+row, *look at it again* and *get rid of it*, sharing no target at all. Two
+buttons, drawn rather than revealed on hover: with the row itself inert, a
+control that appears only under the pointer is a control that cannot be found.
+
+**Two ways out, and never one button that guesses.** Taking a document out of
+the knowledge base can mean two different things here, and they destroy
+different amounts:
+
+| | Removes | Leaves |
+|---|---|---|
+| Remove from the list | the index row | the Markdown, at `docs/<name>.md` |
+| Delete the file | the index row **and** the Markdown | nothing |
+
+So a row's Delete asks, in a modal `dialog` — the browser's, for the same reason
+the settings tab's model field is a `select`: the focus trap, the Escape key and
+the backdrop are decades of somebody else's problem, and a hand-built overlay is
+the thing in this window that has gone wrong most often. Both ways out are
+described in place with a sentence each, because the thing being decided is
+whether a file is destroyed and it should not have to be inferred from the
+wording of a button. The irreversible one is disabled with the reason said in
+its own row rather than left greyed out — a greyed-out button is a thing people
+press twice.
+
+**Neither way touches the document somebody chose.** It was never copied into
+the knowledge base, so what goes is what this program wrote, and the question
+says exactly that. Both are consistent with what `reconcile` already believes: a
+record whose file has gone is drift it forgets, and a file whose record has gone
+is untracked drift it reports and does not put back.
+
+**The operations live in `Pipeline`, not in the window.** `Pipeline::forget` and
+`Pipeline::delete`, so that `docfusion forget` and `docfusion delete` are the
+same two acts through the same code — the rule in §11.1 about the window not
+being the only place a capability lives, applied. The command line takes a
+document the way a person has it, which includes **the first eight characters of
+an id**, since that is what `list` prints and nobody types a 64-character hash.
+A prefix naming more than one document is refused rather than guessed at: these
+are the commands that take a document *away*, and "whichever you meant" is not
+an answer worth giving.
 
 - **The two views are tabs, not a drawer.** A drawer is an overlay: it covers the
   document, it has to be dismissed before the document can be read, and on this

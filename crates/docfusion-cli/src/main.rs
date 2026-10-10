@@ -216,6 +216,26 @@ enum Command {
         status: Option<String>,
     },
 
+    /// Take a document out of the index, leaving its Markdown where it is.
+    ///
+    /// The reversible half. The file stays on disk and `reconcile` reports it
+    /// as untracked; reading the source again puts it back.
+    Forget {
+        /// The document: its id, the first few characters of one, its path, or
+        /// its file name. `docfusion list` prints the first eight of the id.
+        document: String,
+    },
+
+    /// Delete a document and the Markdown it was written to.
+    ///
+    /// Irreversible, and the only command here that destroys anything. The
+    /// source you read is not touched: it was never copied into the knowledge
+    /// base, and what goes is what this program wrote.
+    Delete {
+        /// The document, named the way `forget` takes it.
+        document: String,
+    },
+
     /// Repair the index against the file tree.
     Reconcile {
         /// Apply the repairs instead of only reporting them.
@@ -286,6 +306,8 @@ fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
         Command::Add { paths } => add(cli, reporter, paths),
         Command::Show { document } => show(cli, reporter, document),
         Command::List { status } => list(cli, reporter, status.as_deref()),
+        Command::Forget { document } => forget(cli, reporter, document),
+        Command::Delete { document } => delete(cli, reporter, document),
         Command::Reconcile { fix } => reconcile(cli, reporter, *fix),
         Command::Bench { set, engine } => run_bench(cli, reporter, set, engine.as_deref()),
         Command::Doctor => doctor::run(cli, reporter),
@@ -460,6 +482,79 @@ fn list(cli: &Cli, reporter: &Reporter, status: Option<&str>) -> Result<u8, CliE
             ),
         );
     }
+
+    Ok(OK)
+}
+
+/// Takes a document out of the index, leaving its Markdown where it is.
+///
+/// Named `forget` rather than `remove` because that is what it does: the
+/// Knowledge base is an index over a file tree, and this drops the index entry.
+/// The file it left is still there to read, and reading the source again brings
+/// the document back.
+fn forget(cli: &Cli, reporter: &Reporter, document: &str) -> Result<u8, CliError> {
+    let pipeline = open(cli)?;
+    let record = pipeline.forget(document)?;
+
+    reporter.record(
+        json!({
+            "command": "forget",
+            "id": record.id,
+            "source": record.source_path,
+            "output": record.output_path,
+            "dry_run": cli.dry_run,
+        }),
+        format!(
+            "forgot {}  (still at {})",
+            record.source_path.display(),
+            record.output_path.display()
+        ),
+    );
+
+    Ok(OK)
+}
+
+/// Deletes a document and the Markdown it was written to.
+///
+/// The irreversible one, and the only command here that destroys anything, so
+/// it is the one that has to obey `--dry-run`. A global flag that quietly did
+/// nothing on the one command it matters most for would be worse than not
+/// having it.
+fn delete(cli: &Cli, reporter: &Reporter, document: &str) -> Result<u8, CliError> {
+    let pipeline = open(cli)?;
+    let record = pipeline.resolve(document)?;
+
+    if cli.dry_run {
+        reporter.record(
+            json!({
+                "command": "delete",
+                "id": record.id,
+                "source": record.source_path,
+                "output": record.output_path,
+                "dry_run": true,
+            }),
+            format!("would delete {}", record.output_path.display()),
+        );
+
+        return Ok(OK);
+    }
+
+    pipeline.delete(&record.id)?;
+
+    reporter.record(
+        json!({
+            "command": "delete",
+            "id": record.id,
+            "source": record.source_path,
+            "output": record.output_path,
+            "dry_run": false,
+        }),
+        format!(
+            "deleted {}  ({} itself is untouched)",
+            record.output_path.display(),
+            record.source_path.display()
+        ),
+    );
 
     Ok(OK)
 }

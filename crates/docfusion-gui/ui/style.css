@@ -24,6 +24,15 @@
   --ok: light-dark(#15803d, #4ade80);
   --warn: light-dark(#b45309, #e8b04b);
   --warn-wash: light-dark(#fffbeb, #2a2113);
+  /* Red, and used for one thing: the half of a choice that cannot be undone.
+     The warn colour above is amber and means "look at this" — a page the
+     engines disagreed about, a model that is not downloaded. This one means
+     the file goes. Nothing else in the window is red, so the colour is the
+     whole of the warning and it stays worth noticing. */
+  --danger: light-dark(#b91c1c, #f87171);
+  /* What the pointer lands on for a destructive control: a wash of the same
+     red rather than the neutral one every other button hovers into. */
+  --danger-wash: light-dark(#fef2f2, #2c1a1a);
 }
 
 :root[data-theme="light"] { color-scheme: light; }
@@ -130,6 +139,52 @@ button.primary {
 }
 button.primary:hover { filter: brightness(1.08); }
 button.quiet { border-color: transparent; color: var(--muted); }
+
+/* One size down, for a control that belongs to a row rather than to a page:
+   the list, and the card in the settings tab. */
+button.small {
+  flex: none;
+  padding: 4px 11px;
+  font-size: 12px;
+}
+
+/* The thing that destroys something. Quiet at rest and red under the pointer,
+   which is the shape a destructive control takes everywhere: it should be
+   findable when looked for and not the thing the eye lands on first.
+
+   `border-color: transparent` at rest so the row is names and two plain words
+   rather than two boxes — and the border comes back with the colour, so the
+   button does not change size as the pointer arrives. */
+button.danger {
+  color: var(--muted);
+  border-color: transparent;
+}
+
+button.danger:hover {
+  color: var(--danger);
+  background: var(--danger-wash);
+  border-color: var(--danger);
+}
+
+/* …except in the question, where it is the answer somebody has already said
+   they want. There the red is filled rather than hinted at, because a button
+   that deletes a file should not look like the one beside it that does not. */
+button.danger.filled {
+  color: var(--on-accent);
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+button.danger.filled:hover {
+  filter: brightness(1.1);
+  background: var(--danger);
+}
+
+/* Greyed out with the sentence explaining why, in the row above it. */
+button.danger.filled:disabled {
+  background: var(--danger);
+  border-color: var(--danger);
+}
 
 /* ── tabs ───────────────────────────────────────────────────────────────── */
 
@@ -472,23 +527,49 @@ button.link:hover { background: none; filter: brightness(1.15); }
 
 /* ── records ────────────────────────────────────────────────────────────── */
 
+/* Centred and bounded like the other two panels, so the three tabs have the
+   same shape and a wide window does not leave the list as a ribbon down one
+   side of it. */
 #records {
   list-style: none;
-  margin: 0;
-  padding: 6px;
-}
-
-#records li { border-radius: 7px; }
-
-#records button {
-  display: block;
+  margin: 0 auto;
+  padding: 6px 10px 24px;
   width: 100%;
-  text-align: left;
-  border-color: transparent;
-  padding: 8px 10px;
+  max-width: 34rem;
 }
 
-#records .name { display: block; }
+/* One row: what was read, and the two things that can be done with it.
+   `align-items: flex-start` rather than centre, so that a name long enough to
+   wrap stays level with the buttons at the top rather than drifting down the
+   middle of them. */
+#records .record {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 6px 8px 10px;
+  border-radius: 7px;
+}
+
+#records .record:hover { background: var(--wash); }
+
+/* `min-width: 0` is what lets a long name be the thing that gives when the row
+   runs out of room. Without it a flex item refuses to shrink below its content
+   and the buttons are pushed off the edge. */
+#records .what {
+  flex: 1;
+  min-width: 0;
+}
+
+/* One line, cut off with an ellipsis rather than wrapped. The name is a
+   filename, and a row that grows to three lines because somebody's file is
+   called something long is a list nobody can scan — the whole name is in the
+   title, one hover away. */
+#records .name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 #records .meta {
   display: block;
@@ -497,7 +578,21 @@ button.link:hover { background: none; filter: brightness(1.15); }
   margin-top: 2px;
 }
 
-#records .none { color: var(--muted); padding: 12px 10px; font-size: 13px; }
+/* Held to the top of the row, so that a wrapped name does not carry them
+   down with it. */
+#records .row-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+#records .none {
+  color: var(--muted);
+  padding: 24px 10px;
+  font-size: 13px;
+  text-align: center;
+}
 
 /* ── settings ───────────────────────────────────────────────────────────── */
 
@@ -776,12 +871,6 @@ button.link:hover { background: none; filter: brightness(1.15); }
    pointer that started it. */
 .model-row button { margin-left: auto; }
 
-.model-row button.small {
-  flex: none;
-  padding: 4px 11px;
-  font-size: 12px;
-}
-
 /* Installed says so in the colour of a thing that is done. */
 .model[data-state="ready"] .model-state { color: var(--ok); }
 
@@ -805,3 +894,76 @@ button.link:hover { background: none; filter: brightness(1.15); }
 #set-note:empty { display: none; }
 #set-note.ok { color: var(--accent); }
 #set-note.bad { color: var(--warn); }
+
+/* ── the question a row's Delete asks ───────────────────────────────────── */
+
+/* `dialog` centres itself and takes itself out of the flow; what is left is
+   the shape. Everything the browser does with it — the focus trap, Escape, the
+   backdrop, keeping the page behind it inert — is why this is a `dialog`
+   rather than a div that looks like one. */
+#record-question {
+  width: min(30rem, calc(100vw - 32px));
+  padding: 20px 22px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* Dimmed rather than hidden, so that what is being asked about stays visible
+   behind the question. `color-scheme` would draw it black in both themes. */
+#record-question::backdrop {
+  background: light-dark(rgb(15 23 42 / 0.35), rgb(0 0 0 / 0.55));
+}
+
+#record-question h2 {
+  margin: 0 0 6px;
+  font-size: 1.05em;
+}
+
+#record-question .lead {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* Two ways out, each with the sentence that says what it does. A term and its
+   explanation rather than two buttons and a hope: the thing being decided here
+   is whether a file is destroyed, and it should not have to be inferred from
+   the wording of a button. */
+.ways {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ways dt {
+  font-weight: 600;
+  margin-top: 10px;
+}
+
+.ways dd {
+  margin: 2px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+#record-question .hint {
+  margin: 14px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+#record-question .actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+/* Pushed to the far end, so the two that do something are together and the one
+   that does nothing is not between them and the edge the eye reads to. */
+#record-question #ask-cancel { margin-right: auto; }

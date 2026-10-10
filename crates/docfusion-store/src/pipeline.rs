@@ -45,6 +45,24 @@ pub enum PipelineError {
 
     #[error("the extractor produced a document with no pages, so it has no engine to record")]
     UnidentifiableEngine,
+
+    #[error("no document in the knowledge base matches {query}")]
+    NoSuchDocument { query: String },
+
+    #[error("{query} names {count} documents; give more of the id")]
+    Ambiguous { query: String, count: usize },
+
+    #[error("could not delete {path}: {source}")]
+    Delete {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    /// Refused rather than attempted, which is the one thing here that has to
+    /// be: this is the message that stops a delete from following a path out
+    /// of the knowledge base.
+    #[error("{path} is not inside the knowledge base, so nothing was deleted")]
+    Outside { path: PathBuf },
 }
 
 /// Whether a run should change anything.
@@ -95,6 +113,123 @@ impl Pipeline {
 
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// The document `query` names.
+    ///
+    /// Everything [`Manifest::find`] accepts — an id, a path, a file name —
+    /// plus the **first few characters of an id**, which is what somebody
+    /// working from `docfusion list` actually has in front of them: an id is a
+    /// 64-character hash of the document's bytes, and nobody types one.
+    ///
+    /// A prefix naming more than one document is refused rather than guessed
+    /// at. The two commands that take a document by name are the two that take
+    /// one *away*, and "whichever of these you meant" is not an answer worth
+    /// giving when the answer might be the wrong document.
+    pub fn resolve(&self, query: &str) -> Result<DocumentRecord, PipelineError> {
+        let query = query.trim();
+
+        if let Some(record) = self.manifest.find(query)? {
+            return Ok(record);
+        }
+
+        let named: Vec<DocumentRecord> = if query.is_empty() {
+            Vec::new()
+        } else {
+            self.manifest
+                .all()?
+                .into_iter()
+                .filter(|record| record.id.starts_with(query))
+                .collect()
+        };
+
+        match named.len() {
+            0 => Err(PipelineError::NoSuchDocument {
+                query: query.to_owned(),
+            }),
+            1 => Ok(named.into_iter().next().expect("one, just counted")),
+            count => Err(PipelineError::Ambiguous {
+                query: query.to_owned(),
+                count,
+            }),
+        }
+    }
+
+    /// Takes a document out of the index and leaves its Markdown where it is.
+    ///
+    /// The reversible half of taking a document out of the knowledge base, and
+    /// the reason the two are separate functions rather than one with a flag:
+    /// they are two different sentences, and one of them destroys a file.
+    ///
+    /// Nothing is lost, so nothing here is refused for being destructive. The
+    /// document becomes untracked — `reconcile` reports it and does not put it
+    /// back — and reading the source again restores it.
+    ///
+    /// Answers with what it removed, because the caller has to name it: the
+    /// window shows the list without the row and the command line prints which
+    /// document it just forgot.
+    pub fn forget(&self, query: &str) -> Result<DocumentRecord, PipelineError> {
+        let record = self.resolve(query)?;
+        self.manifest.forget(&record.id)?;
+
+        Ok(record)
+    }
+
+    /// Deletes a document and the Markdown it was written to.
+    ///
+    /// **The file goes first.** A row left behind by a file that would not
+    /// delete is a row that opens onto nothing, which every reader of the index
+    /// already knows how to show; a file left behind by a row that was removed
+    /// is a document nobody can find and nothing that would report it. The
+    /// order is chosen so that a failure leaves something somebody can act on.
+    ///
+    /// **The source document is not here to delete.** The PDF or the picture
+    /// was never copied into the knowledge base, so what goes is what this
+    /// program wrote — which is why both front ends can say that neither way of
+    /// taking a document out touches the file anybody chose.
+    pub fn delete(&self, query: &str) -> Result<DocumentRecord, PipelineError> {
+        let record = self.resolve(query)?;
+        let path = self.output_of(&record)?;
+
+        fs::remove_file(&path).map_err(|source| PipelineError::Delete {
+            path: path.clone(),
+            source,
+        })?;
+
+        self.manifest.forget(&record.id)?;
+
+        Ok(record)
+    }
+
+    /// Where a record's Markdown is, once it is known to be somewhere this
+    /// pipeline is allowed to reach.
+    ///
+    /// The one destructive command in the program, and the path comes out of a
+    /// database file somebody could have edited by hand. So it is checked
+    /// against what a record's output may be rather than trusted.
+    ///
+    /// `starts_with(root)` is not the check, and looks like it is: it walks
+    /// components and `..` is one, so `root.join("../../x")` starts with `root`
+    /// and the guard somebody reaches for first passes. A leading slash and a
+    /// drive letter have the same problem, which is why all three are refused
+    /// before the join rather than after it.
+    fn output_of(&self, record: &DocumentRecord) -> Result<PathBuf, PipelineError> {
+        let outside = record.output_path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        });
+
+        if outside {
+            return Err(PipelineError::Outside {
+                path: record.output_path.clone(),
+            });
+        }
+
+        Ok(self.root.join(&record.output_path))
     }
 
     pub fn ingest(&mut self, source: &Path, mode: Mode) -> Result<Outcome, PipelineError> {
@@ -293,6 +428,164 @@ mod tests {
 
     fn markdown_at(path: &Path) -> String {
         fs::read_to_string(path).expect("read output")
+    }
+
+    /// Taking a document out of the index leaves the document where it is.
+    ///
+    /// The whole difference between the two ways out, and the reason one of
+    /// them is offered without a confirmation: nothing is destroyed, so there
+    /// is nothing to be sure about.
+    #[test]
+    fn forgetting_leaves_the_markdown_alone() {
+        let (dir, mut pipeline) = setup();
+        let source = write_source(dir.path(), "notes.txt", "the words");
+        let wrote = pipeline.ingest(&source, Mode::Apply).unwrap();
+
+        let forgotten = pipeline.forget(&wrote.id).expect("forget");
+
+        assert_eq!(forgotten.id, wrote.id);
+        assert!(wrote.output.is_file(), "the Markdown should still be here");
+        assert!(pipeline.manifest().find(&wrote.id).unwrap().is_none());
+    }
+
+    /// The other way out takes the file with it.
+    #[test]
+    fn deleting_takes_the_markdown_with_it() {
+        let (dir, mut pipeline) = setup();
+        let source = write_source(dir.path(), "notes.txt", "the words");
+        let wrote = pipeline.ingest(&source, Mode::Apply).unwrap();
+
+        pipeline.delete(&wrote.id).expect("delete");
+
+        assert!(!wrote.output.exists(), "the Markdown should be gone");
+        assert!(pipeline.manifest().find(&wrote.id).unwrap().is_none());
+    }
+
+    /// **The document somebody chose is never touched, either way.**
+    ///
+    /// The promise both front ends make in words, kept here in a test. It is
+    /// true because nothing ever copied the source into the knowledge base, and
+    /// it is the kind of thing that stops being true the moment somebody adds
+    /// "keep a copy of what was read" without reading this.
+    #[test]
+    fn neither_way_out_touches_the_source() {
+        for (name, act) in [
+            ("forget", Pipeline::forget as fn(&Pipeline, &str) -> _),
+            ("delete", Pipeline::delete),
+        ] {
+            let (dir, mut pipeline) = setup();
+            let source = write_source(dir.path(), "notes.txt", "the words");
+            pipeline.ingest(&source, Mode::Apply).unwrap();
+
+            act(&pipeline, "notes.txt").unwrap_or_else(|error| panic!("{name}: {error}"));
+
+            assert!(source.is_file(), "{name} removed the document it read");
+        }
+    }
+
+    /// A document can be named the way somebody has it: eight characters of its
+    /// id, which is what `list` prints and all anybody is going to type.
+    #[test]
+    fn a_prefix_of_an_id_names_the_document() {
+        let (dir, mut pipeline) = setup();
+        let source = write_source(dir.path(), "notes.txt", "the words");
+        let wrote = pipeline.ingest(&source, Mode::Apply).unwrap();
+
+        assert_eq!(pipeline.resolve(&wrote.id[..8]).unwrap().id, wrote.id);
+        assert_eq!(pipeline.resolve("notes.txt").unwrap().id, wrote.id);
+        assert_eq!(pipeline.resolve(&wrote.id).unwrap().id, wrote.id);
+    }
+
+    /// A document whose id is not a hash of anything, for the tests that need
+    /// two that start the same way.
+    ///
+    /// Real ids are BLAKE3 sums, so a shared prefix cannot be arranged by
+    /// choosing the input — and a test that waited for two hashes to collide
+    /// would pass by taking its other branch almost every time it ran.
+    fn record_named(id: &str, output: &str) -> DocumentRecord {
+        DocumentRecord {
+            id: id.to_owned(),
+            source_path: PathBuf::from(format!("{id}.txt")),
+            source_size: 1,
+            source_mtime: None,
+            mime: "text/plain".into(),
+            output_path: PathBuf::from(output),
+            engine: EngineStamp::new(
+                docfusion_core::ir::EngineId::new("text-passthrough"),
+                "1.0.0",
+            ),
+            status: Status::Done,
+            verified: false,
+            conflict_count: 0,
+            created_at: now_iso8601(),
+            updated_at: now_iso8601(),
+            output_hash: None,
+        }
+    }
+
+    /// And a prefix that names two is refused rather than guessed at.
+    ///
+    /// The commands that take a document by name are the ones that take one
+    /// away, so "whichever of these you meant" is not an answer to give.
+    #[test]
+    fn a_prefix_that_names_two_documents_is_refused() {
+        let (_dir, pipeline) = setup();
+        pipeline
+            .manifest()
+            .upsert(&record_named("aaaa1111", "docs/a.md"))
+            .unwrap();
+        pipeline
+            .manifest()
+            .upsert(&record_named("aabb2222", "docs/b.md"))
+            .unwrap();
+
+        let error = pipeline.resolve("aa").expect_err("should refuse");
+        assert!(
+            matches!(error, PipelineError::Ambiguous { count: 2, .. }),
+            "{error}"
+        );
+
+        // Long enough to be one, and it stops being a question.
+        assert_eq!(pipeline.resolve("aaaa").unwrap().id, "aaaa1111");
+
+        // And a name that is in nobody's index is not a reason to guess.
+        let error = pipeline.resolve("zz").expect_err("should not match");
+        assert!(
+            matches!(error, PipelineError::NoSuchDocument { .. }),
+            "{error}"
+        );
+    }
+
+    /// A path out of the index is checked before anything is removed.
+    ///
+    /// Written as a test because `starts_with(root)` does **not** catch it and
+    /// looks like it does: it walks components, `..` is one, so
+    /// `root.join("../../x")` starts with `root` and the guard somebody reaches
+    /// for first passes.
+    #[test]
+    fn a_path_that_leaves_the_knowledge_base_is_refused() {
+        let (dir, mut pipeline) = setup();
+        let source = write_source(dir.path(), "notes.txt", "the words");
+        let wrote = pipeline.ingest(&source, Mode::Apply).unwrap();
+
+        let outside = dir.path().parent().unwrap().join("docfusion-outside.md");
+        fs::write(&outside, "not ours").unwrap();
+
+        pipeline
+            .manifest()
+            .relink(&wrote.id, Path::new("../docfusion-outside.md"))
+            .expect("relink");
+
+        let error = pipeline.delete(&wrote.id).expect_err("should refuse");
+
+        assert!(matches!(error, PipelineError::Outside { .. }), "{error}");
+        assert!(outside.is_file(), "it deleted a file outside the knowledge base");
+        assert!(
+            pipeline.manifest().find(&wrote.id).unwrap().is_some(),
+            "and the record stays, since nothing happened"
+        );
+
+        fs::remove_file(&outside).ok();
     }
 
     #[test]

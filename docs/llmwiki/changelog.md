@@ -4,6 +4,70 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — The records page learns to be used
+
+**What:** A row in the records list was one big button: clicking anywhere on it
+opened the document. Reading a list of what had been read was a way of
+accidentally leaving it, and the two things somebody actually wants from a row —
+*look at it again* and *get rid of it* — had no target at all. There was also no
+way to take a document out of the knowledge base from anywhere: the only route
+was to delete the Markdown by hand and let `reconcile` notice.
+
+A row is now a name, when it was read, and **two buttons**. Neither opens
+anything by accident.
+
+**Two ways out, which is the part worth explaining.** "Take this out of the
+list" and "delete this file" are two different sentences, and one button that
+guessed between them would be a button that sometimes deleted a document. So a
+row's Delete asks, in a modal `dialog`, and offers both with a sentence each:
+
+| | Removes | Leaves |
+|---|---|---|
+| Remove from the list | the index row | the Markdown, at `docs/<name>.md` |
+| Delete the file | the index row **and** the Markdown | nothing |
+
+**Neither touches the document somebody chose.** It was never copied into the
+knowledge base, so there is nothing there to delete — and the question says so,
+because that is the thing somebody pressing a red button wants to know. Both
+ways out also agree with what `reconcile` already believes: a record whose file
+has gone is drift it forgets, and a file whose record has gone is untracked
+drift it reports and does not put back.
+
+**`docfusion forget` and `docfusion delete` came with it**, because this
+project's own rule is that the window must not be the only place a capability
+lives. The acts are `Pipeline::forget` and `Pipeline::delete` and both front
+ends call them. The command line takes a document the way a person has it —
+including the first eight characters of an id, which is what `list` prints — and
+a prefix naming more than one is refused rather than guessed at. `delete` obeys
+the global `--dry-run`, that flag mattering most on the one command here that
+destroys anything.
+
+**The delete checks where it is pointing.** The path comes out of a SQLite file
+somebody could have edited, and this is the only command in the program that
+destroys something, so a `..`, a leading slash or a drive letter is refused
+before the join. **`starts_with(root)` is not that check and looks like it is** —
+it walks components and `..` is one, so `root.join("../../x")` starts with
+`root` and the guard somebody reaches for first passes. There is a test.
+
+**A bug found by reading, not by testing, and the fix is shaped by that.** The
+command that removes a record also empties the document pane when the document
+being shown is the one being removed — and the first version built the view
+*before* removing, so the answer carried a screen from before it happened and
+the pane kept showing a document whose file was gone. No test could see it: the
+commands need an `AppHandle` and an `App` cannot be pointed at a temporary
+directory. The removal is now an argument to the function that builds the view,
+so the callee builds it and the order cannot be got wrong.
+
+**Measured:** 512 tests pass, `cargo clippy --workspace --all-targets` is clean.
+Both commands were run by hand against a scratch knowledge base: `forget` left
+the Markdown and emptied the index, `--dry-run delete` removed nothing, `delete`
+removed the Markdown and left the source untouched, a name in nobody's index was
+an error rather than a guess, and an eight-character id prefix found its
+document. The modal itself cannot be driven from a test, so what it *says* is
+covered by the strings and markup tests and what it looks like was looked at.
+
+---
+
 ## 2026-10-10 — One local set, and a card that shows it
 
 **What:** The local models became one set of six files and one download of

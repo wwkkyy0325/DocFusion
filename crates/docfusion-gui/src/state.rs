@@ -147,6 +147,13 @@ pub enum Cause {
     /// button for it in the settings tab. Whether the fetch was never asked for
     /// or was asked for and failed changes the sentence not at all.
     Download,
+    /// A document could not be taken out of the knowledge base.
+    ///
+    /// Its own kind rather than [`Cause::Unwritable`], which is about writing a
+    /// result and would be a sentence about the wrong operation — and it is the
+    /// one failure here that leaves a row and a file disagreeing, so it is
+    /// worth being able to say which half went wrong.
+    Delete,
 }
 
 /// Which of the four things the window can be showing.
@@ -274,7 +281,16 @@ pub struct Reading {
 pub struct Record {
     pub id: String,
     pub name: String,
+    /// Where the result was written, relative to the knowledge base.
     pub output: String,
+    /// Whether that file is still there.
+    ///
+    /// The window offers to delete it, and a document whose Markdown has
+    /// already gone has nothing to delete. Asked here rather than discovered by
+    /// a button that fails, because the answer decides whether the button is
+    /// offered at all — and a greyed-out button beside the sentence saying why
+    /// is the version of that people do not press twice.
+    pub on_disk: bool,
     pub status: String,
     pub conflicts: u32,
     pub created_at: String,
@@ -286,11 +302,17 @@ impl Record {
     /// The path is carried through as text rather than as a path, because the
     /// window only ever displays it and a `PathBuf` serialises differently on
     /// Windows than it reads.
-    pub fn from_stored(record: &DocumentRecord) -> Self {
+    ///
+    /// Takes the root because the index records the output relative to it, and
+    /// whether the file is there is a question for the disk rather than for the
+    /// index — a document whose Markdown somebody deleted by hand is still a row
+    /// until `reconcile` catches up.
+    pub fn from_stored(record: &DocumentRecord, root: &std::path::Path) -> Self {
         Self {
             id: record.id.clone(),
             name: file_name(&record.source_path.to_string_lossy()),
             output: record.output_path.to_string_lossy().into_owned(),
+            on_disk: root.join(&record.output_path).is_file(),
             status: record.status.as_str().to_owned(),
             conflicts: record.conflict_count,
             created_at: record.created_at.clone(),
@@ -448,7 +470,7 @@ mod tests {
         let mut record = stored();
         record.source_path = "C:\\notes\\2024 annual report.pdf".into();
 
-        let shown = Record::from_stored(&record);
+        let shown = Record::from_stored(&record, std::path::Path::new(""));
 
         assert_eq!(shown.name, "2024 annual report.pdf");
         assert_eq!(shown.status, "done");
@@ -460,7 +482,7 @@ mod tests {
         let mut record = stored();
         record.source_path = "/home/someone/scan.png".into();
 
-        assert_eq!(Record::from_stored(&record).name, "scan.png");
+        assert_eq!(Record::from_stored(&record, std::path::Path::new("")).name, "scan.png");
     }
 
     fn opened() -> Opened {

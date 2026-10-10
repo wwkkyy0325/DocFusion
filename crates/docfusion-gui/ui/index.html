@@ -227,6 +227,38 @@
       </section>
     </main>
 
+    <!-- The question a row's Delete button asks.
+
+         A `dialog`, opened with `showModal`, so the browser owns the focus
+         trap, the Escape key and the backdrop — the same argument the `select`
+         in the settings tab is there for, and the same conclusion: this is the
+         mature component for the job and it is the one that cannot be dead to
+         a keyboard or a screen reader.
+
+         Both ways out are here rather than on the row, because they are two
+         different sentences. One takes a record out of the list and leaves the
+         file; the other destroys it. A row that guessed between them would be
+         a row that sometimes deleted a document. -->
+    <dialog id="record-question">
+      <h2 id="ask-title"></h2>
+      <p id="ask-about" class="lead"></p>
+
+      <dl class="ways">
+        <dt id="ask-remove-label"></dt>
+        <dd id="ask-remove-what"></dd>
+        <dt id="ask-delete-label"></dt>
+        <dd id="ask-delete-what"></dd>
+      </dl>
+
+      <p id="ask-source" class="hint"></p>
+
+      <div class="actions">
+        <button id="ask-cancel" type="button"></button>
+        <button id="ask-remove" type="button"></button>
+        <button id="ask-delete" type="button" class="danger filled"></button>
+      </div>
+    </dialog>
+
     <script type="module" src="app.js"></script>
   </body>
 </html>

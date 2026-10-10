@@ -30,7 +30,9 @@ use docfusion_store::{ocr, structure, table};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use state::{Cause, Conflict, Local, Model, Opened, Reading, Record, Remote, Test, Trouble, View};
+use state::{
+    Cause, Conflict, Local, Model, Opened, Reading, Record, Remote, Screen, Test, Trouble, View,
+};
 
 /// The application's shared state.
 ///
@@ -254,6 +256,26 @@ impl App {
         }
     }
 
+    fn forget_record(&self, id: &str) -> Result<(), Trouble> {
+        let outcome = forget(&self.pipeline()?, id);
+
+        if outcome.is_ok() {
+            blank_if_showing(&self.view, id);
+        }
+
+        outcome
+    }
+
+    fn delete_record(&self, id: &str) -> Result<(), Trouble> {
+        let outcome = delete(&self.pipeline()?, id);
+
+        if outcome.is_ok() {
+            blank_if_showing(&self.view, id);
+        }
+
+        outcome
+    }
+
     fn open_record(&self, id: &str) -> Result<Opened, Trouble> {
         let pipeline = self.pipeline()?;
 
@@ -425,7 +447,11 @@ impl App {
         if let Ok(pipeline) = self.pipeline()
             && let Ok(records) = pipeline.manifest().all()
         {
-            view.records = records.iter().map(Record::from_stored).collect();
+            let root = pipeline.root();
+            view.records = records
+                .iter()
+                .map(|record| Record::from_stored(record, root))
+                .collect();
         }
     }
 }
@@ -657,6 +683,16 @@ fn cause_of(error: &PipelineError) -> Cause {
         PipelineError::Read { .. } => Cause::Unreadable,
         PipelineError::Write { .. } => Cause::Unwritable,
         PipelineError::UnidentifiableEngine => Cause::NothingToRead,
+
+        // Both mean the query did not name exactly one document, which from
+        // here is one sentence. The window always has a full id — it is
+        // reading it out of a row — so the ambiguous half is for the command
+        // line, where somebody is typing a prefix.
+        PipelineError::NoSuchDocument { .. } | PipelineError::Ambiguous { .. } => Cause::Missing,
+
+        // And the two that are about a delete: the file would not go, or the
+        // record pointed somewhere this program will not reach.
+        PipelineError::Delete { .. } | PipelineError::Outside { .. } => Cause::Delete,
     }
 }
 
@@ -684,18 +720,126 @@ fn view(app: AppHandle) -> View {
     app.state::<App>().view()
 }
 
-#[tauri::command]
-fn records(app: AppHandle) -> View {
-    let state = app.state::<App>();
-    let mut view = state.view();
+/// Takes a record out of the index, leaving its Markdown alone.
+///
+/// The work is [`Pipeline::forget`], which is where it lives so that the
+/// command line can do the same thing — this program's own rule being that the
+/// window must not be the only place a capability lives. What is left here is
+/// the half the window owns: turning a library error into the kind of trouble
+/// the failure panel has a sentence for.
+fn forget(pipeline: &Pipeline, id: &str) -> Result<(), Trouble> {
+    pipeline
+        .forget(id)
+        .map(|_| ())
+        .map_err(|error| Trouble::new(cause_of(&error), error.to_string()))
+}
 
-    // The list is drawn from the index, which is a file, so it is re-read
-    // rather than remembered. Everything that writes it is this process.
+/// Deletes a record and the Markdown it points at. See [`Pipeline::delete`].
+fn delete(pipeline: &Pipeline, id: &str) -> Result<(), Trouble> {
+    pipeline
+        .delete(id)
+        .map(|_| ())
+        .map_err(|error| Trouble::new(cause_of(&error), error.to_string()))
+}
+
+/// Blanks the document pane when the record it is showing is no longer there.
+///
+/// The window would otherwise keep displaying a document that has just been
+/// taken out of the knowledge base — and in one of the two cases the file it was
+/// rendered from is gone, so what is on screen is a reading of something that no
+/// longer exists with nothing to say so.
+///
+/// Not the same as deciding to go back to the start: somebody reading a document
+/// and then tidying the list behind it has not asked for that, but there is
+/// nothing left to show either. `Screen::Empty` is the answer the window already
+/// has for "nothing is open", and it says so. It also carries the knowledge base
+/// path, which is the one useful thing to put in front of somebody who has just
+/// emptied the pane.
+///
+/// Over the lock rather than a method on [`App`], like the two acts above,
+/// because the thing worth a test is what it does to a screen — and an `App`
+/// cannot be pointed at a temporary directory.
+fn blank_if_showing(view: &Mutex<View>, id: &str) {
+    let mut view = view.lock().unwrap_or_else(|p| p.into_inner());
+
+    if matches!(&view.screen, Screen::Ready(opened) if opened.id == id) {
+        view.screen = Screen::Empty;
+    }
+}
+
+/// The view with the record list read out of the index again.
+///
+/// The list is drawn from a file rather than remembered, so it is re-read
+/// rather than remembered — and every command that changes it has to say so,
+/// including the two that take a record away. Everything that writes the index
+/// is this process.
+fn with_fresh_records(state: &App) -> View {
+    let mut view = state.view();
     let mut fresh = state.view();
     state.refresh(&mut fresh);
     view.records = fresh.records;
 
     view
+}
+
+#[tauri::command]
+fn records(app: AppHandle) -> View {
+    with_fresh_records(&app.state::<App>())
+}
+
+/// Takes a record out of the index, leaving its Markdown where it is.
+///
+/// The reversible half of taking a document out of the knowledge base, and a
+/// command of its own because it is a different act from the irreversible one:
+/// this one leaves the file, so nothing is lost and nothing has to be
+/// confirmed. The document becomes untracked — `reconcile` reports it and does
+/// not put it back — and re-adding the source reads it again.
+///
+/// Returns a view with the list in it, because the list is what changed.
+/// The view a removal leaves behind.
+///
+/// Takes the removal as an argument rather than being called after it, because
+/// the order is the whole of this and is not obvious. Removing a record also
+/// blanks the document pane when the record being shown is the one being
+/// removed, and a view built before that carried the screen from before it —
+/// which is what this did at first, and nothing could see it, because the
+/// commands need an `AppHandle` and an `App` cannot be pointed at a temp
+/// directory. As an argument, the removal cannot happen after the view is
+/// built: the callee is the one that builds it.
+fn after_removal(state: &App, outcome: Result<(), Trouble>) -> View {
+    let mut view = with_fresh_records(state);
+
+    if let Err(trouble) = outcome {
+        view.problem = Some(trouble);
+    }
+
+    view
+}
+
+#[tauri::command]
+fn forget_record(app: AppHandle, id: String) -> View {
+    let state = app.state::<App>();
+    after_removal(&state, state.forget_record(&id))
+}
+
+/// Deletes a record and the Markdown it points at.
+///
+/// The irreversible half, and the one command in this program that destroys
+/// something. Separate from [`forget_record`] for exactly that reason, and the
+/// window asks which of the two was meant before either is called: one button
+/// that guessed between them would be a button that sometimes deletes a file.
+///
+/// The source document — the PDF or the picture somebody dragged in — is not
+/// touched by either. It was never copied into the knowledge base, so there is
+/// nothing there to delete; what goes is what this program wrote.
+///
+/// A failure comes back as the view with the reason on it, like everything
+/// else here, so that a file that would not delete leaves the row in place and
+/// says why rather than leaving the list and the disk disagreeing.
+#[tauri::command]
+fn delete_record(app: AppHandle, id: String) -> View {
+    let state = app.state::<App>();
+    after_removal(&state, state.delete_record(&id))
 }
 
 /// Asks the operating system for a file.
@@ -958,6 +1102,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             view,
             records,
+            forget_record,
+            delete_record,
             choose_file,
             process,
             open,
@@ -1109,6 +1255,98 @@ code
         assert!(engines_of("# Just a heading\n").is_empty());
     }
 
+    /// A knowledge base with one document in it: its directory, the pipeline
+    /// over it, the id it was filed under, and where the Markdown went.
+    ///
+    /// A text file, so that nothing here needs a model to be downloaded — what
+    /// these tests are about is a row and a file, not a reading.
+    fn one_document() -> (tempfile::TempDir, Pipeline, String, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pipeline = Pipeline::open(dir.path(), reading_text()).unwrap();
+
+        let source = dir.path().join("notes.txt");
+        std::fs::write(&source, "the words").unwrap();
+
+        let wrote = pipeline.ingest(&source, Mode::Apply).unwrap();
+        let output = wrote.output.clone();
+
+        (dir, pipeline, wrote.id, output)
+    }
+
+    fn reading_text() -> Router {
+        Router::new(vec![
+            Box::new(docfusion_core::extract::text::TextPassthrough)
+                as Box<dyn docfusion_core::extract::Extractor>,
+        ])
+    }
+
+    /// What the dialog needs to know before it draws: whether there is
+    /// anything to delete.
+    #[test]
+    fn a_record_says_whether_its_markdown_is_still_there() {
+        let (dir, _pipeline, id, output) = one_document();
+
+        let stored = {
+            let pipeline = Pipeline::open(
+                dir.path(),
+                Router::new(vec![Box::new(docfusion_core::extract::text::TextPassthrough)
+                    as Box<dyn docfusion_core::extract::Extractor>]),
+            )
+            .unwrap();
+            pipeline.manifest().find(&id).unwrap().expect("a record")
+        };
+
+        assert!(Record::from_stored(&stored, dir.path()).on_disk);
+
+        std::fs::remove_file(&output).unwrap();
+        assert!(!Record::from_stored(&stored, dir.path()).on_disk);
+    }
+
+    /// The pane is emptied when — and only when — the document it is showing
+    /// has just been taken out of the knowledge base.
+    ///
+    /// The first version of this was a method called after the view had already
+    /// been cloned, so the answer carried a screen from before the delete and
+    /// the pane kept showing a document whose file was gone. Nothing could see
+    /// it: an `App` cannot be pointed at a temporary directory, which is why
+    /// this is over a lock instead.
+    #[test]
+    fn the_pane_is_emptied_only_for_the_document_that_went() {
+        let showing = |id: &str| {
+            let mut view = View::new("/library", "/config.toml");
+            view.ready(Opened {
+                id: id.to_owned(),
+                name: "notes.txt".to_owned(),
+                output: "docs/notes.md".to_owned(),
+                html: "<p>the words</p>".to_owned(),
+                engines: vec!["text-passthrough".to_owned()],
+                conflicts: 0,
+                report: Vec::new(),
+                reused: false,
+            });
+            Mutex::new(view)
+        };
+
+        let mine = showing("aaa");
+        blank_if_showing(&mine, "aaa");
+        assert_eq!(mine.lock().unwrap().screen, Screen::Empty);
+
+        // A different record: somebody tidying the list behind the document
+        // they are reading has not asked to lose their place.
+        let someone_elses = showing("aaa");
+        blank_if_showing(&someone_elses, "bbb");
+        assert!(
+            matches!(someone_elses.lock().unwrap().screen, Screen::Ready(_)),
+            "the document on screen was not the one that went"
+        );
+
+        // And a pane that is already empty stays empty rather than becoming
+        // something else.
+        let nothing = Mutex::new(View::new("/library", "/config.toml"));
+        blank_if_showing(&nothing, "aaa");
+        assert_eq!(nothing.lock().unwrap().screen, Screen::Empty);
+    }
+
     /// Every element the script looks up is in the markup.
     ///
     /// `el()` throws when the id is not there, and the throw lands wherever in
@@ -1244,7 +1482,8 @@ code
                 | Cause::Missing
                 | Cause::Settings
                 | Cause::NothingToRead
-                | Cause::Download => {}
+                | Cause::Download
+                | Cause::Delete => {}
             }
         }
 
@@ -1263,6 +1502,7 @@ code
             Cause::Settings,
             Cause::NothingToRead,
             Cause::Download,
+            Cause::Delete,
         ] {
             spoken_for(cause);
 
@@ -1381,6 +1621,32 @@ code
                 Cause::Unwritable,
             ),
             (PipelineError::UnidentifiableEngine, Cause::NothingToRead),
+            (
+                PipelineError::NoSuchDocument {
+                    query: "aaaa".to_owned(),
+                },
+                Cause::Missing,
+            ),
+            (
+                PipelineError::Ambiguous {
+                    query: "aa".to_owned(),
+                    count: 2,
+                },
+                Cause::Missing,
+            ),
+            (
+                PipelineError::Delete {
+                    path: "docs/notes.md".into(),
+                    source: std::io::Error::other("in use"),
+                },
+                Cause::Delete,
+            ),
+            (
+                PipelineError::Outside {
+                    path: "../elsewhere.md".into(),
+                },
+                Cause::Delete,
+            ),
             (
                 PipelineError::Store(StoreError::UnknownStatus("wat".to_owned())),
                 Cause::Index,
