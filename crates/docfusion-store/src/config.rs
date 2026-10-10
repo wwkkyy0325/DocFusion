@@ -28,6 +28,13 @@ pub struct Config {
     /// A secret. The file it lives in is per user and outside any repository,
     /// because a key beside the documents is a key that gets committed.
     pub api_key: Option<String>,
+    /// Whether the model joins at all.
+    ///
+    /// **Absent means yes**, which is why this is a switch and not a deletion:
+    /// before it existed the only way to stop the model reading documents was
+    /// to empty the endpoint, which threw away the address and the key with it.
+    /// A file that predates the switch has no opinion and keeps working.
+    pub enabled: Option<bool>,
     /// Whether to let the model think before it answers.
     ///
     /// Absent means no, and no means the request asks for thinking to be turned
@@ -112,6 +119,7 @@ impl Config {
         model: &str,
         api_key: &str,
         reasoning: bool,
+        enabled: bool,
     ) -> Result<(), ConfigError> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
@@ -141,6 +149,7 @@ impl Config {
         // "leave it alone": not writing it would leave the opposite of what was
         // just chosen in a file somebody had set it in before.
         place(&mut document, "reasoning", toml_edit::value(reasoning));
+        place(&mut document, "enabled", toml_edit::value(enabled));
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|source| ConfigError::Unwritable {
@@ -322,7 +331,7 @@ mod tests {
         );
         let path = directory.path().join("config.toml");
 
-        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-new", false)
+        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-new", false, true)
             .expect("saved");
 
         let text = fs::read_to_string(&path).expect("read back");
@@ -354,26 +363,55 @@ mod tests {
         let directory = write("api_key = \"sk-existing\"\n");
         let path = directory.path().join("config.toml");
 
-        Config::save_model(&path, "http://localhost:8080", "local", "", false).expect("saved");
+        Config::save_model(&path, "http://localhost:8080", "local", "", false, true).expect("saved");
 
         let config = Config::from_path(&path).expect("valid");
         assert_eq!(config.api_key.as_deref(), Some("sk-existing"));
         assert_eq!(config.endpoint.as_deref(), Some("http://localhost:8080"));
     }
 
-    /// Clearing the endpoint is how the model is switched off. Removing it
-    /// rather than emptying it, because `endpoint = ""` is not what "no
-    /// endpoint" looks like to the code that reads this.
+    /// Clearing the endpoint still works, though it is no longer the only way
+    /// to switch the model off. Removing it rather than emptying it, because
+    /// `endpoint = ""` is not what "no endpoint" looks like to the code that
+    /// reads this.
     #[test]
     fn an_empty_endpoint_is_removed_rather_than_emptied() {
         let directory = write("endpoint = \"http://old\"\nmodel = \"old\"\n");
         let path = directory.path().join("config.toml");
 
-        Config::save_model(&path, "  ", "", "", false).expect("saved");
+        Config::save_model(&path, "  ", "", "", false, true).expect("saved");
 
         let config = Config::from_path(&path).expect("valid");
         assert!(config.endpoint.is_none());
         assert!(config.model.is_none());
+    }
+
+    /// The switch that exists so that the address and the key do not have to be
+    /// thrown away to stop the model reading documents.
+    #[test]
+    fn the_switch_is_written_and_read_back() {
+        let directory = write("endpoint = \"http://old\"\nmodel = \"old\"\n");
+        let path = directory.path().join("config.toml");
+
+        Config::save_model(&path, "http://old", "old", "", false, false).expect("saved");
+
+        let config = Config::from_path(&path).expect("valid");
+        assert_eq!(config.enabled, Some(false));
+        // Which is the point: switching it off keeps the address.
+        assert_eq!(config.endpoint.as_deref(), Some("http://old"));
+        assert_eq!(config.model.as_deref(), Some("old"));
+    }
+
+    /// A file written before the switch existed has no opinion, and no opinion
+    /// means the model is used, which is what it did before.
+    #[test]
+    fn a_file_without_the_switch_reads_as_on() {
+        let directory = write("endpoint = \"http://old\"\nmodel = \"old\"\n");
+
+        let config = Config::from_path(&directory.path().join("config.toml")).expect("valid");
+
+        assert_eq!(config.enabled, None);
+        assert!(config.enabled.unwrap_or(true));
     }
 
     /// Saving is how the file comes to exist on a machine that has never run
@@ -383,7 +421,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         let path = directory.path().join("nested").join("config.toml");
 
-        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-1", false)
+        Config::save_model(&path, "https://api.deepseek.com", "deepseek-flash", "sk-1", false, true)
             .expect("saved");
 
         let config = Config::from_path(&path).expect("valid");

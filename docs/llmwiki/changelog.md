@@ -4,6 +4,42 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — A switch for the model, so that stopping it stops nothing else
+
+**What:** a switch in the settings tab that turns the vision model off without
+losing the endpoint, the model name or the key. Off, the window reads with the
+engine inside the app and calls nothing.
+
+**The only way to stop the model was to throw the settings away.** Emptying the
+endpoint was documented as "how the model is switched off", and it worked —
+`endpoint = ""` is not a URL and nothing was called. It also deleted the address
+and the key, so a person who wanted to read a private document offline had to
+write their endpoint down somewhere first and type it back afterwards. A switch
+is the shape of that requirement. The deletion still works and still deletes;
+it is no longer the only thing on offer.
+
+**Absent means on.** The field is an `Option`, and a file written before the
+switch existed has no opinion — which must read as "the model is used", because
+that is what it did. Getting this the other way round would have silently
+switched off every installation that upgraded.
+
+**The switch gates the file and not the flags.** `--endpoint` on a command line
+is as explicit as anybody can be, and a setting turned off in a window must not
+stop a run that names one. So the merge in `Cli::with_config` skips the file's
+endpoint, model and key when the switch is off, and does nothing to a flag. Both
+directions are tested.
+
+**Disabled rather than hidden**, and only the fields the switch is about. What
+is switched off can still be read — a half-typed address is still somebody's —
+and `#save` stays live, because saving the switch is the thing they are trying
+to do. Covered by two new headless screenshots, `settings-zh` and `off-zh`.
+
+**Also:** the settings page now says what belongs in the endpoint field. It
+accepts any OpenAI-compatible server — vLLM, llama.cpp, Ollama, or a hosted one
+— and said so nowhere.
+
+---
+
 ## 2026-10-10 — A page is read a column at a time
 
 **What:** reading order stops being top-to-bottom-then-left-to-right and becomes

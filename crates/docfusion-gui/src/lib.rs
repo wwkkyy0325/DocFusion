@@ -277,14 +277,21 @@ impl App {
     /// reading documents with a setting the person believes they changed. An
     /// endpoint with no model, or a model with no endpoint, is left as it was
     /// and reported, since half of the pair reads nothing.
-    fn save_model(&self, endpoint: &str, model: &str, key: &str, reasoning: bool) -> Result<(), String> {
+    fn save_model(
+        &self,
+        endpoint: &str,
+        model: &str,
+        key: &str,
+        reasoning: bool,
+        enabled: bool,
+    ) -> Result<(), String> {
         let (endpoint, model) = (endpoint.trim(), model.trim());
 
         if endpoint.is_empty() != model.is_empty() {
             return Err("the endpoint and the model are set together or not at all".to_owned());
         }
 
-        config::Config::save_model(&config::path(), endpoint, model, key, reasoning)
+        config::Config::save_model(&config::path(), endpoint, model, key, reasoning, enabled)
             .map_err(|error| error.to_string())?;
 
         // Re-read rather than reuse what was typed: when the key box was left
@@ -522,6 +529,12 @@ fn engines_of(markdown: &str) -> Vec<String> {
 /// outright; the window cannot be shown a refusal before it has drawn anything,
 /// so it reads with the bundled engine and says what is missing.
 fn endpoint_of(config: &config::Config) -> Option<docfusion_store::endpoint::EndpointConfig> {
+    // Absent means on: a file written before the switch existed keeps reading
+    // documents the way it always did.
+    if !config.enabled.unwrap_or(true) {
+        return None;
+    }
+
     let (Some(url), Some(model)) = (&config.endpoint, &config.model) else {
         return None;
     };
@@ -545,6 +558,7 @@ fn model_of(config: &config::Config) -> Model {
         model: config.model.clone().unwrap_or_default(),
         key_length: key.chars().count(),
         reasoning: config.reasoning.unwrap_or(false),
+        enabled: config.enabled.unwrap_or(true),
     }
 }
 
@@ -727,9 +741,10 @@ async fn save_model(
     model: String,
     key: String,
     reasoning: bool,
+    enabled: bool,
 ) -> Result<View, String> {
     let state = app.state::<App>();
-    state.save_model(&endpoint, &model, &key, reasoning)?;
+    state.save_model(&endpoint, &model, &key, reasoning, enabled)?;
 
     Ok(state.view())
 }

@@ -144,15 +144,24 @@ impl Cli {
     /// file and without touching the environment a parallel test is reading.
     fn with_config(mut self, config: docfusion_store::config::Config) -> Result<Self, CliError> {
         self.root = self.root.or(config.root);
-        self.endpoint = self.endpoint.or(config.endpoint);
-        self.model = self.model.or(config.model);
-        // An empty value is what a template line looks like before somebody
-        // fills it in, and it is not a key. Treating it as one sends a bare
-        // `Bearer ` and turns a blank line into an authentication failure.
-        self.api_key = self
-            .api_key
-            .or(config.api_key)
-            .filter(|key| !key.trim().is_empty());
+
+        // The model is switched off in the file and nowhere else. Saying
+        // `--endpoint` on a command line is already as explicit as anybody can
+        // be, so a switch set in the window must not stop a run that names one
+        // — and a file with no `enabled` line has no opinion and is read as it
+        // always was.
+        if config.enabled.unwrap_or(true) {
+            self.endpoint = self.endpoint.or(config.endpoint);
+            self.model = self.model.or(config.model);
+            // An empty value is what a template line looks like before somebody
+            // fills it in, and it is not a key. Treating it as one sends a bare
+            // `Bearer ` and turns a blank line into an authentication failure.
+            self.api_key = self
+                .api_key
+                .or(config.api_key)
+                .filter(|key| !key.trim().is_empty());
+        }
+
         self.max_verify_pages = self.max_verify_pages.or(config.max_verify_pages);
         self.max_ocr_pipelines = self.max_ocr_pipelines.or(config.max_ocr_pipelines);
         // A flag that is either there or not cannot say "the file did not
@@ -715,6 +724,41 @@ mod tests {
         assert_eq!(cli.endpoint.as_deref(), Some("http://file:1"));
         assert_eq!(cli.model.as_deref(), Some("from-file"));
         assert_eq!(cli.api_key.as_deref(), Some("sk-from-the-file"));
+    }
+
+    /// The switch in the window stops the file's endpoint being used, and stops
+    /// nothing else.
+    #[test]
+    fn a_switch_turned_off_keeps_the_file_from_naming_an_endpoint() {
+        let off = docfusion_store::config::Config {
+            enabled: Some(false),
+            ..file("http://file:1", "from-file")
+        };
+
+        let cli = configured(&[]).with_config(off).expect("valid");
+
+        assert_eq!(cli.endpoint, None);
+        assert_eq!(cli.model, None);
+        assert_eq!(cli.api_key, None);
+    }
+
+    /// And an explicit flag is not something the switch has an opinion about.
+    ///
+    /// Saying `--endpoint` on a command line is as explicit as anybody can be;
+    /// a setting turned off in the window must not stop a run that names one.
+    #[test]
+    fn a_switch_turned_off_does_not_stop_a_flag() {
+        let off = docfusion_store::config::Config {
+            enabled: Some(false),
+            ..file("http://file:1", "from-file")
+        };
+
+        let cli = configured(&["--endpoint", "http://flag:2", "--model", "from-flag"])
+            .with_config(off)
+            .expect("valid");
+
+        assert_eq!(cli.endpoint.as_deref(), Some("http://flag:2"));
+        assert_eq!(cli.model.as_deref(), Some("from-flag"));
     }
 
     /// The whole point of a precedence order: a one-off run has to be able to

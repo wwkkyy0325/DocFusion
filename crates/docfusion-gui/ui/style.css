@@ -583,6 +583,15 @@ button.link:hover { background: none; filter: brightness(1.15); }
 
 .with-affix .mark .icon { width: 15px; height: 15px; }
 
+/* What the switch is about, dimmed while it is off. The fields are disabled as
+   well, so the dimming is saying what the browser is already doing rather than
+   doing it on its own — but a disabled field looks much like a read-only one,
+   and the point is to be told at a glance. */
+#model-fields[data-off="yes"] {
+  opacity: 0.5;
+  transition: opacity 120ms ease-out;
+}
+
 #settings .actions {
   display: flex;
   align-items: center;

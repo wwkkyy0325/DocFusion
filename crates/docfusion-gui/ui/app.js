@@ -84,11 +84,14 @@ const TEXT = {
     hide_key: "Hide the key",
     key_set: "A key is set. Leave this box empty to keep it.",
     key_unset: "No key is set. One is only needed if the endpoint asks for it.",
+    enabled_label: "Use a vision model",
+    enabled_hint:
+      "On. The engine inside this app reads every page whatever this says, offline and with nothing configured. This decides whether a model on the other end reads them too, and whether what it read is checked against the engine's. Switching it off keeps the address and the key; clearing the endpoint removes them.",
     reasoning_label: "Let the model think before it answers",
     reasoning_hint:
       "Off. Measured on one page: 1m55s with it, 1m13s without, and not one word of the body different — all it changed was how the headings were classified. Turn it on only if your endpoint refuses a request it does not recognise.",
     settings_about:
-      "Let a model on the other end read scanned pages, and have the engine inside this app check what it read. Clearing the endpoint turns it off and calls nothing.",
+      "Let a model on the other end read scanned pages, and have the engine inside this app check what it read. Any OpenAI-compatible server will do — vLLM, llama.cpp, Ollama, or a hosted one.",
     address_needs_scheme: "The address needs http:// or https:// in front of it.",
     model_needed: "An endpoint needs a model: one endpoint can serve several.",
     endpoint_needed: "A model needs an endpoint to be reached through.",
@@ -190,11 +193,14 @@ const TEXT = {
     hide_key: "隐藏密钥",
     key_set: "已设置密钥，这个框留空即不改动。",
     key_unset: "还没有密钥。端点不要求的话可以空着。",
+    enabled_label: "使用大模型",
+    enabled_hint:
+      "开着。不管这里怎么选，本机引擎都会读每一页——离线、不用配任何东西。这个开关决定的是：远端的模型是不是也读一遍，以及它读的与本机读的是不是要互相印证。关掉不会丢地址和密钥；清空地址才会连设置一起删掉。",
     reasoning_label: "让模型先想一遍再回答",
     reasoning_hint:
       "关着。同一页实测：开着要 1 分 55 秒，关着 1 分 13 秒，正文一个字都没变——它改的只是标题怎么分级。除非端点会拒绝它不认识的参数，不用打开。",
     settings_about:
-      "让远端的模型读扫描件，再由本机内置的识别去印证它读了什么。清空端点地址就关掉它，不调用任何模型。",
+      "让远端的模型读扫描件，再由本机内置的识别去印证它读了什么。任何 OpenAI 兼容的服务都行——vLLM、llama.cpp、Ollama，或者在线服务。",
     address_needs_scheme: "地址前面要有 http:// 或 https://。",
     model_needed: "填了端点就要填模型：一个端点上可以有多个模型。",
     endpoint_needed: "填了模型就要填端点，否则连不上。",
@@ -357,6 +363,8 @@ function applyLang() {
     ["add", words.add],
     ["lang", words.switch_lang],
     ["set-title", words.settings_title],
+    ["lbl-enabled", words.enabled_label],
+    ["set-enabled-hint", words.enabled_hint],
     ["lbl-endpoint", words.endpoint],
     ["lbl-model", words.model_label],
     ["lbl-key", words.key],
@@ -416,6 +424,8 @@ function drawSettings(model) {
 
   el("set-hint").textContent = model.key_length > 0 ? t().key_set : t().key_unset;
   el("set-reasoning").checked = model.reasoning;
+  el("set-enabled").checked = model.enabled;
+  drawEnabled();
 
   // A fresh view is what is on file, so nothing in the form is a change yet.
   clearFieldErrors();
@@ -846,6 +856,7 @@ async function saveSettings(event) {
         model,
         key: el("set-key").value,
         reasoning: el("set-reasoning").checked,
+        enabled: el("set-enabled").checked,
       }),
     );
     note(t().saved, true);
@@ -855,6 +866,23 @@ async function saveSettings(event) {
     note(`${t().save_failed} ${error}`, false);
     return false;
   }
+}
+
+/// Greys out everything the switch is about.
+///
+/// Disabled rather than hidden, so that what is switched off can still be read
+/// — an address somebody half typed is still theirs, and hiding it is how it
+/// gets typed twice.
+function drawEnabled() {
+  const on = el("set-enabled").checked;
+
+  for (const node of el("model-fields").querySelectorAll("input, select, button")) {
+    node.disabled = !on;
+  }
+
+  // The one button under the switch that still works when the model is off.
+  el("save").disabled = false;
+  el("model-fields").dataset.off = on ? "no" : "yes";
 }
 
 /// Asks the endpoint to read a page it has never seen.
@@ -1181,10 +1209,11 @@ el("settings").addEventListener("submit", saveSettings);
 el("reveal").addEventListener("click", toggleReveal);
 el("test").addEventListener("click", testModel);
 el("fetch-models").addEventListener("click", fetchModels);
+el("set-enabled").addEventListener("change", drawEnabled);
 
 // Anything the answer was about: changing it makes the answer about something
 // that is no longer on screen.
-for (const id of ["set-endpoint", "set-model", "set-model-choice", "set-key"]) {
+for (const id of ["set-endpoint", "set-model", "set-model-choice", "set-key", "set-enabled"]) {
   el(id).addEventListener("input", forgetHealth);
   el(id).addEventListener("change", forgetHealth);
 }

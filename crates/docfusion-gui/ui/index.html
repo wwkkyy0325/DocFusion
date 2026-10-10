@@ -98,6 +98,20 @@
           </div>
           <p id="set-about" class="lead"></p>
 
+          <!-- The master switch, and the reason it is a switch: before it
+               existed, stopping the model reading documents meant emptying the
+               endpoint, which threw away the address and the key with it. -->
+          <div class="field">
+            <label class="check">
+              <input id="set-enabled" type="checkbox" />
+              <span id="lbl-enabled">Use a vision model</span>
+            </label>
+            <p id="set-enabled-hint" class="hint"></p>
+          </div>
+
+          <!-- Everything the switch is about. Disabled rather than hidden, so
+               that what is switched off can still be read. -->
+          <div id="model-fields">
           <div class="field">
             <label id="lbl-endpoint" for="set-endpoint">Endpoint</label>
             <input
@@ -172,6 +186,7 @@
             </label>
             <p id="set-reasoning-hint" class="hint"></p>
           </div>
+          </div><!-- /#model-fields -->
 
           <div class="actions">
             <button id="save" type="submit" class="primary">Save</button>

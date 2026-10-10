@@ -50,6 +50,11 @@ pub struct Model {
     /// provider that rejects a field it does not recognise needs to be able to
     /// not have it sent.
     pub reasoning: bool,
+    /// Whether the model is used at all.
+    ///
+    /// A switch rather than the absence of an endpoint, because emptying the
+    /// endpoint to stop the model also throws away the address and the key.
+    pub enabled: bool,
 }
 
 /// Something that went wrong, split the way the window has to say it.
