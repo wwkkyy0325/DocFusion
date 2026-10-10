@@ -188,6 +188,23 @@
           </div>
           </div><!-- /#model-fields -->
 
+          <!-- The other half of "which model reads this": the two that run in
+               this process. Outside the switch above, and not greyed out by
+               it — that switch is about a model at the other end of a network,
+               and these are files on this disk with no address and no key.
+               They are also what decides whether a table comes out as a table
+               or as a run of loose numbers, which is not something anybody
+               would guess from a settings page about an endpoint. -->
+          <div class="field">
+            <label id="lbl-local">Models on this machine</label>
+            <p id="local-state" class="hint"></p>
+            <p class="hint">
+              <span id="local-hint"></span>
+              <button id="get-local" type="button" class="link">Download</button>
+              <button id="stop-local" type="button" class="link" hidden>Stop</button>
+            </p>
+          </div>
+
           <div class="actions">
             <button id="save" type="submit" class="primary">Save</button>
             <button id="test" type="button">Test</button>

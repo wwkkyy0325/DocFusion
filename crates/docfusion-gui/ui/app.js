@@ -96,12 +96,25 @@ const TEXT = {
     model_needed: "An endpoint needs a model: one endpoint can serve several.",
     endpoint_needed: "A model needs an endpoint to be reached through.",
 
+    local_label: "Models on this machine",
+    local_hint:
+      "A part of this app, not of the endpoint above: no address, no key, nothing sent anywhere. The table model is what reads a table as a table rather than as a run of loose numbers.",
+    local_ready: "Both are here. Pages are read into headings, tables and text.",
+    local_missing: (mb) =>
+      `Not downloaded — about ${mb} MB. Until then a table comes out as plain text.`,
+    local_get: "Download",
+    local_stop: "Stop",
+    local_fetching: "Downloading…",
+    local_progress: (file, percent) => `Downloading ${file}… ${percent}%`,
+    local_failed: "The download failed:",
+    local_stopped: "Stopped. What arrived is kept, and the rest resumes where it left off.",
+
     shape_plain: (n) => `Text only · ${n} passages`,
     shape_structured: (headings, lists, tables, text) =>
       `${headings} headings · ${lists} lists · ${tables} tables · ${text} passages`,
     findings: "Places to check",
     findings_note:
-      "Both engines read the same page and their text does not match. Neither reading is marked as the right one — that is not a judgement this tool can make — so both are here, as each engine wrote them, with what each of them read it as. The engine inside this app detects text and then recognises it; neither of those knows what a table is, so its readings are always text and nothing else.",
+      "Both engines read the same page and their text does not match. Neither reading is marked as the right one — that is not a judgement this tool can make — so both are here, as each engine wrote them, with what each of them read it as. The engine inside this app recognises the text and, when its two models are on disk, the headings and tables around it; a reading that came out as plain text is one where they were not.",
     page: (n) => `Page ${n}`,
     kinds: {
       "the engines read it differently": "the two readings do not match",
@@ -205,12 +218,25 @@ const TEXT = {
     model_needed: "填了端点就要填模型：一个端点上可以有多个模型。",
     endpoint_needed: "填了模型就要填端点，否则连不上。",
 
+    local_label: "本机模型",
+    local_hint:
+      "这两个模型跑在本机，属于这个应用而不是上面的端点：不需要地址，不需要密钥，也不会把页面发到任何地方。其中表格模型决定一张表读成表格，还是一堆散落的数字。",
+    local_ready: "两个都装好了。页面会按标题、表格和文字读出来。",
+    local_missing: (mb) =>
+      `还没下载，约 ${mb} MB。在装好之前，表格只会读成纯文字。`,
+    local_get: "下载",
+    local_stop: "停止",
+    local_fetching: "正在下载…",
+    local_progress: (file, percent) => `正在下载 ${file}… ${percent}%`,
+    local_failed: "下载失败：",
+    local_stopped: "已停止。已经下到的部分会留着，下次从断的地方接着下。",
+
     shape_plain: (n) => `只有文字 · ${n} 段`,
     shape_structured: (headings, lists, tables, text) =>
       `${headings} 标题 · ${lists} 列表 · ${tables} 表格 · ${text} 段文字`,
     findings: "待确认的地方",
     findings_note:
-      "两个引擎读了同一页，读出来的文字对不上。哪一份对，这个工具不判断——它没有依据判断——所以两份都按各自的原样放在下面，并标出各自把它读成了什么。本机那个引擎是先检测文字再认读它，两者都不知道表格是什么，所以它的读法永远是纯文字。",
+      "两个引擎读了同一页，读出来的文字对不上。哪一份对，这个工具不判断——它没有依据判断——所以两份都按各自的原样放在下面，并标出各自把它读成了什么。本机那个引擎会认读页面上的文字，两个模型装好之后，也会把标题和表格一并认出来；读出来的是纯文字，就是它们还没装。",
     page: (n) => `第 ${n} 页`,
     kinds: {
       "the engines read it differently": "两份读法的文字不一样",
@@ -375,6 +401,10 @@ function applyLang() {
     ["set-model-hint", words.model_hint],
     ["fetch-models", words.fetch_models],
     ["set-about", words.settings_about],
+    ["lbl-local", words.local_label],
+    ["local-hint", words.local_hint],
+    ["get-local", words.local_get],
+    ["stop-local", words.local_stop],
   ]) {
     el(id).textContent = text;
   }
@@ -400,6 +430,7 @@ function draw(view) {
   drawScreen(view);
   drawRecords(view.records);
   drawSettings(view.model);
+  drawLocal(view.local);
   drawStatus(view.screen);
 }
 
@@ -885,6 +916,90 @@ function drawEnabled() {
   el("model-fields").dataset.off = on ? "no" : "yes";
 }
 
+/// The two models that run in this process, and what is missing.
+///
+/// Read from the view rather than kept here, like everything else, and the
+/// other side throws its own copy away when a fetch finishes — so this is what
+/// turns a finished download from "still offered" into "installed".
+function drawLocal(local) {
+  const here = local ?? {};
+
+  // Either one missing is enough to say so. The layout model is the larger
+  // download and the one that finds the table at all, the table model is what
+  // reads the cells of it, and a table found but not read is no better on the
+  // page than one never found.
+  const missing = !here.structure || !here.tables;
+
+  el("get-local").hidden = Boolean(here.fetching) || !missing;
+  el("stop-local").hidden = !here.fetching;
+
+  if (!missing) return void (el("local-state").textContent = t().local_ready);
+  if (here.fetching) return void (el("local-state").textContent = t().local_fetching);
+
+  el("local-state").textContent = t().local_missing(megabytes(here.needed_bytes ?? 0));
+}
+
+/// A fetch saying how far it has got.
+///
+/// The percentage goes on the same line the fetch ends on, so there is one
+/// sentence about the state rather than two that can disagree.
+function drawLocalProgress(progress) {
+  if (!progress?.total) return;
+
+  const percent = Math.round((progress.received / progress.total) * 100);
+  el("local-state").textContent = t().local_progress(fileLabel(progress.file), percent);
+}
+
+/// Whole megabytes, rounded up.
+///
+/// The number is a warning about a download, so rounding to nothing and then
+/// saying "0 MB" would be the one answer that is worse than the estimate.
+const megabytes = (bytes) => Math.max(1, Math.ceil(bytes / (1024 * 1024)));
+
+/// Fetches the two models this app reads a page with.
+async function getLocalModels() {
+  stopping = false;
+  el("local-state").textContent = t().local_fetching;
+
+  try {
+    // The answer is drawn the way the settings tab draws everything else: only
+    // the parts that changed, so a fetch finishing does not scroll the document
+    // on the other tab back to the top.
+    const view = await invoke("fetch_local_models");
+    current = view;
+    drawProblem(view.problem);
+    drawLocal(view.local);
+
+    // Stopped is not the same answer as never started, and the view cannot tell
+    // them apart: both leave a model missing. This is the half that knows which
+    // one it was.
+    if (stopping && !view.problem) el("local-state").textContent = t().local_stopped;
+  } catch (error) {
+    drawLocal(current?.local);
+    el("local-state").textContent = `${t().local_failed} ${error}`;
+  }
+}
+
+/// Asks a fetch to stop.
+///
+/// Says nothing on the line itself beyond the flag above: the fetch comes back
+/// with a view when it stops, and that is what redraws.
+async function stopLocalModels() {
+  stopping = true;
+  el("stop-local").disabled = true;
+
+  try {
+    await invoke("cancel_local_models");
+  } catch (error) {
+    el("local-state").textContent = `${t().local_failed} ${error}`;
+  } finally {
+    el("stop-local").disabled = false;
+  }
+}
+
+/// Whether the fetch now running is one somebody asked to stop.
+let stopping = false;
+
 /// Asks the endpoint to read a page it has never seen.
 ///
 /// Saves first, because the test uses what is on file — the address, the model
@@ -1159,6 +1274,13 @@ document.addEventListener("copy", (event) => {
   event.preventDefault();
 });
 
+// A download reports as it goes. Waiting until it is over to say anything would
+// leave a quarter of a gigabyte as one silent minute after another, which is
+// indistinguishable from a download that has stopped.
+if (globalThis.__TAURI__?.event?.listen) {
+  globalThis.__TAURI__.event.listen("local-models", (event) => drawLocalProgress(event.payload));
+}
+
 // Tauri hands the window a dropped path directly, because the webview's own
 // drop event does not carry one.
 if (globalThis.__TAURI__?.webview?.getCurrentWebview) {
@@ -1210,6 +1332,8 @@ el("reveal").addEventListener("click", toggleReveal);
 el("test").addEventListener("click", testModel);
 el("fetch-models").addEventListener("click", fetchModels);
 el("set-enabled").addEventListener("change", drawEnabled);
+el("get-local").addEventListener("click", getLocalModels);
+el("stop-local").addEventListener("click", stopLocalModels);
 
 // Anything the answer was about: changing it makes the answer about something
 // that is no longer on screen.

@@ -18,7 +18,7 @@
 //! lines and this does not.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use docfusion_core::backend::BackendError;
 use ort::session::Session;
@@ -227,12 +227,23 @@ impl Reader {
 /// Whether the table model is here, checked once for the process.
 ///
 /// Once for the same reason the layout model's answer is taken once: it decides
-/// what the local engine calls itself, and the name is the cache key.
+/// what the local engine calls itself, and the name is the cache key. And
+/// forgotten for the same reason, by [`forget`].
 pub fn available() -> bool {
-    static CHECKED: OnceLock<bool> = OnceLock::new();
-
-    *CHECKED.get_or_init(|| layout::table_present(&layout::default_root()))
+    AVAILABLE.get(|| layout::table_present(&layout::default_root()))
 }
+
+/// Forgets what was found, so the next question looks at the disk again.
+///
+/// Called after a fetch that wrote the model. See [`layout::Cached`] for why
+/// this is not a `OnceLock`.
+pub fn forget() {
+    AVAILABLE.forget()
+}
+
+/// The answer to [`available`], once it has been asked and until it is
+/// forgotten.
+static AVAILABLE: layout::Cached = layout::Cached::new();
 
 /// Where the model would be, whether or not it is.
 pub fn model_path() -> PathBuf {

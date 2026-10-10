@@ -12,7 +12,8 @@
 mod state;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use docfusion_core::backend::{PageRequest, VisionBackend};
 use docfusion_core::ir::Shapes;
@@ -21,12 +22,15 @@ use docfusion_core::render;
 use docfusion_core::verify::{VerifyMode, VerifyPolicy};
 use docfusion_store::config;
 use docfusion_store::engines;
+use docfusion_store::layout;
 use docfusion_store::memory;
 use docfusion_store::pipeline::{Mode, Pipeline, PipelineError};
+use docfusion_store::{structure, table};
 
-use tauri::{AppHandle, Manager};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
 
-use state::{Cause, Conflict, Model, Opened, Reading, Record, Remote, Test, Trouble, View};
+use state::{Cause, Conflict, Local, Model, Opened, Reading, Record, Remote, Test, Trouble, View};
 
 /// The application's shared state.
 ///
@@ -42,6 +46,11 @@ pub struct App {
     policy: VerifyPolicy,
     readers: usize,
     view: Mutex<View>,
+    /// The stop flag of a fetch that is running, if one is.
+    ///
+    /// Held here rather than inside the fetch because stopping it is a command
+    /// of its own, arriving on a different thread from the one doing the work.
+    fetching: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl App {
@@ -99,6 +108,7 @@ impl App {
             policy,
             readers,
             view: Mutex::new(view),
+            fetching: Mutex::new(None),
         }
     }
 
@@ -114,8 +124,77 @@ impl App {
         // it too, so the tab should show what the next document will actually
         // be read with rather than what was there when the window opened.
         view.model = self.model();
+        view.local = self.local();
 
         view
+    }
+
+    /// Which of the two models this app reads a page with are on disk.
+    ///
+    /// The two answers come from the same remembered check the engine makes
+    /// before it decides what to call itself, rather than from a fresh digest
+    /// of 124 MB on every view — which is also why fetching has to forget that
+    /// check, since otherwise the window would offer to download something it
+    /// had just been given.
+    fn local(&self) -> Local {
+        let root = layout::default_root();
+        let structure = structure::available();
+        let tables = table::available();
+
+        Local {
+            structure,
+            tables,
+            fetching: self
+                .fetching
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some(),
+            needed_bytes: [(&layout::STRUCTURE, structure), (&layout::TABLE, tables)]
+                .into_iter()
+                .filter(|(_, here)| !here)
+                .map(|(spec, _)| missing_bytes(spec, &root))
+                .sum(),
+        }
+    }
+
+    /// Puts a fetch in flight, and hands back the flag that stops it.
+    ///
+    /// Refused when one is already running, because two fetches writing the
+    /// same two files would each see the other's partial download and resume
+    /// from a length that is not theirs.
+    fn begin_fetch(&self) -> Result<Arc<AtomicBool>, String> {
+        let mut slot = self
+            .fetching
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if slot.is_some() {
+            return Err("a download is already running".to_owned());
+        }
+
+        let flag = Arc::new(AtomicBool::new(false));
+        *slot = Some(flag.clone());
+        Ok(flag)
+    }
+
+    fn end_fetch(&self) {
+        let mut slot = self
+            .fetching
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = None;
+    }
+
+    /// Asks a running fetch to stop. Nothing to stop is not a failure.
+    fn stop_fetch(&self) {
+        let slot = self
+            .fetching
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(flag) = slot.as_ref() {
+            flag.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Reads one document, and puts what came of it on screen.
@@ -595,6 +674,25 @@ fn extract_cause(error: &ExtractError) -> Cause {
     }
 }
 
+/// How much of a model that is not here would still have to arrive.
+///
+/// Answered from the file's length rather than from its digest, because this
+/// feeds a sentence about megabytes and the digest of the layout model is
+/// 124 MB of hashing. The caller only asks about a model it already knows is
+/// missing, so a file of the full length here is one that failed its digest and
+/// is replaced rather than resumed: the whole of it is still to come.
+fn missing_bytes(spec: &layout::Spec, root: &Path) -> u64 {
+    let have = std::fs::metadata(layout::path_of(spec, root))
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+
+    if have >= spec.bytes {
+        spec.bytes
+    } else {
+        spec.bytes - have
+    }
+}
+
 // ── The two directions ───────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -749,6 +847,102 @@ async fn save_model(
     Ok(state.view())
 }
 
+/// How a fetch is going, for the window to draw.
+///
+/// Names the file as well as counting the bytes, because there are two of them
+/// and the first is seventeen times the second: a bar with no name on it would
+/// look stuck between them, and the name is also the answer to "what is it
+/// downloading".
+#[derive(Debug, Clone, Serialize)]
+struct Progress {
+    file: String,
+    received: u64,
+    total: u64,
+}
+
+/// Fetches the two models this app reads a page with.
+///
+/// Off the main thread, because a quarter of a gigabyte over a network is
+/// minutes and the window has to stay drawn while it arrives. Progress goes out
+/// as an event rather than as the return value, which comes back once and only
+/// at the end — too late to be progress.
+///
+/// A failure comes back as a view with a problem on it rather than as an error,
+/// because the window can draw that and an error it has no view for is a
+/// sentence in a language it does not speak. Stopping is not a failure: what
+/// arrived is kept, and the next attempt resumes.
+#[tauri::command]
+async fn fetch_local_models(app: AppHandle) -> Result<View, String> {
+    let handle = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<App>();
+        let flag = state.begin_fetch()?;
+        let root = layout::default_root();
+        let mut trouble = None;
+
+        for spec in [&layout::STRUCTURE, &layout::TABLE] {
+            let outcome = layout::ensure_of(
+                spec,
+                &root,
+                &mut |progress| {
+                    let (received, total) = match progress {
+                        layout::State::Fetching { received, total, .. } => (*received, *total),
+                        layout::State::Verifying => (spec.bytes, spec.bytes),
+                        _ => return,
+                    };
+
+                    let _ = handle.emit(
+                        "local-models",
+                        Progress {
+                            file: spec.file.to_owned(),
+                            received,
+                            total,
+                        },
+                    );
+                },
+                &flag,
+            );
+
+            match outcome {
+                Ok(layout::Outcome::Ready(_)) => {}
+                Ok(layout::Outcome::Cancelled) => break,
+                Err(error) => {
+                    trouble = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+
+        state.end_fetch();
+
+        // The answer to "is it here now" was taken before there was anything to
+        // find. A process that downloads the model is the process that has to
+        // notice it arrived.
+        structure::forget();
+        table::forget();
+
+        let mut view = state.view();
+        if let Some(detail) = trouble {
+            view.problem = Some(Trouble::new(Cause::Download, detail));
+        }
+
+        Ok(view)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Asks a fetch that is running to stop.
+///
+/// Says nothing back, because the fetch says it: the view it returns when it
+/// stops already knows it was stopped, and the window draws that. Two answers
+/// to the same question is two chances to disagree.
+#[tauri::command]
+fn cancel_local_models(app: AppHandle) {
+    app.state::<App>().stop_fetch();
+}
+
 /// Opens something already in the knowledge base.
 #[tauri::command]
 async fn open(app: AppHandle, id: String, name: String) -> Result<View, String> {
@@ -777,6 +971,8 @@ pub fn run() {
             save_model,
             reveal_key,
             probe_models,
+            fetch_local_models,
+            cancel_local_models,
             test_model
         ])
         .run(tauri::generate_context!())
@@ -789,6 +985,47 @@ mod tests {
     use docfusion_core::image::ImageError;
     use docfusion_core::ir::EngineId;
     use docfusion_store::manifest::StoreError;
+
+    /// A model that is not here is all still to come, which is the sentence
+    /// the settings tab puts in front of somebody about to spend the time.
+    #[test]
+    fn a_model_that_is_not_here_is_wanted_whole() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            missing_bytes(&layout::STRUCTURE, dir.path()),
+            layout::STRUCTURE.bytes
+        );
+    }
+
+    /// A download that was stopped is resumed rather than restarted, so the
+    /// window would be wrong to promise the whole file again.
+    #[test]
+    fn a_partial_download_is_only_what_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(layout::path_of(&layout::TABLE, dir.path()), [0u8; 4096]).unwrap();
+
+        assert_eq!(
+            missing_bytes(&layout::TABLE, dir.path()),
+            layout::TABLE.bytes - 4096
+        );
+    }
+
+    /// The length check would otherwise read this as a finished download and
+    /// say there is nothing to fetch. The fetch does not agree: it checks the
+    /// digest, throws this away and starts again.
+    #[test]
+    fn a_wrong_file_of_the_right_length_is_still_all_to_come() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = layout::path_of(&layout::TABLE, dir.path());
+
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(layout::TABLE.bytes)
+            .unwrap();
+
+        assert_eq!(missing_bytes(&layout::TABLE, dir.path()), layout::TABLE.bytes);
+    }
 
     #[test]
     fn the_engines_are_read_back_from_the_front_matter() {

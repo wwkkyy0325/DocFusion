@@ -18,7 +18,7 @@
 //! runs without the weights on disk.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use docfusion_core::backend::BackendError;
 use docfusion_core::ir::{Block, BlockKind, EngineId, Rect};
@@ -358,14 +358,30 @@ impl Detector {
 /// changed half way through a run would be two names for one run's output.
 ///
 /// The cost of deciding it once is that fetching the model while a window is
-/// open does not reach that window until it is restarted. Nothing downloads it
-/// on its own and nothing here changes while a program runs, so that is a
-/// sentence rather than a subsystem.
+/// open does not reach that window until it is restarted. That is why
+/// [`forget`] exists: the window fetches the model itself, so the process that
+/// downloaded it is the process that has to notice, and a button that appeared
+/// to work but changed nothing until the next launch would be a button that
+/// did not work.
+///
+/// Between documents is early enough. The name is per page, and a page's name
+/// is taken from the backend that read it, so nothing changes under a read in
+/// progress — the next document simply gets the other name.
 pub fn available() -> bool {
-    static CHECKED: OnceLock<bool> = OnceLock::new();
-
-    *CHECKED.get_or_init(|| layout::present(&layout::default_root()))
+    AVAILABLE.get(|| layout::present(&layout::default_root()))
 }
+
+/// Forgets what was found, so the next question looks at the disk again.
+///
+/// For the one caller that can change the answer: a fetch that just wrote the
+/// model. Between documents is early enough, for the reason above.
+pub fn forget() {
+    AVAILABLE.forget()
+}
+
+/// The answer to [`available`], once it has been asked and until it is
+/// forgotten.
+static AVAILABLE: layout::Cached = layout::Cached::new();
 
 /// Where the model would be, whether or not it is.
 pub fn model_path() -> PathBuf {

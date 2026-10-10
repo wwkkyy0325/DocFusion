@@ -23,6 +23,7 @@ pub struct View {
     pub screen: Screen,
     pub records: Vec<Record>,
     pub model: Model,
+    pub local: Local,
 }
 
 /// What the settings tab shows about reading with a model.
@@ -55,6 +56,34 @@ pub struct Model {
     /// A switch rather than the absence of an endpoint, because emptying the
     /// endpoint to stop the model also throws away the address and the key.
     pub enabled: bool,
+}
+
+/// What the engine inside this app can read a page with, beyond the words on
+/// it.
+///
+/// Two models, and they are told apart because they arrive apart and do
+/// different jobs: the layout model finds the regions of a page — headings,
+/// tables, columns — and the table model reads the cells of one. Whether a
+/// table comes out as a table or as a run of loose numbers is decided here, so
+/// the window has to be able to say which of the two is missing.
+///
+/// Not part of [`Model`], which is about a model at the other end of a network
+/// and the key that reaches it. These two are files on this disk, and no
+/// setting switches them off.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Local {
+    /// Whether the model that finds the regions of a page is here.
+    pub structure: bool,
+    /// Whether the model that reads the cells of a table is here.
+    pub tables: bool,
+    /// Whether a fetch is running now.
+    pub fetching: bool,
+    /// How many bytes a fetch would still have to transfer.
+    ///
+    /// What is left rather than the whole file, because a fetch is resumed
+    /// rather than restarted: after a cancelled one the window would otherwise
+    /// promise to download megabytes it already has.
+    pub needed_bytes: u64,
 }
 
 /// Something that went wrong, split the way the window has to say it.
@@ -105,6 +134,8 @@ pub enum Cause {
     Settings,
     /// It was read, and there was nothing in it.
     NothingToRead,
+    /// A model this app reads pages with could not be fetched.
+    Download,
 }
 
 /// Which of the four things the window can be showing.
@@ -265,6 +296,7 @@ impl View {
             screen: Screen::Empty,
             records: Vec::new(),
             model: Model::default(),
+            local: Local::default(),
         }
     }
 

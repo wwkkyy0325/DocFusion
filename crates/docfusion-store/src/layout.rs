@@ -23,6 +23,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -212,13 +213,46 @@ pub fn table_present(root: &Path) -> bool {
     present_spec(&TABLE, root)
 }
 
-/// Fetches the table structure model if it is not already here.
-pub fn ensure_table(
-    root: &Path,
-    on_state: &mut dyn FnMut(&State),
-    cancelled: &AtomicBool,
-) -> Result<Outcome, Error> {
-    ensure_of(&TABLE, root, on_state, cancelled)
+/// A yes-or-no question about the disk, answered once and remembered until it
+/// is forgotten.
+///
+/// The question this exists for reads 124 MB, so asking it per page would be a
+/// per-page cost for something that only changes when a model arrives. Which is
+/// also the reason it can be forgotten: the window fetches the model itself,
+/// and a button that appeared to work but changed nothing until the next launch
+/// would be a button that did not work.
+///
+/// Forgetting is safe between documents and not during one: what the answer
+/// decides is the name a page is filed under, and that name has to stay the
+/// same for every page of a document.
+pub struct Cached(RwLock<Option<bool>>);
+
+impl Cached {
+    pub const fn new() -> Self {
+        Self(RwLock::new(None))
+    }
+
+    /// The remembered answer, looking it up if this is the first question or
+    /// the first since the last [`Cached::forget`].
+    pub fn get(&self, look: impl FnOnce() -> bool) -> bool {
+        // Taken for writing even to read, so that two threads asking at once
+        // read the model once between them rather than twice.
+        let mut known = self.0.write().unwrap_or_else(|p| p.into_inner());
+
+        *known.get_or_insert_with(look)
+    }
+
+    /// Throws the answer away, so the next question looks at the disk again.
+    pub fn forget(&self) {
+        let mut known = self.0.write().unwrap_or_else(|p| p.into_inner());
+        *known = None;
+    }
+}
+
+impl Default for Cached {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Fetches the model if it is not already here.
@@ -519,6 +553,38 @@ mod tests {
 
     /// Big enough that a resume is a resume, small enough to be quick.
     const SIZE: usize = 300 * 1024;
+
+    /// The whole reason the layout and table models can arrive while a window
+    /// is open. A `OnceLock` gave this answer once and could not take it back,
+    /// which made a download mid-session a download that changed nothing.
+    #[test]
+    fn the_answer_is_looked_up_once_and_again_after_forgetting() {
+        let cell = Cached::new();
+
+        assert!(cell.get(|| true));
+
+        // Asking again must not look again: this closure is what looking costs,
+        // and the answer above is the one that is still on record.
+        assert!(cell.get(|| panic!("the disk was read twice for one answer")));
+
+        // And after forgetting it must look again. The answer is inverted
+        // rather than the closure counted, so a remembered `true` fails here
+        // instead of passing on the strength of the first line.
+        cell.forget();
+
+        assert!(!cell.get(|| false), "forgetting did not make it look again");
+    }
+
+    /// Forgetting a question nobody has asked is not a way to get an answer
+    /// without looking.
+    #[test]
+    fn forgetting_before_asking_still_looks() {
+        let cell = Cached::new();
+        cell.forget();
+
+        assert!(!cell.get(|| false));
+    }
+
 
     fn body() -> Vec<u8> {
         (0..SIZE).map(|i| ((i * 7) % 251) as u8).collect()
