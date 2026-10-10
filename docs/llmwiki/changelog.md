@@ -4,6 +4,83 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — Tables are read by a model now, and 1 of 9 became 7 of 9
+
+**What:** `SLANet_plus`, 7.4 MB, downloaded by the same command as the layout
+model and run in the same process, reads the grid of a table — the rows, the
+columns, and a box for every cell. The recognised words go into the cells by
+where the boxes are.
+
+| | before | after |
+|---|---|---|
+| **tables found** | **1 / 9** | **7 / 9** |
+| mean loss | 0.481 | **0.450** |
+| error, order ignored | 0.197 | **0.196** |
+| error, order included | 0.360 | 0.377 |
+| 24 pages | 65 s | 67 s |
+
+`061`, `062`, `101`, `102`, `111` and two of `082`'s three went from no table to
+one. `062` is an eleven-column financial statement that the geometry read as a
+column of loose words with the values against the wrong headings.
+
+**This was never a search problem, it was a model problem.** The project spent
+its geometry on inferring a table from whitespace — merge the x-spans, find the
+gutters, cluster the rows — and the industry does not infer one, it predicts
+one. PP-Structure is detect the lines, read them, and predict the structure;
+**this project already had the first two**, because that is what `rapidocr` is.
+One model was missing and it is smaller than the weights already in the binary.
+
+**Chosen by measurement, over three candidates and one that could not be
+tried.** `SLANet_plus` 317/574 cells, `SLANeXt_wired` 45/588 and
+`SLANeXt_wireless` 37/588 — and the second two are not disproven, only
+unreachable: their cell boxes do not decode, and their structure heads are fine,
+so comparing them fairly needs an adapter nobody wrote.
+
+### Three things only running them said
+
+**Same family, same tensor signature, different box space.** `x[1,3,S,S]` in, a
+location output and a fifty-class structure output out, both. And `SLANet_plus`
+answers in the padded square while `SLANeXt` answers in the resized picture
+inside it — a table 1470 by 479 comes back in the top 0.326 of one and spread
+across 0 to 0.98 of the other. Swapping a model is not swapping a model.
+
+**The dictionary PaddleOCR ships does not match the model's vocabulary.** Fifty
+classes, forty-eight entries in the file, low ids right and high ids wrong:
+decoding straight through turns every plain cell into ` rowspan="20"`. The
+merged cell is *appended* by PaddleOCR rather than stored, and the file's last
+entry arrived after this model was trained.
+
+**An hour was spent on the harness, twice, before the model was.** A document
+with two tables was flattened into one grid; then two lists of tables were
+paired by position when the detectors returned them in different orders, which
+scored two correct tables as nothing. 42.8%, then 33.4%, then 55.2%.
+
+### Two things it took a second attempt to get right in the engine
+
+**Losing a line is worse than losing a table.** The first version put a line in
+a cell only when the line's centre fell inside the cell's box. On `061` that
+dropped most of the table's words and the content error went from 0.084 to
+**0.614** — the page scored worse than it had as loose prose. Every line now
+goes to the cell holding most of it and, failing that, to the nearest.
+
+**The empty rows are load-bearing.** The model puts its header in a row of its
+own and leaves it empty, so a table comes out with a blank line every other row.
+Dropping them looks like an obvious tidy and **took the tables from seven of
+nine back to one** — a row with no words in it is still the row the headings are
+above. Kept, with the note, rather than re-learned.
+
+### Not right yet
+
+**A `rowspan` is not collapsed**, so a table whose labels cover two rows comes
+out taller than the document's. The cells are in the right columns.
+
+**The character metric is the wrong instrument for a table.** It is measured
+over the whole page, so a table with every cell correct and its rows split
+differently scores worse than the same words as prose. `docfusion bench` needs a
+TEDS before table quality can be read off it.
+
+---
+
 ## 2026-10-10 — A switch for the model, so that stopping it stops nothing else
 
 **What:** a switch in the settings tab that turns the vision model off without

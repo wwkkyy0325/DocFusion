@@ -30,6 +30,7 @@ use rapidocr_core::config::RapidOcrConfig;
 use rapidocr_core::types::{OcrLine, OcrOutput};
 
 use crate::structure;
+use crate::table;
 
 const ENGINE_ID: &str = "rapidocr";
 
@@ -41,14 +42,6 @@ const ENGINE_ID: &str = "rapidocr";
 /// the layout-aware one, which re-reads more than it has to and cannot serve a
 /// page it should not.
 const ENGINE_VERSION: &str = "1.1.0";
-
-/// What this engine calls itself when the structure model is here as well.
-///
-/// A different name and not a different version, because it is a different
-/// answer: the same page comes out of here with headings and tables that the
-/// recogniser alone cannot see, and two outputs of one name is a cache that
-/// serves one to a run that asked for the other.
-const STRUCTURED_ID: &str = "rapidocr+layout";
 
 /// Two lines belong to the same paragraph when the vertical gap between them is
 /// under this fraction of their height.
@@ -75,6 +68,11 @@ pub struct RapidOcrBackend {
     /// once spread out instead of all queueing on the same one.
     next: AtomicUsize,
     source: Source,
+    /// The table structure reader, when its weights are here.
+    ///
+    /// Only ever consulted about a region the layout model called a table, so
+    /// it is meaningless without that one and is only downloaded beside it.
+    tables: Option<table::Reader>,
     /// The layout detector, when its weights are here.
     ///
     /// This is what turns a page of lines into a page of headings, tables and
@@ -117,6 +115,10 @@ impl RapidOcrBackend {
             backend.structure = Some(structure::Detector::new(structure::model_path()));
         }
 
+        if table::available() {
+            backend.tables = Some(table::Reader::new(table::model_path()));
+        }
+
         backend
     }
 
@@ -148,6 +150,7 @@ impl RapidOcrBackend {
             next: AtomicUsize::new(0),
             source,
             structure: None,
+            tables: None,
         }
     }
 
@@ -327,10 +330,20 @@ fn model_cache_dir() -> PathBuf {
 
 impl OcrBackend for RapidOcrBackend {
     fn id(&self) -> EngineId {
-        match self.structure {
-            Some(_) => EngineId::from(STRUCTURED_ID),
-            None => EngineId::from(ENGINE_ID),
+        // Built from what is here, because the name is the cache key and what
+        // read the page is what the page is worth reading again against. A
+        // table reader cannot be here without the layout model, since it is
+        // only ever asked about a region that one called a table.
+        let mut name = String::from(ENGINE_ID);
+
+        if self.structure.is_some() {
+            name.push_str("+layout");
         }
+        if self.tables.is_some() {
+            name.push_str("+tables");
+        }
+
+        EngineId::from(name)
     }
 
     fn version(&self) -> &str {
@@ -373,7 +386,12 @@ impl OcrBackend for RapidOcrBackend {
             Ok(if regions.is_empty() {
                 lines_to_blocks(&output, width, height, &self.id())
             } else {
-                structure::blocks_from(&output.lines, &regions, width, height, &self.id())
+                let tables = self.tables.as_ref().map(|reader| structure::Tables {
+                    page: &rgb,
+                    reader,
+                });
+
+                structure::blocks_from(&output.lines, &regions, tables, width, height, &self.id())
             })
         })
     }

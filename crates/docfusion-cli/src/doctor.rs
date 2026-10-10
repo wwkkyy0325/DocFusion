@@ -28,24 +28,31 @@ use crate::{Cli, CliError, FAILED, OK, endpoint, engine_ids};
 const OCR_ONLY: &str = "ocr-only";
 const VISION: &str = "vision";
 
-/// The line about the structure model, fetching it first when asked to.
+/// The line about one of the models, fetching it first when asked to.
 ///
 /// The one thing in this report that can be acted on here rather than
-/// described: 124 MB is a decision, and `--fetch` is how somebody makes it.
-fn structure_line(root: &std::path::Path, fetch: bool) -> Result<String, CliError> {
-    use docfusion_store::layout::{State, STRUCTURE};
+/// described: a quarter of a gigabyte is a decision, and `--fetch` is how
+/// somebody makes it. Seven megabytes is a smaller decision and the same line.
+fn model_line(
+    label: &str,
+    spec: &docfusion_store::layout::Spec,
+    description: &str,
+    root: &std::path::Path,
+    fetch: bool,
+) -> Result<String, CliError> {
+    use docfusion_store::layout::State;
 
-    let megabytes = STRUCTURE.bytes / (1024 * 1024);
+    let megabytes = spec.bytes / (1024 * 1024);
 
-    if docfusion_store::layout::present(root) {
+    if docfusion_store::layout::present_spec(spec, root) {
         return Ok(format!(
-            "structure       present, {megabytes} MB — finds headings, tables, headers and footers"
+            "{label:<15} present, {megabytes} MB — {description}"
         ));
     }
 
     if !fetch {
         return Ok(format!(
-            "structure       not downloaded; `docfusion doctor --fetch` gets it ({megabytes} MB)"
+            "{label:<15} not downloaded; `docfusion doctor --fetch` gets it ({megabytes} MB)"
         ));
     }
 
@@ -54,7 +61,8 @@ fn structure_line(root: &std::path::Path, fetch: bool) -> Result<String, CliErro
     // bury everything else the command said.
     let cancelled = std::sync::atomic::AtomicBool::new(false);
 
-    let outcome = docfusion_store::layout::ensure(
+    let outcome = docfusion_store::layout::ensure_of(
+        spec,
         root,
         &mut |state| match state {
             State::Fetching { received, total, .. } => {
@@ -70,10 +78,10 @@ fn structure_line(root: &std::path::Path, fetch: bool) -> Result<String, CliErro
 
     match outcome {
         Ok(docfusion_store::layout::Outcome::Ready(_)) => Ok(format!(
-            "structure       present, {megabytes} MB — finds headings, tables, headers and footers"
+            "{label:<15} present, {megabytes} MB — {description}"
         )),
         Ok(docfusion_store::layout::Outcome::Cancelled) => {
-            Ok("structure       stopped, and nothing is wrong".to_owned())
+            Ok(format!("{label:<15} stopped, and nothing is wrong"))
         }
         Err(error) => Err(CliError::Usage(error.to_string())),
     }
@@ -178,7 +186,20 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
     // Reported whether or not it is here, because "it read your scan and found
     // no headings" and "it read your scan and finds headings" are different
     // answers, and only one of them is worth looking for a bug in.
-    lines.push(structure_line(&model_root, cli.fetch)?);
+    lines.push(model_line(
+        "structure",
+        &docfusion_store::layout::STRUCTURE,
+        "finds headings, tables, headers and footers",
+        &model_root,
+        cli.fetch,
+    )?);
+    lines.push(model_line(
+        "tables",
+        &docfusion_store::layout::TABLE,
+        "reads the cells of a table, rather than guessing at them",
+        &model_root,
+        cli.fetch,
+    )?);
 
     lines.push(format!("capability      {tier}"));
 

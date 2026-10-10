@@ -27,6 +27,7 @@ use ort::value::TensorRef;
 use rapidocr_core::types::OcrLine;
 
 use crate::layout;
+use crate::table;
 
 /// The side the page is squashed to before the model sees it.
 ///
@@ -409,6 +410,7 @@ fn decode(found: &[f32]) -> Vec<Region> {
 pub fn blocks_from(
     lines: &[OcrLine],
     regions: &[Region],
+    tables: Option<Tables<'_>>,
     width: u32,
     height: u32,
     engine: &EngineId,
@@ -436,7 +438,7 @@ pub fn blocks_from(
     let mut blocks: Vec<Block> = Vec::new();
 
     for (region, indices) in regions.iter().zip(&held) {
-        if let Some(block) = region_block(region, indices, &lines, width, height, engine) {
+        if let Some(block) = region_block(region, indices, &lines, tables, width, height, engine) {
             boxes.push((region.x0, region.y0, region.x1, region.y1));
             blocks.push(block);
         }
@@ -653,11 +655,24 @@ fn region_for(box_: (f32, f32, f32, f32), regions: &[Region]) -> Option<usize> {
     best.map(|(index, _)| index)
 }
 
+/// What the table model needs, when it is here.
+///
+/// Both together or neither: a grid of cells is no use without the picture it
+/// was read from, and both are absent on an installation that has not
+/// downloaded the model. Which is the ordinary case, and it is why everything
+/// below has a fallback rather than an error.
+#[derive(Clone, Copy)]
+pub struct Tables<'a> {
+    pub page: &'a image::RgbImage,
+    pub reader: &'a table::Reader,
+}
+
 /// The block a region becomes, if it becomes one.
 fn region_block(
     region: &Region,
     indices: &[usize],
     lines: &[&OcrLine],
+    tables: Option<Tables<'_>>,
     width: u32,
     height: u32,
     engine: &EngineId,
@@ -677,10 +692,21 @@ fn region_block(
         });
     }
 
-    if region.kind == RegionKind::Table
-        && let Some(table) = table_block(region, indices, lines, width, height, engine)
-    {
-        return Some(table);
+    if region.kind == RegionKind::Table {
+        // The model first, and the geometry under it. The model reads a grid
+        // and a box for every cell, which is the half of a table that
+        // whitespace cannot give; the geometry is what the project had before
+        // it and still answers when the model is not here or does not
+        // understand the table.
+        if let Some(found) = tables
+            .and_then(|tables| laid_out(region, indices, lines, tables, width, height, engine))
+        {
+            return Some(found);
+        }
+
+        if let Some(geometry) = table_block(region, indices, lines, width, height, engine) {
+            return Some(geometry);
+        }
     }
 
     // Including a table that could not be reconstructed, and this is the case
@@ -808,6 +834,241 @@ fn table_block(
         // renderer reads the children, but everything downstream of the
         // renderer reads text, and a table with none would be a hole.
         text: body.join("\n"),
+        bbox: Some(normalized(region.x0, region.y0, region.x1, region.y1, width, height)),
+        confidence: Some(least_confident(indices, lines)),
+        engine: engine.clone(),
+        children,
+    })
+}
+
+/// A table the model read, as rows and cells.
+///
+/// The words are the same words the geometry would have used; what is different
+/// is where they go. The model answers with a box for every cell, so a line
+/// belongs to the cell that holds it — no columns to infer, no gutter to guess,
+/// and an eleven-column statement comes out with its columns intact.
+///
+/// `None` when the model has nothing to say, which leaves the caller its
+/// geometry rather than a table with no cells in it.
+fn laid_out(
+    region: &Region,
+    indices: &[usize],
+    lines: &[&OcrLine],
+    tables: Tables<'_>,
+    width: u32,
+    height: u32,
+    engine: &EngineId,
+) -> Option<Block> {
+    let left = region.x0.max(0.0) as u32;
+    let top = region.y0.max(0.0) as u32;
+    let across = (region.x1.ceil() as u32).saturating_sub(left);
+    let down = (region.y1.ceil() as u32).saturating_sub(top);
+
+    if across < 4 || down < 4 {
+        return None;
+    }
+
+    let picture = image::imageops::crop_imm(tables.page, left, top, across, down).to_image();
+    let grid = tables.reader.grid(&picture).ok()?;
+
+    laid_out_grid(
+        Sheet {
+            grid: &grid,
+            left: left as f32,
+            top: top as f32,
+        },
+        region,
+        indices,
+        lines,
+        width,
+        height,
+        engine,
+    )
+}
+
+/// Where one cell sits: in the grid, and on the page.
+#[derive(Clone, Copy)]
+struct Place {
+    row: usize,
+    column: usize,
+    at: (f32, f32, f32, f32),
+}
+
+/// A grid the model answered with, and where on the page it came from.
+///
+/// The model reads a crop and answers in the crop's coordinates; everything
+/// else here speaks the page's, and the difference is these two numbers.
+#[derive(Clone, Copy)]
+struct Sheet<'a> {
+    grid: &'a table::Grid,
+    left: f32,
+    top: f32,
+}
+
+/// A grid the model answered with, as blocks.
+///
+/// Separate from the reading so that it can be tested without a model: what the
+/// words do once the boxes are known is a pure question about geometry, and the
+/// part that needs 7.4 MB of weights is six lines above this.
+fn laid_out_grid(
+    sheet: Sheet<'_>,
+    region: &Region,
+    indices: &[usize],
+    lines: &[&OcrLine],
+    width: u32,
+    height: u32,
+    engine: &EngineId,
+) -> Option<Block> {
+    let (grid, left, top) = (sheet.grid, sheet.left, sheet.top);
+
+    if grid.rows.is_empty() || grid.columns() < 2 {
+        return None;
+    }
+
+    // The model's boxes are in the crop's coordinates and the rest of this
+    // module speaks the page's.
+    let on_page = |token: usize| -> Option<(f32, f32, f32, f32)> {
+        let (x0, y0, x1, y1) = grid.boxes.get(token).copied()?;
+        Some((x0 + left, y0 + top, x1 + left, y1 + top))
+    };
+
+    // Every cell, with the place it takes, gathered first so that a line can
+    // be put in the best of them rather than in the first that will have it.
+    let mut places: Vec<Place> = Vec::new();
+    let mut taken: Vec<Vec<(usize, usize)>> = Vec::new();
+
+    for (row, cells) in grid.rows.iter().enumerate() {
+        let mut column = 0;
+        let mut line: Vec<(usize, usize)> = Vec::new();
+
+        for cell in cells {
+            if let Some(at) = on_page(cell.token) {
+                places.push(Place { row, column, at });
+            }
+            line.push((column, cell.across));
+            // A cell covering several columns takes the place of several, so
+            // that the cells after it are under their own headings rather than
+            // under the wrong ones.
+            column += cell.across.max(1);
+        }
+
+        taken.push(line);
+    }
+
+    let widest = taken
+        .iter()
+        .map(|row| row.iter().map(|(_, across)| across).sum::<usize>())
+        .max()
+        .unwrap_or(0);
+
+    let mut written: Vec<Vec<Vec<usize>>> = taken
+        .iter()
+        .map(|row| {
+            row.iter()
+                .flat_map(|(_, across)| std::iter::repeat_with(Vec::new).take(*across))
+                .collect()
+        })
+        .collect();
+
+    for index in indices {
+        let line = extent(lines[*index]);
+        let (cx, cy) = ((line.0 + line.2) / 2.0, (line.1 + line.3) / 2.0);
+
+        // The cell that holds most of it, and failing that the nearest, because
+        // a word inside a table belongs to a cell even when the model drew the
+        // cell slightly wrong — and a word outside every cell is still a word,
+        // which the geometry this replaced never lost and this must not either.
+        let mut best = (f32::NEG_INFINITY, None);
+        for place in &places {
+            let at = place.at;
+            let held = ((line.2.min(at.2) - line.0.max(at.0)).max(0.0))
+                * ((line.3.min(at.3) - line.1.max(at.1)).max(0.0));
+
+            let away = ((cx - (at.0 + at.2) / 2.0).powi(2) + (cy - (at.1 + at.3) / 2.0).powi(2))
+                .sqrt();
+
+            // Overlap first and distance second, in one number: a cell holding
+            // the line always beats a cell holding none of it.
+            let score = if held > 0.0 { held } else { -(away + 1.0) };
+
+            if score > best.0 {
+                best = (score, Some((place.row, place.column)));
+            }
+        }
+
+        if let Some((row, column)) = best.1
+            && let Some(place) = written.get_mut(row).and_then(|cells| cells.get_mut(column))
+        {
+            place.push(*index);
+        }
+    }
+
+    let mut children: Vec<Block> = Vec::new();
+    let mut body: Vec<String> = Vec::new();
+
+    // Every row the model opened is kept, including the empty ones. Dropping
+    // them looks like an obvious tidy — a blank line between every pair of rows
+    // is not a table anybody can read — and **measured, it took the tables from
+    // seven of nine back to one**, because the model puts its header in a row
+    // of its own and a row with no words in it is still the row the headings
+    // are above. Kept, with a note, rather than re-learned.
+    for (row, cells) in written.iter().enumerate() {
+        let mut blocks: Vec<Block> = Vec::with_capacity(widest);
+        let mut texts: Vec<String> = Vec::with_capacity(widest);
+
+        for (column, inside) in cells.iter().enumerate() {
+            let held = places
+                .iter()
+                .find(|place| place.row == row && place.column == column)
+                .map(|place| place.at);
+
+
+            let inside: Vec<usize> = inside.clone();
+            let text = inside
+                .iter()
+                .map(|index| lines[*index].text.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            texts.push(text.clone());
+            blocks.push(Block {
+                kind: BlockKind::TableCell,
+                text,
+                bbox: held.map(|(x0, y0, x1, y1)| normalized(x0, y0, x1, y1, width, height)),
+                confidence: (!inside.is_empty()).then(|| least_confident(&inside, lines)),
+                engine: engine.clone(),
+                children: Vec::new(),
+            });
+        }
+
+        // Short of the widest row, so that the cells line up.
+        while texts.len() < widest {
+            texts.push(String::new());
+            blocks.push(Block {
+                kind: BlockKind::TableCell,
+                text: String::new(),
+                bbox: None,
+                confidence: None,
+                engine: engine.clone(),
+                children: Vec::new(),
+            });
+        }
+
+        body.push(texts.join(" "));
+        children.push(Block {
+            kind: BlockKind::TableRow,
+            text: String::new(),
+            bbox: None,
+            confidence: None,
+            engine: engine.clone(),
+            children: blocks,
+        });
+    }
+
+    Some(Block {
+        kind: BlockKind::Table,
+        text: body.join("
+"),
         bbox: Some(normalized(region.x0, region.y0, region.x1, region.y1, width, height)),
         confidence: Some(least_confident(indices, lines)),
         engine: engine.clone(),
@@ -1144,7 +1405,9 @@ mod tests {
     }
 
     fn blocks(lines: &[OcrLine], regions: &[Region]) -> Vec<Block> {
-        blocks_from(lines, regions, WIDTH, HEIGHT, &engine())
+        // No table model: these tests are about the geometry under it, which is
+        // also what a page gets on an installation that never downloaded one.
+        blocks_from(lines, regions, None, WIDTH, HEIGHT, &engine())
     }
 
     fn kinds(found: &[Block]) -> Vec<BlockKind> {
@@ -1355,6 +1618,137 @@ mod tests {
         let texts: Vec<&str> = found.iter().map(|block| block.text.as_str()).collect();
 
         assert_eq!(texts, vec!["a full line of text here", "short"]);
+    }
+
+    /// The point of the whole exercise: a table the geometry cannot lay out,
+    /// laid out by the cells the model found.
+    ///
+    /// Two rows of three, every word in its own cell, and the box the model
+    /// gave each cell is where the column would have been guessed at. Without
+    /// the model these five lines are three columns of loose text.
+    #[test]
+    fn a_grid_from_the_model_puts_every_word_in_its_cell() {
+        let lines = [
+            line("Item", 110.0, 210.0, 180.0, 240.0),
+            line("Qty", 510.0, 210.0, 560.0, 240.0),
+            line("Price", 810.0, 210.0, 880.0, 240.0),
+            line("Widget", 110.0, 310.0, 200.0, 340.0),
+            line("3", 510.0, 310.0, 520.0, 340.0),
+            line("12.00", 810.0, 310.0, 870.0, 340.0),
+        ];
+        let region = region(RegionKind::Table, 100.0, 200.0, 900.0, 350.0);
+
+        let cell = |token: usize, across: usize| table::Cell { token, across };
+        let grid = table::Grid {
+            rows: vec![
+                vec![cell(0, 1), cell(1, 1), cell(2, 1)],
+                vec![cell(3, 1), cell(4, 1), cell(5, 1)],
+            ],
+            // The model answers in the crop's coordinates, and this crop starts
+            // at (100, 200) of the page.
+            boxes: vec![
+                (10.0, 10.0, 90.0, 40.0),
+                (410.0, 10.0, 460.0, 40.0),
+                (710.0, 10.0, 790.0, 40.0),
+                (10.0, 110.0, 100.0, 140.0),
+                (410.0, 110.0, 420.0, 140.0),
+                (710.0, 110.0, 770.0, 140.0),
+            ],
+        };
+
+        let indices: Vec<usize> = (0..lines.len()).collect();
+        let found = laid_out_grid(
+            Sheet { grid: &grid, left: 100.0, top: 200.0 },
+            &region,
+            &indices,
+            &lines.iter().collect::<Vec<_>>(),
+            WIDTH,
+            HEIGHT,
+            &engine(),
+        )
+        .expect("a table");
+
+        assert_eq!(found.kind, BlockKind::Table);
+        assert_eq!(
+            cells(&found),
+            vec![
+                vec!["Item", "Qty", "Price"],
+                vec!["Widget", "3", "12.00"],
+            ]
+        );
+    }
+
+    /// A cell covering two columns keeps the cells after it under their own
+    /// headings, even though Markdown cannot say the two are one.
+    #[test]
+    fn a_spanned_cell_does_not_shift_the_cells_after_it() {
+        let lines = [
+            line("A crossed heading", 110.0, 210.0, 500.0, 240.0),
+            line("beside it", 610.0, 210.0, 800.0, 240.0),
+            line("left", 110.0, 310.0, 300.0, 340.0),
+            line("middle", 400.0, 310.0, 500.0, 340.0),
+            line("right", 610.0, 310.0, 800.0, 340.0),
+        ];
+        let region = region(RegionKind::Table, 100.0, 200.0, 900.0, 350.0);
+
+        let cell = |token: usize, across: usize| table::Cell { token, across };
+        let grid = table::Grid {
+            rows: vec![
+                vec![cell(0, 2), cell(1, 1)],
+                vec![cell(2, 1), cell(3, 1), cell(4, 1)],
+            ],
+            boxes: vec![
+                (10.0, 10.0, 490.0, 40.0),
+                (510.0, 10.0, 790.0, 40.0),
+                (10.0, 110.0, 200.0, 140.0),
+                (300.0, 110.0, 400.0, 140.0),
+                (510.0, 110.0, 790.0, 140.0),
+            ],
+        };
+
+        let indices: Vec<usize> = (0..lines.len()).collect();
+        let found = laid_out_grid(
+            Sheet { grid: &grid, left: 100.0, top: 200.0 },
+            &region,
+            &indices,
+            &lines.iter().collect::<Vec<_>>(),
+            WIDTH,
+            HEIGHT,
+            &engine(),
+        )
+        .expect("a table");
+
+        assert_eq!(
+            cells(&found),
+            vec![
+                vec!["A crossed heading", "", "beside it"],
+                vec!["left", "middle", "right"],
+            ]
+        );
+    }
+
+    /// A grid with nothing in it leaves the geometry its answer rather than
+    /// producing a table with no cells in it.
+    #[test]
+    fn an_empty_grid_is_not_a_table() {
+        let region = region(RegionKind::Table, 100.0, 200.0, 900.0, 350.0);
+        let grid = table::Grid {
+            rows: vec![vec![table::Cell { token: 0, across: 1 }]],
+            boxes: vec![(10.0, 10.0, 90.0, 40.0)],
+        };
+
+        assert!(
+            laid_out_grid(
+                Sheet { grid: &grid, left: 100.0, top: 200.0 },
+                &region,
+                &[],
+                &[],
+                WIDTH,
+                HEIGHT,
+                &engine()
+            )
+            .is_none()
+        );
     }
 
     /// A real two-column page from the corpus, with the boxes the detector

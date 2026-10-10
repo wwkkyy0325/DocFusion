@@ -450,6 +450,14 @@ inside it.
 - **A region that cannot become the kind it claims becomes a paragraph.** A
   `Table` with no rows renders as nothing, so this is a data-loss question and
   not a cosmetic one.
+- **A table is read by a model, not inferred from whitespace.** `SLANet_plus`,
+  **7.4 MB**, fetched by `docfusion doctor --fetch` beside the layout model and
+  run in the same process. It answers with the rows, the columns and a box for
+  every cell; `rapidocr` supplies the words and they go into the cells by where
+  the boxes are, which is the PP-Structure pipeline with the two thirds this
+  project already had. **Measured 1 of 9 tables before it and 7 of 9 after.**
+  The geometry is still there, under it, for an installation that has not
+  downloaded the model and for a table the model does not understand.
 - **Reading order is column-aware.** The page is cut into vertical corridors by
   measuring how much of its *height* is covered at each x, then into bands by
   anything spanning the width; between two bands the columns are read one after

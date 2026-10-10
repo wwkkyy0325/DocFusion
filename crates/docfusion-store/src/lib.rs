@@ -22,3 +22,4 @@ pub mod ocr;
 pub mod pipeline;
 pub mod reconcile;
 pub mod structure;
+pub mod table;

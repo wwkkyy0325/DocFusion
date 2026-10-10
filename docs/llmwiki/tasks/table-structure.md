@@ -30,12 +30,14 @@ exactly on the ruled cells**. 124 MB of layout model was worth arguing about;
       → verified: **SLANet_plus, 317 of 574 expected cells (55.2%)**, against
       7.7% and 6.3% for the two SLANeXt exports — and those two are not
       disproven, only unreachable, because their cell boxes do not decode.
-- [ ] 3. Wire the winner into `docfusion-store` as a second downloaded model,
+- [x] 3. Wire the winner into `docfusion-store` as a second downloaded model,
       the same shape as the layout model: one file, one digest, the engine's
       name follows.
-      → verify: `cargo test`, then `docfusion bench` on the corpus.
-- [ ] 4. Re-run the corpus and record what the tables came to.
-      → verify: the table count moves off 1/9.
+      → verified: 455 tests, clippy clean, and the model fetched by
+      `docfusion doctor --fetch` like the layout one.
+- [x] 4. Re-run the corpus and record what the tables came to.
+      → verified: **tables 1/9 → 7/9**, mean loss 0.481 → **0.450**, content
+      error unchanged at 0.196, reading-order error 0.360 → 0.377.
 
 ## Known before starting
 
@@ -94,3 +96,48 @@ as nothing at all. Paired by best match, the same output scores 55.2%.
 
 **The number that matters is the one the model produced, not the first one the
 harness printed.**
+
+## In the engine
+
+| | before | after |
+|---|---|---|
+| **tables found** | **1 / 9** | **7 / 9** |
+| mean loss | 0.481 | **0.450** |
+| error, order ignored | 0.197 | **0.196** |
+| error, order included | 0.360 | 0.377 |
+| headings found | 8/64 | 8/64 |
+| 24 pages | 65 s | 67 s |
+
+Per case, the tables that went from none to one: `061`, `062`, `101`, `102`,
+`111`, and two of three on `082`.
+
+### Two things it took a second attempt to get right
+
+**Losing a line is worse than losing a table.** The first version put a line in
+a cell only when the line's centre fell inside the cell's box, and on `061` that
+dropped most of the table's words — the content error on that page went from
+0.084 to **0.614**, and the page scored worse than it had as loose prose. Every
+line now goes to whichever cell holds most of it and, failing that, to the
+nearest, so a word inside a table region is never dropped. The content error
+across the corpus came back to what it was.
+
+**The empty rows are load-bearing.** The model puts its header in a row of its
+own and leaves it empty of text, so a table comes out with a blank line every
+other row. Dropping the empty rows looks like an obvious tidy and **took the
+tables from seven of nine back to one**, because a row with no words in it is
+still the row the headings are above. Kept, with a note, rather than
+re-learned.
+
+### What is still not right
+
+**A `rowspan` is not collapsed.** On `062` the model says the row labels cover
+two rows each, which is true to the page, and the grid comes out with the label
+on one row and its values on the next. The cells are all in the right columns;
+the table is taller than the document's.
+
+**The character metric is the wrong instrument for a table.** Content error is
+measured over the whole page, and a table whose cells are all correct but whose
+rows are split differently scores worse than the same words as loose prose —
+`062`'s own cells were measured at 165 of 165 by the probe and its content error
+still rose. The project's own design says tables need TEDS; `docfusion bench`
+does not compute one yet.

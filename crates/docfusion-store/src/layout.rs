@@ -63,6 +63,32 @@ pub const STRUCTURE: Spec = Spec {
     ],
 };
 
+/// PaddleOCR's table structure recogniser.
+///
+/// Reads a picture of a table and answers with the grid — the rows, the
+/// columns, and a box for each cell — which is the half of a table that
+/// geometry cannot do. The recognised lines are then put into the cells by
+/// where the boxes are, which is what PP-Structure does and what this project
+/// now has the other two thirds of: the detector and the recogniser are
+/// `rapidocr`.
+///
+/// **7.4 MB**, which is why this one is not an argument. Its own size is what
+/// settled the question the 124 MB layout model had to be measured to settle.
+///
+/// The mirror is first because the ONNX export is Hugging Face's alone —
+/// ModelScope carries `PaddlePaddle/SLANet_plus` in the PaddlePaddle format,
+/// which nothing here can load.
+pub const TABLE: Spec = Spec {
+    id: "slanet-plus",
+    file: "SLANet_plus.onnx",
+    bytes: 7_782_138,
+    sha256: "7790c0c13ce064782c9d22ebeb16b4da8216f83d3ba576da962c106ef58386da",
+    mirrors: &[
+        "https://hf-mirror.com/PaddlePaddle/SLANet_plus_onnx/resolve/main/inference.onnx",
+        "https://huggingface.co/PaddlePaddle/SLANet_plus_onnx/resolve/main/inference.onnx",
+    ],
+};
+
 /// How long a mirror has to answer before the next one is tried.
 ///
 /// Generous, because this is a quarter of a gigabyte and a slow connection is
@@ -158,17 +184,41 @@ pub fn default_root() -> PathBuf {
 
 /// Where the model lives once it is here.
 pub fn path_in(root: &Path) -> PathBuf {
-    root.join(STRUCTURE.file)
+    path_of(&STRUCTURE, root)
 }
 
-/// Whether it is here and correct.
+/// Where any model lives once it is here.
+pub fn path_of(spec: &Spec, root: &Path) -> PathBuf {
+    root.join(spec.file)
+}
+
+/// Whether the named model is here and correct.
 ///
 /// Reads the whole file, because a digest check that skips the bytes is not a
 /// digest check. Called before every use rather than remembered, so a file that
 /// somebody deleted, truncated or replaced is noticed then rather than read as
 /// a page.
+pub fn present_spec(spec: &Spec, root: &Path) -> bool {
+    digest_of(&path_of(spec, root)).as_deref() == Some(spec.sha256)
+}
+
+/// The same, for the model this module is named after.
 pub fn present(root: &Path) -> bool {
-    digest_of(&path_in(root)).as_deref() == Some(STRUCTURE.sha256)
+    present_spec(&STRUCTURE, root)
+}
+
+/// Whether the table structure model is here.
+pub fn table_present(root: &Path) -> bool {
+    present_spec(&TABLE, root)
+}
+
+/// Fetches the table structure model if it is not already here.
+pub fn ensure_table(
+    root: &Path,
+    on_state: &mut dyn FnMut(&State),
+    cancelled: &AtomicBool,
+) -> Result<Outcome, Error> {
+    ensure_of(&TABLE, root, on_state, cancelled)
 }
 
 /// Fetches the model if it is not already here.
@@ -180,15 +230,16 @@ pub fn ensure(
     on_state: &mut dyn FnMut(&State),
     cancelled: &AtomicBool,
 ) -> Result<Outcome, Error> {
-    ensure_spec(&STRUCTURE, root, on_state, cancelled)
+    ensure_of(&STRUCTURE, root, on_state, cancelled)
 }
 
 /// The same, for a spec supplied rather than the one this program ships.
 ///
 /// Separate so that the tests can point the same code at a server they control
-/// on a port that is free on this machine. A download path exercised against
-/// the real mirror is exercised once, by hand, on the day somebody remembers.
-fn ensure_spec(
+/// on a port that is free on this machine, and so that a caller with more than
+/// one model can say which. A download path exercised against the real mirror
+/// is exercised once, by hand, on the day somebody remembers.
+pub fn ensure_of(
     spec: &Spec,
     root: &Path,
     on_state: &mut dyn FnMut(&State),
@@ -570,7 +621,7 @@ mod tests {
     /// on the way, because the two are checked together and by different tests.
     fn run(spec: &Spec, root: &Path, cancelled: &AtomicBool) -> (Result<Outcome, Error>, Vec<State>) {
         let mut states = Vec::new();
-        let outcome = ensure_spec(spec, root, &mut |state| states.push(state.clone()), cancelled);
+        let outcome = ensure_of(spec, root, &mut |state| states.push(state.clone()), cancelled);
 
         (outcome, states)
     }
