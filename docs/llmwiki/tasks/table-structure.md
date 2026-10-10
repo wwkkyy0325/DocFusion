@@ -102,11 +102,18 @@ harness printed.**
 | | before | after |
 |---|---|---|
 | **tables found** | **1 / 9** | **7 / 9** |
-| mean loss | 0.481 | **0.450** |
-| error, order ignored | 0.197 | **0.196** |
-| error, order included | 0.360 | 0.377 |
+| mean loss | 0.481 | **0.428** |
+| error, order ignored | 0.197 | **0.194** |
+| error, order included | 0.360 | **0.332** |
 | headings found | 8/64 | 8/64 |
-| 24 pages | 65 s | 67 s |
+| 24 pages | 65 s | 64 s |
+
+**A fourth thing took a second attempt**, and it was the one that mattered most:
+the boxes are normalised to the padded square and the way back to the picture is
+two steps. The first version did one of them, which is right only when the two
+sides are equal, and a wide table's rows became ten-pixel stripes in the top
+twelfth of the page. It was read as the model predicting a `rowspan`; the grid
+had no spans and was exactly the shape the reference has.
 
 Per case, the tables that went from none to one: `061`, `062`, `101`, `102`,
 `111`, and two of three on `082`.
@@ -129,11 +136,6 @@ still the row the headings are above. Kept, with a note, rather than
 re-learned.
 
 ### What is still not right
-
-**A `rowspan` is not collapsed.** On `062` the model says the row labels cover
-two rows each, which is true to the page, and the grid comes out with the label
-on one row and its values on the next. The cells are all in the right columns;
-the table is taller than the document's.
 
 **The character metric is the wrong instrument for a table.** Content error is
 measured over the whole page, and a table whose cells are all correct but whose

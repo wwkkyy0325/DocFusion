@@ -166,7 +166,7 @@ impl Reader {
         let session = guard.as_mut().expect("loaded immediately above");
 
         let (width, height) = (picture.width() as f32, picture.height() as f32);
-        let pixels = squashed(picture);
+        let (pixels, shaped) = squashed(picture);
         let shape = TensorRef::from_array_view(([1usize, 3, SIDE, SIDE], &pixels[..]))
             .map_err(|error| BackendError::Failed(error.to_string()))?;
 
@@ -182,7 +182,7 @@ impl Reader {
             .map_err(|error| BackendError::Failed(error.to_string()))?;
 
         let tokens = read_tokens(structure);
-        let boxes = read_boxes(located, width, height);
+        let boxes = read_boxes(located, shaped, width, height);
 
         Ok(Grid {
             rows: rows_of(&tokens),
@@ -244,7 +244,11 @@ pub fn model_path() -> PathBuf {
 ///
 /// PaddleOCR decodes to BGR and then normalises with the RGB means, which is
 /// the kind of thing that looks like a mistake and is what the weights expect.
-fn squashed(picture: &image::RgbImage) -> Vec<f32> {
+///
+/// Returns the pixels and the size the picture was given — the long side 488
+/// and the other side shorter — because the boxes come back against the square
+/// and that size is the only thing that says where the picture sat inside it.
+fn squashed(picture: &image::RgbImage) -> (Vec<f32>, (f32, f32)) {
     let (width, height) = (picture.width() as f32, picture.height() as f32);
     let scale = SIDE as f32 / width.max(height).max(1.0);
     let across = ((width * scale).round() as u32).max(1).min(SIDE as u32);
@@ -270,7 +274,7 @@ fn squashed(picture: &image::RgbImage) -> Vec<f32> {
         }
     }
 
-    pixels
+    (pixels, (across as f32, down as f32))
 }
 
 /// The most likely token at each step, stopped where the model says to stop.
@@ -299,10 +303,23 @@ fn read_tokens(logits: &[f32]) -> Vec<u32> {
 /// pixels of the resized picture — which is what the first version of this did
 /// — puts all of them in the top-left corner.
 ///
+/// **Getting from the square to the picture is two steps, not one.** The box
+/// times the square's side is where it is in the square; that times the picture
+/// over the resized size is where it is in the picture. Doing only the first
+/// and then scaling by the picture, which is what this did second, is right
+/// when the two sides happen to be equal — a wide table is resized to 488 by
+/// 148, and a table of fifteen rows came out sixty pixels tall, every row of it
+/// a ten-pixel stripe with its words stacked in rows that were not its own.
+///
 /// The sibling model `SLANeXt` answers in the resized picture instead, with the
 /// same tensor signature. Two models, one family, two conventions.
-fn read_boxes(located: &[f32], width: f32, height: f32) -> Vec<(f32, f32, f32, f32)> {
-    let (across, down) = (width / SIDE as f32, height / SIDE as f32);
+fn read_boxes(
+    located: &[f32],
+    resized: (f32, f32),
+    width: f32,
+    height: f32,
+) -> Vec<(f32, f32, f32, f32)> {
+    let (across, down) = (width / resized.0, height / resized.1);
 
     located
         .chunks_exact(8)
@@ -472,18 +489,27 @@ mod tests {
     fn boxes_are_mapped_from_the_square_to_the_picture() {
         let located = [0.0, 0.0, 0.5, 0.0, 0.5, 0.25, 0.0, 0.25];
 
-        let boxes = read_boxes(&located, 1470.0, 479.0);
+        // A table 1470 by 479 resizes to 488 by 159 and is padded to 488.
+        let boxes = read_boxes(&located, (488.0, 159.0), 1470.0, 479.0);
 
         assert_eq!(boxes.len(), 1);
-        // Half way across the square is half way across the picture, but a
-        // quarter of the way down a square that is 488 tall is a quarter of
-        // the picture's height only because the box was mapped through the
-        // square's own side first.
+
         let (left, top, right, bottom) = boxes[0];
         assert!((left - 0.0).abs() < 1e-3);
-        assert!((right - 735.0).abs() < 1.0, "{right}");
         assert!((top - 0.0).abs() < 1e-3);
-        assert!((bottom - 119.75).abs() < 1.0, "{bottom}");
+
+        // Across is the easy half: the long side was resized *to* the square's
+        // side, so half the square across is half the picture across.
+        assert!((right - 735.0).abs() < 1.0, "{right}");
+
+        // Down is not, and this is the number two versions of this disagreed
+        // about. A quarter of the way down the square is the square's 122nd
+        // row, and the picture is only the first 159 of its 488 rows — so it is
+        // 0.77 of the way down the *picture*, not a quarter. A wide table is
+        // resized to 488 by 159 whatever its own proportions, and a mapping
+        // that forgets the second step draws every row of a fifteen-row table
+        // as a ten-pixel stripe in the top twelfth of the page.
+        assert!((bottom - 367.5).abs() < 1.0, "{bottom}");
     }
 
     #[test]
@@ -511,9 +537,10 @@ mod tests {
     fn a_wide_table_is_squashed_into_a_square() {
         let picture = image::RgbImage::from_pixel(1470, 479, image::Rgb([255, 255, 255]));
 
-        let pixels = squashed(&picture);
+        let (pixels, shaped) = squashed(&picture);
 
         assert_eq!(pixels.len(), 3 * SIDE * SIDE);
+        assert_eq!(shaped, (488.0, 159.0), "the long side and the short one");
         // White is one before the shift, and the shift is not zero, so a
         // channel is either the top or the bottom of the picture.
         let top = pixels[0];

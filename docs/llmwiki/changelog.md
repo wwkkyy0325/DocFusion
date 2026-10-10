@@ -14,10 +14,10 @@ where the boxes are.
 | | before | after |
 |---|---|---|
 | **tables found** | **1 / 9** | **7 / 9** |
-| mean loss | 0.481 | **0.450** |
-| error, order ignored | 0.197 | **0.196** |
-| error, order included | 0.360 | 0.377 |
-| 24 pages | 65 s | 67 s |
+| mean loss | 0.481 | **0.428** |
+| error, order ignored | 0.197 | **0.194** |
+| error, order included | 0.360 | **0.332** |
+| 24 pages | 65 s | 64 s |
 
 `061`, `062`, `101`, `102`, `111` and two of `082`'s three went from no table to
 one. `062` is an eleven-column financial statement that the geometry read as a
@@ -69,10 +69,29 @@ Dropping them looks like an obvious tidy and **took the tables from seven of
 nine back to one** — a row with no words in it is still the row the headings are
 above. Kept, with the note, rather than re-learned.
 
-### Not right yet
+### The box mapping was wrong, and the first reading of it was wronger
 
-**A `rowspan` is not collapsed**, so a table whose labels cover two rows comes
-out taller than the document's. The cells are in the right columns.
+**The boxes are normalised to the padded square and getting back to the picture
+is two steps, not one.** A table 1470 by 479 is resized to 488 by 159 and padded
+to 488 by 488. A box at 0.25 of the square is the square's 122nd row, and the
+picture is only the first 159 of its 488 — so it is three quarters of the way
+down the *picture*, not a quarter.
+
+The first version multiplied by the square's side and then by the picture's own
+height, which is right only when the two happen to be equal. A wide table's
+fifteen rows all came out as ten-pixel stripes in the top twelfth of the page,
+and their words stacked into rows that were not theirs. **The headers of an
+eleven-column table were split across two rows of the output, and that was read
+as the model predicting a `rowspan` — it was not.** The grid was fifteen rows by
+eleven columns with no spans at all, which is exactly what the reference has.
+The lesson is the same one the geometry has taught twice: the number that looks
+like a model failure deserves a look at the boxes first.
+
+Fixing it took mean loss 0.450 to 0.428 and the reading-order error to **0.332,
+better than the 0.360 of no table model at all** — the tables are now in the
+reading order they belong in and not scrambling the page around them.
+
+### Not right yet
 
 **The character metric is the wrong instrument for a table.** It is measured
 over the whole page, so a table with every cell correct and its rows split
