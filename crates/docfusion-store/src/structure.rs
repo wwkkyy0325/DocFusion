@@ -472,6 +472,19 @@ pub fn blocks_from(
     let mut blocks: Vec<Block> = Vec::new();
 
     for (region, indices) in regions.iter().zip(&held) {
+        // A region that holds more than one heading is several blocks, and it
+        // has to be split here rather than written as one: see `heading_parts`.
+        // Empty for every region that is not one.
+        let parts = heading_parts(region, indices, &lines, width, height, engine);
+
+        if !parts.is_empty() {
+            for (block, at) in parts {
+                boxes.push(at);
+                blocks.push(block);
+            }
+            continue;
+        }
+
         if let Some(block) = region_block(region, indices, &lines, tables, width, height, engine) {
             boxes.push((region.x0, region.y0, region.x1, region.y1));
             blocks.push(block);
@@ -755,6 +768,98 @@ fn region_block(
     };
 
     Some(one_block(kind, indices, lines, width, height, engine))
+}
+
+/// How much taller one line can be than another and still be the same heading.
+///
+/// Measured on the two cases that disagree. A heading that ran out of column has
+/// lines of one size — `SECURITIES AND EXCHANGE` over `COMMISSION`, at ratios of
+/// 1.00 to 1.26 across six regions — and the reference writes it as one heading.
+/// A newspaper kicker over the headline it belongs to is not: the two are 2.31
+/// and 2.42 apart, and that reference writes those as two. Nothing measured
+/// falls between, which is why the number is a half rather than something
+/// tuned.
+const SAME_HEADING: f32 = 1.5;
+
+/// A heading region, as the headings it holds.
+///
+/// Empty unless the region is a heading whose lines are **not** all the same
+/// size — which is the only case the caller cannot handle on its own, and the
+/// one the regions do not distinguish between.
+///
+/// Both are one region to the layout model. A wrapped heading and a kicker over
+/// a headline look alike to it: two lines of text, close together, at the top of
+/// something. What tells them apart is the size of the type, and the size is
+/// only here, where the lines still are. Written as one heading, a kicker takes
+/// the headline with it and neither matches the reference; written as two, a
+/// wrapped heading is two headings and neither matches either. Measured, doing
+/// the first cost 081 a heading and gained 071 four, and doing this gets both.
+fn heading_parts(
+    region: &Region,
+    indices: &[usize],
+    lines: &[&OcrLine],
+    width: u32,
+    height: u32,
+    engine: &EngineId,
+) -> Vec<(Block, (f32, f32, f32, f32))> {
+    if indices.len() < 2 {
+        return Vec::new();
+    }
+
+    let kind: BlockKind = region.kind.into();
+    if !matches!(kind, BlockKind::Heading { .. }) {
+        return Vec::new();
+    }
+
+    // In reading order, so that the groups are runs of lines and not whatever
+    // order the region's indices happened to arrive in.
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+
+    for index in reading_order(indices, lines) {
+        let (_, top, _, bottom) = extent(lines[index]);
+        let tall = (bottom - top).max(0.0);
+
+        match groups.last_mut() {
+            Some(group) => {
+                let held = group
+                    .iter()
+                    .map(|at| {
+                        let (_, top, _, bottom) = extent(lines[*at]);
+                        bottom - top
+                    })
+                    .fold(0.0f32, f32::max);
+
+                if tall.max(held) <= tall.min(held) * SAME_HEADING {
+                    group.push(index);
+                } else {
+                    groups.push(vec![index]);
+                }
+            }
+            None => groups.push(vec![index]),
+        }
+    }
+
+    if groups.len() < 2 {
+        return Vec::new();
+    }
+
+    groups
+        .into_iter()
+        .map(|group| {
+            let bbox = union(&group, lines, width, height);
+            let block = one_block(kind.clone(), &group, lines, width, height, engine);
+
+            // In pixels, because that is what the page is ordered by.
+            let at = (
+                bbox.x * width as f32,
+                bbox.y * height as f32,
+                (bbox.x + bbox.w) * width as f32,
+                (bbox.y + bbox.h) * height as f32,
+            );
+
+            (block, at)
+        })
+        .collect()
 }
 
 /// One block from the lines that belong to it, joined in reading order.
@@ -1848,6 +1953,61 @@ mod tests {
     /// Two rows of three, every word in its own cell, and the box the model
     /// gave each cell is where the column would have been guessed at. Without
     /// the model these five lines are three columns of loose text.
+    /// A heading whose lines are one size is one heading; a region holding a
+    /// kicker above a headline is two.
+    ///
+    /// The two look alike to the layout model — two lines of text, close
+    /// together — and the corpus's references disagree about them: 071 writes
+    /// its wrapped headings as one and 081 writes its kickers as two. The sizes
+    /// are what tells them apart, and they are only here, where the lines are.
+    #[test]
+    fn a_heading_region_splits_only_when_its_lines_are_different_sizes() {
+        let held = region(RegionKind::Section, 100.0, 200.0, 900.0, 400.0);
+        let indices = [0usize, 1];
+
+        // One size: a heading that ran out of column.
+        let lines = [
+            line("SECURITIES AND EXCHANGE", 110.0, 210.0, 500.0, 240.0),
+            line("COMMISSION", 110.0, 250.0, 500.0, 280.0),
+        ];
+        let refs: Vec<&OcrLine> = lines.iter().collect();
+
+        assert!(
+            heading_parts(&held, &indices, &refs, WIDTH, HEIGHT, &engine()).is_empty(),
+            "a wrapped heading is one heading"
+        );
+
+        // Two sizes: a kicker over the headline it belongs to.
+        let lines = [
+            line("中宣部、中央文明办等14部委下发通知要求", 110.0, 210.0, 500.0, 240.0),
+            line("2011年深入开展文化科技卫生“三下乡”活动", 110.0, 250.0, 900.0, 330.0),
+        ];
+        let refs: Vec<&OcrLine> = lines.iter().collect();
+
+        let parts = heading_parts(&held, &indices, &refs, WIDTH, HEIGHT, &engine());
+
+        assert_eq!(parts.len(), 2, "a kicker and a headline are two headings");
+        assert_eq!(parts[0].0.text, "中宣部、中央文明办等14部委下发通知要求");
+        assert_eq!(parts[1].0.text, "2011年深入开展文化科技卫生“三下乡”活动");
+        // And each keeps the place on the page it was written at, so that the
+        // page is still read in order.
+        assert!(parts[0].1.1 < parts[1].1.1, "{:?}", (parts[0].1, parts[1].1));
+    }
+
+    /// Only a heading. A paragraph region with lines of two sizes is a paragraph
+    /// with a larger first line, and splitting it would invent a heading.
+    #[test]
+    fn a_paragraph_is_not_split_by_its_line_sizes() {
+        let held = region(RegionKind::Text, 100.0, 200.0, 900.0, 400.0);
+        let lines = [
+            line("first", 110.0, 210.0, 500.0, 240.0),
+            line("second", 110.0, 250.0, 900.0, 330.0),
+        ];
+        let refs: Vec<&OcrLine> = lines.iter().collect();
+
+        assert!(heading_parts(&held, &[0, 1], &refs, WIDTH, HEIGHT, &engine()).is_empty());
+    }
+
     #[test]
     fn a_grid_from_the_model_puts_every_word_in_its_cell() {
         let lines = [
