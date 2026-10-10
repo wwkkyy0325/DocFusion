@@ -50,6 +50,71 @@ pub trait PageSource: Send + Sync {
     fn page(&self, index: usize) -> Result<Arc<PageImage>, ExtractError>;
 }
 
+/// One line of text and where it sits on the page it came from.
+///
+/// The two paths that read a page into lines disagree about almost everything —
+/// one recognises the words, the other is handed them by the file — and agree
+/// about this. Everything downstream of the lines cares only about the words and
+/// the boxes, so this is the shape they are passed in.
+///
+/// In the page image's own pixels, not the page's units: a table's cells are
+/// boxes on the rendered page, and comparing a box in points against a box in
+/// pixels is a mistake that looks like a bad model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextLine {
+    pub text: String,
+    /// Left, top, right, bottom.
+    pub bbox: (f32, f32, f32, f32),
+}
+
+/// A table found on a rendered page.
+///
+/// Rows of cells, each with the words that belong in it and where it is. The
+/// words are put in the cells by whoever found the table, because that is the
+/// same question for both paths and the answer should not be written twice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FoundTable {
+    /// Left, top, right, bottom, in the rendered page's pixels.
+    pub bbox: (f32, f32, f32, f32),
+    pub rows: Vec<Vec<FoundCell>>,
+}
+
+impl FoundTable {
+    /// How many columns the widest row has.
+    pub fn columns(&self) -> usize {
+        self.rows.iter().map(Vec::len).max().unwrap_or(0)
+    }
+}
+
+/// One cell of a found table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FoundCell {
+    pub text: String,
+    /// Left, top, right, bottom, in the rendered page's pixels. `None` when the
+    /// model gave no box for the cell, which is not the same as a box at zero.
+    pub bbox: Option<(f32, f32, f32, f32)>,
+}
+
+/// Finds the tables on a rendered page and says what is in them.
+///
+/// Implemented where the models are, because finding a table is two ONNX
+/// sessions and reading one needs no session at all. Called by the extractor
+/// that has the words already: a PDF whose pages carry a text layer has exact
+/// text and exact boxes, and the only thing missing is which box is which cell.
+/// Running a recogniser over it would be inventing a worse copy of what the file
+/// already says.
+pub trait TableReader: Send + Sync {
+    /// Its name, for the front matter. Part of the cache key, because a page
+    /// read with the table model on it is not the page read without.
+    fn id(&self) -> &'static str;
+
+    fn tables(
+        &self,
+        page: &PageImage,
+        lines: &[TextLine],
+    ) -> Result<Vec<FoundTable>, ExtractError>;
+}
+
 /// An input that is already a single page.
 pub struct OnePage(Arc<PageImage>);
 

@@ -21,10 +21,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use docfusion_core::backend::BackendError;
+use docfusion_core::extract::{ExtractError, FoundCell, FoundTable, TableReader, TextLine};
+use docfusion_core::image::PageImage;
 use docfusion_core::ir::{Block, BlockKind, EngineId, Rect};
 use ort::session::Session;
 use ort::value::TensorRef;
-use rapidocr_core::types::OcrLine;
+use rapidocr_core::types::{OcrLine, Quad};
 
 use crate::layout;
 use crate::table;
@@ -212,6 +214,22 @@ impl Region {
 /// 405 ms here against seconds in the recogniser, so the queue this creates is
 /// a tenth of the work it is queued behind; a second copy would be another
 /// 124 MB of weights resident to save that tenth.
+/// A page as the models want it: three channels, no alpha.
+///
+/// The image type the pipeline carries is RGBA because that is what a renderer
+/// hands out and what an encoder takes; ONNX Runtime is handed RGB because that
+/// is what these models were trained on. Both of them need this, so it lives
+/// here rather than with either.
+pub(crate) fn to_rgb(image: &PageImage) -> image::RgbImage {
+    let mut rgb = image::RgbImage::new(image.width, image.height);
+
+    for (pixel, channels) in rgb.pixels_mut().zip(image.pixels.chunks_exact(4)) {
+        *pixel = image::Rgb([channels[0], channels[1], channels[2]]);
+    }
+
+    rgb
+}
+
 pub struct Detector {
     model: PathBuf,
     session: Mutex<Option<Session>>,
@@ -1090,6 +1108,135 @@ fn laid_out_grid(
         engine: engine.clone(),
         children,
     })
+}
+
+/// The tables on a page, found by the layout model and read by the table model,
+/// with the words supplied by whoever called.
+///
+/// The same two models the recognition path uses and, below them, deliberately
+/// the same code: where a word goes in a cell is one question with one answer,
+/// and answering it twice is how the two answers come to differ. What changes is
+/// where the words come from. A page of a scan has to be recognised; a page of a
+/// PDF that carries a text layer already says what it is, and recognising it
+/// again would be inventing a worse copy of what the file holds.
+pub struct PageTables {
+    regions: Detector,
+    cells: table::Reader,
+}
+
+impl PageTables {
+    pub fn new(regions: Detector, cells: table::Reader) -> Self {
+        Self { regions, cells }
+    }
+}
+
+impl TableReader for PageTables {
+    fn id(&self) -> &'static str {
+        "tables"
+    }
+
+    fn tables(
+        &self,
+        page: &PageImage,
+        lines: &[TextLine],
+    ) -> Result<Vec<FoundTable>, ExtractError> {
+        let rgb = to_rgb(page);
+        let (width, height) = (rgb.width(), rgb.height());
+
+        // The words as the geometry below wants them. The score is one because
+        // nothing here was recognised, and nothing below reads it as a
+        // recognition confidence — it only has to not be zero.
+        let given: Vec<OcrLine> = lines
+            .iter()
+            .map(|line| OcrLine {
+                bbox: Quad::from_xyxy(line.bbox.0, line.bbox.1, line.bbox.2, line.bbox.3),
+                text: line.text.clone(),
+                score: 1.0,
+            })
+            .collect();
+        let given: Vec<&OcrLine> = given.iter().collect();
+
+        let regions = self
+            .regions
+            .detect(&rgb)
+            .map_err(|error| ExtractError::failed("tables", error.to_string()))?;
+
+        let engine = EngineId::from("tables");
+        let mut found = Vec::new();
+
+        for (index, region) in regions.iter().enumerate() {
+            if region.kind != RegionKind::Table {
+                continue;
+            }
+
+            // The lines this table holds and no others, by the same rule the
+            // recognition path holds them by.
+            let inside: Vec<usize> = (0..given.len())
+                .filter(|at| region_for(extent(given[*at]), &regions) == Some(index))
+                .collect();
+
+            if inside.is_empty() {
+                continue;
+            }
+
+            let Some(block) = laid_out(
+                region,
+                &inside,
+                &given,
+                Tables {
+                    page: &rgb,
+                    reader: &self.cells,
+                },
+                width,
+                height,
+                &engine,
+            ) else {
+                continue;
+            };
+
+            found.push(as_found(&block, width, height));
+        }
+
+        Ok(found)
+    }
+}
+
+/// The block the floor below built, as the caller's own shape.
+///
+/// The boxes are normalized because that is what the IR speaks and the caller
+/// works in pixels of the page it rendered, so this is the one place the two
+/// meet.
+fn as_found(block: &Block, width: u32, height: u32) -> FoundTable {
+    let pixels = |rect: Option<Rect>| {
+        rect.map(|rect| {
+            (
+                rect.x * width as f32,
+                rect.y * height as f32,
+                (rect.x + rect.w) * width as f32,
+                (rect.y + rect.h) * height as f32,
+            )
+        })
+    };
+
+    let rows = block
+        .children
+        .iter()
+        .filter(|child| child.kind == BlockKind::TableRow)
+        .map(|row| {
+            row.children
+                .iter()
+                .map(|cell| FoundCell {
+                    text: cell.text.clone(),
+                    bbox: pixels(cell.bbox),
+                })
+                .collect()
+        })
+        .collect();
+
+    FoundTable {
+        bbox: pixels(block.bbox).unwrap_or((0.0, 0.0, width as f32, height as f32)),
+        rows,
+    }
 }
 
 /// Where the columns are.

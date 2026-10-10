@@ -21,11 +21,27 @@ use crate::ir::{
     Block, BlockKind, DocMeta, Document, EngineId, EngineStamp, Page, PageProvenance, Rect, Size,
 };
 
-use super::{ExtractError, Extractor, Fit, Input, InputProbe, PageSource};
+use super::{
+    ExtractError, Extractor, Fit, FoundTable, Input, InputProbe, PageSource, TableReader, TextLine,
+};
 use crate::mime::Container;
 
 const ENGINE_ID: &str = "pdfium";
 const ENGINE_VERSION: &str = "1.0.0";
+
+/// The name this engine files a page under when the table model is in play.
+///
+/// Part of the cache key: the same bytes read with the table model and without
+/// it are different Markdown, and one must not be served for the other.
+const TABLES_ENGINE_ID: &str = "pdfium+tables";
+
+/// The resolution a page is rendered at when it is looked at rather than read.
+///
+/// The text is the file's own and does not care; only the boxes around it come
+/// from a picture. What it buys is how sharply the rulings of a table come out,
+/// which is what the detector finds them by — and it costs a page of RGBA8 per
+/// page in flight, so it is the same number the recognition path renders at.
+pub const RENDER_DPI: f32 = 200.0;
 
 /// A font is treated as a heading when it is at least this much larger than
 /// the document's body text.
@@ -41,17 +57,28 @@ const LEVEL_ONE_RATIO: f32 = 1.8;
 /// this multiple of the body line height.
 const PARAGRAPH_GAP: f32 = 0.8;
 
-pub struct PdfTextLayer;
+pub struct PdfTextLayer {
+    /// What finds the tables, when something can. `None` is not a degraded
+    /// mode: a PDF's tables were never found before this existed, and every
+    /// page still reads without it.
+    tables: Option<Box<dyn TableReader>>,
+}
 
 impl Default for PdfTextLayer {
     fn default() -> Self {
-        Self
+        Self::new()
     }
 }
 
 impl PdfTextLayer {
     pub fn new() -> Self {
-        Self
+        Self { tables: None }
+    }
+
+    /// The same reader, with something that can find the tables on a page.
+    pub fn with_tables(mut self, reader: Box<dyn TableReader>) -> Self {
+        self.tables = Some(reader);
+        self
     }
 }
 
@@ -99,9 +126,22 @@ impl Extractor for PdfTextLayer {
     /// The underlying PDFium build participates in the cache key, so upgrading
     /// it invalidates previous results without anyone having to remember to
     /// bump `ENGINE_VERSION`.
+    /// The composition goes here and not in the id.
+    ///
+    /// `id` is what `--engine` names and what a person reading a report sees as
+    /// the engine; the stamp is the cache key. A page read with the table model
+    /// on it is a different document from the same bytes read without, so the
+    /// two must not be served for each other — and an engine that renamed
+    /// itself as soon as a model was downloaded would stop answering to the name
+    /// it is documented under. The recognition path makes the same split: the
+    /// router sees `scan`, the page says `rapidocr+layout+tables`.
     fn stamp(&self) -> EngineStamp {
-        EngineStamp::new(self.id(), self.version())
-            .with_model(format!("pdfium-{}", pdfium_bundled::PDFIUM_VERSION))
+        let model = match &self.tables {
+            Some(reader) => format!("pdfium-{}+{}", pdfium_bundled::PDFIUM_VERSION, reader.id()),
+            None => format!("pdfium-{}", pdfium_bundled::PDFIUM_VERSION),
+        };
+
+        EngineStamp::new(self.id(), self.version()).with_model(model)
     }
 
     /// `Maybe`, not `Yes`: sixteen magic bytes cannot reveal whether a PDF
@@ -114,49 +154,84 @@ impl Extractor for PdfTextLayer {
     }
 
     fn extract(&self, input: &Input<'_>) -> Result<Document, ExtractError> {
-        with_engine(|pdfium| {
-            let pdf = pdfium
-                .load_pdf_from_byte_slice(input.bytes, None)
-                .map_err(|error| {
-                    ExtractError::failed(ENGINE_ID, format!("could not open the PDF: {error}"))
-                })?;
+        let pages = read_text(input)?;
 
-            let mut pages = Vec::new();
-            for page in pdf.pages().iter() {
-                let text = page.text().map_err(|error| {
-                    ExtractError::failed(ENGINE_ID, format!("could not read page text: {error}"))
-                })?;
-                let height = page.height().value;
-                pages.push(PageRuns {
-                    width: page.width().value,
-                    height,
-                    lines: group_into_lines(collect_runs(&text, height)),
-                });
-            }
+        if pages.iter().all(|page| page.is_empty()) {
+            return Err(ExtractError::unsupported(
+                "the PDF has no text layer, so it needs an OCR or vision backend",
+            ));
+        }
 
-            if pages.iter().all(|page| page.is_empty()) {
-                return Err(ExtractError::unsupported(
-                    "the PDF has no text layer, so it needs an OCR or vision backend",
-                ));
-            }
+        // Looked for rather than read out, and deliberately **after** the lock
+        // the reading above held has been let go: finding a table renders a
+        // page, rendering takes the same lock, and a lock taken twice by one
+        // thread is a thread that waits for itself.
+        //
+        // What a table model adds here is which cell each word is in, and the
+        // boxes that decide it. The words are the file's own and are already
+        // exact, so the page is rendered and shown to the model, and the model
+        // is told the words rather than asked for them.
+        let found = match &self.tables {
+            Some(reader) => tables_on(reader.as_ref(), input.bytes, &pages),
+            None => vec![Vec::new(); pages.len()],
+        };
 
-            let body_size = dominant_font_size(&pages);
-            let engine = EngineId::from(ENGINE_ID);
+        let body_size = dominant_font_size(&pages);
 
-            let extracted = pages
-                .iter()
-                .enumerate()
-                .map(|(index, page)| page.to_ir(index as u32, body_size, &engine))
-                .collect();
+        // The name a page carries and the name the extractor answers to are not
+        // the same thing, which is the split the recognition path makes: the
+        // router sees `scan` and the page says `rapidocr+layout+tables`. The
+        // first is what `stamp_of` resolves a page's engine through, so a page
+        // filed under a name no extractor answers to is a page whose stamp
+        // cannot be found — which is a document that cannot be written at all.
+        let named = if self.tables.is_some() {
+            TABLES_ENGINE_ID
+        } else {
+            ENGINE_ID
+        };
 
-            Ok(Document {
-                source: input.source.clone(),
-                pages: extracted,
-                meta: DocMeta::default(),
-                conflicts: Vec::new(),
-            })
+        let extracted = pages
+            .iter()
+            .enumerate()
+            .map(|(index, page)| page.to_ir(index as u32, body_size, named, &found[index]))
+            .collect();
+
+        Ok(Document {
+            source: input.source.clone(),
+            pages: extracted,
+            meta: DocMeta::default(),
+            conflicts: Vec::new(),
         })
     }
+}
+
+/// Every page's text, as the file reports it.
+///
+/// One call into PDFium for the whole document, so that the lock is held for the
+/// reading and released before anything that has to render a page.
+fn read_text(input: &Input<'_>) -> Result<Vec<PageRuns>, ExtractError> {
+    with_engine(|pdfium| {
+        let pdf = pdfium
+            .load_pdf_from_byte_slice(input.bytes, None)
+            .map_err(|error| {
+                ExtractError::failed(ENGINE_ID, format!("could not open the PDF: {error}"))
+            })?;
+
+        let mut pages = Vec::new();
+        for page in pdf.pages().iter() {
+            let text = page.text().map_err(|error| {
+                ExtractError::failed(ENGINE_ID, format!("could not read page text: {error}"))
+            })?;
+            let height = page.height().value;
+            pages.push(PageRuns {
+                width: page.width().value,
+                height,
+                lines: group_into_lines(collect_runs(&text, height)),
+            });
+        }
+
+        Ok(pages)
+    })
 }
 
 /// Renders every page of a PDF to pixels.
@@ -223,6 +298,15 @@ impl PageSource for RenderedPages<'_> {
             }))
         })
     }
+}
+
+/// How much of `bbox` is inside `region`, as an area. Zero when they do not
+/// meet.
+fn held_by(bbox: &Rect, region: &Rect) -> f32 {
+    let across = (bbox.x + bbox.w).min(region.x + region.w) - bbox.x.max(region.x);
+    let down = (bbox.y + bbox.h).min(region.y + region.h) - bbox.y.max(region.y);
+
+    across.max(0.0) * down.max(0.0)
 }
 
 /// Opens a document. Both references carry the same lifetime because PDFium
@@ -311,10 +395,60 @@ impl Line {
     }
 }
 
+/// The tables on every page, found by the model and filled with the file's own
+/// words.
+///
+/// A page the model cannot be shown, or one it fails on, comes back with no
+/// tables rather than as a failure. Every page of a text-layer PDF read without
+/// a table model until this existed, and a model that is missing, corrupt or
+/// simply wrong about a picture must not become a way for a page not to be read.
+fn tables_on(reader: &dyn TableReader, bytes: &[u8], pages: &[PageRuns]) -> Vec<Vec<FoundTable>> {
+    let scale = RENDER_DPI / 72.0;
+
+    let Ok(rendered) = RenderedPages::open(bytes, RENDER_DPI) else {
+        return vec![Vec::new(); pages.len()];
+    };
+
+    pages
+        .iter()
+        .enumerate()
+        .map(|(index, page)| {
+            if page.is_empty() {
+                return Vec::new();
+            }
+
+            let Ok(image) = rendered.page(index) else {
+                return Vec::new();
+            };
+
+            reader
+                .tables(&image, &page.text_lines(scale))
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 struct PageRuns {
     width: f32,
     height: f32,
     lines: Vec<Line>,
+}
+
+/// A found table with its boxes put into the page's own terms.
+///
+/// The table came back in the pixels of a rendered page and everything else
+/// here speaks in points and normalises them, so the conversion happens once, at
+/// the edge, rather than at every comparison.
+struct Placed {
+    bbox: Rect,
+    /// Row by row, each row padded to the widest so that the cells line up.
+    cells: Vec<Vec<(String, Option<Rect>)>>,
+}
+
+impl Placed {
+    fn columns(&self) -> usize {
+        self.cells.iter().map(Vec::len).max().unwrap_or(0)
+    }
 }
 
 impl PageRuns {
@@ -324,30 +458,202 @@ impl PageRuns {
             .all(|line| line.text().trim().is_empty())
     }
 
-    fn to_ir(&self, index: u32, body_size: f32, engine: &EngineId) -> Page {
+    /// The words as a table reader wants them: text, and boxes in the pixels of
+    /// a page rendered `scale` times the size of this one.
+    ///
+    /// Per **run** and not per line, which is the whole of what makes this work.
+    /// A run is a stretch of text the file draws together and it is the finest
+    /// thing that can be put in a cell. A line cannot be: a PDF with a text
+    /// layer reports a table row as one line running its whole width, and handed
+    /// that as a single box the placement rule puts the entire row in the cell
+    /// holding most of it — which is the first one, since a row of five cells
+    /// gives every cell a fifth of it. Measured that way, the header of a
+    /// five-column table came out as `Region Q1 Q2 Q3 Q4` in one cell and four
+    /// empty ones.
+    fn text_lines(&self, scale: f32) -> Vec<TextLine> {
+        self.lines
+            .iter()
+            .flat_map(|line| line.runs.iter())
+            .filter(|run| !run.text.trim().is_empty())
+            .map(|run| TextLine {
+                text: run.text.clone(),
+                bbox: (
+                    run.left * scale,
+                    run.top * scale,
+                    run.right * scale,
+                    run.bottom * scale,
+                ),
+            })
+            .collect()
+    }
+
+    /// The found tables, in the page's own normalized terms.
+    fn placed(&self, found: &[FoundTable], scale: f32) -> Vec<Placed> {
+        let (across, down) = (self.width.max(1.0), self.height.max(1.0));
+
+        let normalized = |(x0, y0, x1, y1): (f32, f32, f32, f32)| {
+            let (left, top) = ((x0 / scale / across).clamp(0.0, 1.0), (y0 / scale / down).clamp(0.0, 1.0));
+            let (right, bottom) = ((x1 / scale / across).clamp(0.0, 1.0), (y1 / scale / down).clamp(0.0, 1.0));
+
+            Rect::new(left, top, (right - left).max(0.0), (bottom - top).max(0.0))
+        };
+
+        found
+            .iter()
+            .map(|table| {
+                let widest = table.columns();
+                let cells = table
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        (0..widest)
+                            .map(|column| match row.get(column) {
+                                Some(cell) => {
+                                    (cell.text.clone(), cell.bbox.map(normalized))
+                                }
+                                None => (String::new(), None),
+                            })
+                            .collect()
+                    })
+                    .collect();
+
+                Placed {
+                    bbox: normalized(table.bbox),
+                    cells,
+                }
+            })
+            .collect()
+    }
+
+    /// Which table holds each line, if any.
+    ///
+    /// The one holding most of it, by the rule the cells are filled by: a line
+    /// belongs to the table it is mostly inside, and a line that is mostly
+    /// outside every table is not in a table at all.
+    fn owner(&self, placed: &[Placed]) -> Vec<Option<usize>> {
+        self.lines
+            .iter()
+            .map(|line| {
+                if line.text().trim().is_empty() {
+                    return None;
+                }
+
+                let bbox = self.normalised_bbox(line)?;
+
+                let mut best = (0.0f32, None);
+                for (index, table) in placed.iter().enumerate() {
+                    let held = held_by(&bbox, &table.bbox);
+                    if held > best.0 {
+                        best = (held, Some(index));
+                    }
+                }
+
+                best.1
+            })
+            .collect()
+    }
+
+    /// A table as a block, its rows and cells drawn from what was found.
+    ///
+    /// **Every row is kept, empty ones included.** A row with no words in it is
+    /// still a row: the recognition path drops them and measured, that took the
+    /// tables from seven of nine back to one, because the model puts a header
+    /// in a row of its own. The same model answers here and the same lesson
+    /// applies.
+    fn table_block(&self, table: &Placed, engine: &EngineId) -> Block {
+        let columns = table.columns();
+        let mut body: Vec<String> = Vec::with_capacity(table.cells.len());
+        let mut children: Vec<Block> = Vec::with_capacity(table.cells.len());
+
+        for row in &table.cells {
+            let mut texts: Vec<String> = Vec::with_capacity(columns);
+            let mut cells: Vec<Block> = Vec::with_capacity(columns);
+
+            for (text, bbox) in row {
+                texts.push(text.clone());
+                cells.push(Block {
+                    kind: BlockKind::TableCell,
+                    text: text.clone(),
+                    bbox: *bbox,
+                    // Nothing was recognised here. The words are the file's and
+                    // the boxes are the model's, and there is no third thing
+                    // that could be more or less sure of either.
+                    confidence: None,
+                    engine: engine.clone(),
+                    children: Vec::new(),
+                });
+            }
+
+            body.push(texts.join(" "));
+            children.push(Block {
+                kind: BlockKind::TableRow,
+                text: String::new(),
+                bbox: None,
+                confidence: None,
+                engine: engine.clone(),
+                children: cells,
+            });
+        }
+
+        Block {
+            kind: BlockKind::Table,
+            text: body.join("\n"),
+            bbox: Some(table.bbox),
+            confidence: None,
+            engine: engine.clone(),
+            children,
+        }
+    }
+
+    /// `named` is what the page is filed under; the blocks and the primary
+    /// engine are this extractor's own name, which is what the router resolves
+    /// a stamp through.
+    fn to_ir(&self, index: u32, body_size: f32, named: &str, found: &[FoundTable]) -> Page {
+        let placed = self.placed(found, RENDER_DPI / 72.0);
+        let engine = EngineId::from(ENGINE_ID);
+
         Page {
             index,
             size: Some(Size {
                 w: self.width,
                 h: self.height,
             }),
-            blocks: self.blocks(body_size, engine),
+            blocks: self.blocks(body_size, &engine, &placed),
             provenance: PageProvenance {
-                primary: engine.clone(),
-                engines: vec![engine.clone()],
+                primary: engine,
+                engines: vec![EngineId::from(named)],
                 verified: false,
             },
         }
     }
 
-    fn blocks(&self, body_size: f32, engine: &EngineId) -> Vec<Block> {
+    fn blocks(&self, body_size: f32, engine: &EngineId, placed: &[Placed]) -> Vec<Block> {
         let mut blocks = Vec::new();
         let mut pending: Option<Block> = None;
         let mut previous_bottom: Option<f32> = None;
 
-        for line in &self.lines {
+        let owner = self.owner(placed);
+        let mut written = vec![false; placed.len()];
+
+        for (at, line) in self.lines.iter().enumerate() {
             let text = line.text();
             if text.trim().is_empty() {
+                continue;
+            }
+
+            // A line in a table is a cell of it and not a paragraph. The table
+            // is written once, where the first of its lines would have gone, so
+            // that it keeps the place on the page the file put it in.
+            if let Some(table) = owner[at] {
+                if !written[table] {
+                    written[table] = true;
+                    if let Some(block) = pending.take() {
+                        blocks.push(block);
+                    }
+                    blocks.push(self.table_block(&placed[table], engine));
+                    previous_bottom = None;
+                }
+
                 continue;
             }
 
@@ -569,6 +875,7 @@ fn is_cjk(character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extract::FoundCell;
     use crate::ir::SourceRef;
     use std::path::PathBuf;
 
@@ -591,6 +898,173 @@ mod tests {
             bytes,
             source: &source,
         })
+    }
+
+    /// A reader that answers with whatever it was told, covering the page.
+    ///
+    /// The geometry of a real table is the table model's business and is tested
+    /// where the model is; what is tested here is what this file does with the
+    /// answer — where the table goes, what happens to the lines in it, and what
+    /// happens when there is no answer at all.
+    struct Fake {
+        rows: Vec<Vec<&'static str>>,
+        fails: bool,
+    }
+
+    impl Fake {
+        fn rows(rows: Vec<Vec<&'static str>>) -> Self {
+            Self { rows, fails: false }
+        }
+    }
+
+    impl TableReader for Fake {
+        fn id(&self) -> &'static str {
+            "fake"
+        }
+
+        fn tables(
+            &self,
+            page: &PageImage,
+            _lines: &[TextLine],
+        ) -> Result<Vec<FoundTable>, ExtractError> {
+            if self.fails {
+                return Err(ExtractError::failed("fake", "no model on disk"));
+            }
+
+            if self.rows.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            Ok(vec![FoundTable {
+                bbox: (0.0, 0.0, page.width as f32, page.height as f32),
+                rows: self
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        row.iter()
+                            .map(|text| FoundCell {
+                                text: (*text).to_owned(),
+                                bbox: None,
+                            })
+                            .collect()
+                    })
+                    .collect(),
+            }])
+        }
+    }
+
+    /// What the front matter will say the page was read by. The name a page is
+    /// filed under and the name the router resolves a stamp through are two
+    /// different things, and the front matter is the first.
+    fn named_by(document: &Document) -> Vec<String> {
+        document.pages[0]
+            .provenance
+            .engines
+            .iter()
+            .map(|engine| engine.to_string())
+            .collect()
+    }
+
+    fn extract_with(reader: Fake, bytes: &[u8]) -> Result<Document, ExtractError> {
+        let probe = InputProbe::new(bytes, Some("fixture.pdf".into()), bytes.len() as u64);
+        let source = SourceRef {
+            path: PathBuf::from("fixture.pdf"),
+            content_hash: "0".repeat(64),
+            mime: "application/pdf".into(),
+            size: bytes.len() as u64,
+            mtime: None,
+        };
+
+        PdfTextLayer::new()
+            .with_tables(Box::new(reader))
+            .extract(&Input {
+                probe: &probe,
+                bytes,
+                source: &source,
+            })
+    }
+
+    /// The line the page had is a cell of the table now, and not also a
+    /// paragraph underneath it — a document that says everything twice is worse
+    /// than one that says it in the wrong place.
+    #[test]
+    fn a_found_table_replaces_the_lines_it_holds() {
+        let document = extract_with(
+            Fake::rows(vec![vec!["a", "b"], vec!["c", "d"]]),
+            &fixture(&[(12.0, "Hello world")]),
+        )
+        .expect("extract");
+
+        // The page's own blocks, not every block under them: `Document::blocks`
+        // walks into a table and would count its rows and cells as things the
+        // page says, which is exactly the question this is asking.
+        let blocks = &document.pages[0].blocks;
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0].kind, BlockKind::Table);
+        assert_eq!(blocks[0].children.len(), 2);
+        assert_eq!(named_by(&document), vec!["pdfium+tables"]);
+    }
+
+    /// And the words are the file's own, which is the whole reason this path
+    /// exists: nothing here was recognised and nothing may be invented.
+    #[test]
+    fn the_words_in_the_cells_are_the_files_own() {
+        let document = extract_with(
+            Fake::rows(vec![vec!["Hello", "world"]]),
+            &fixture(&[(12.0, "Hello world")]),
+        )
+        .expect("extract");
+
+        let rendered = crate::render::markdown(&document, "1970-01-01T00:00:00Z");
+
+        assert!(rendered.contains("| Hello | world |"), "{rendered}");
+    }
+
+    /// A reader that finds nothing leaves a page exactly as it was, which is
+    /// what every page of every PDF was before this existed.
+    #[test]
+    fn a_reader_that_finds_nothing_changes_nothing() {
+        let bytes = fixture(&[(12.0, "Hello world")]);
+
+        let with = extract_with(Fake { rows: Vec::new(), fails: false }, &bytes).expect("extract");
+        let without = extract(&bytes).expect("extract");
+
+        assert_eq!(
+            with.blocks().map(|b| b.text.clone()).collect::<Vec<_>>(),
+            without.blocks().map(|b| b.text.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    /// A model that is missing, corrupt or wrong about a picture must not be a
+    /// way for a page not to be read. The same promise the recognition path
+    /// makes about the same models.
+    #[test]
+    fn a_reader_that_fails_is_not_a_page_that_will_not_read() {
+        let document = extract_with(
+            Fake {
+                rows: Vec::new(),
+                fails: true,
+            },
+            &fixture(&[(12.0, "Hello world")]),
+        )
+        .expect("a page that reads is a page that reads");
+
+        let blocks: Vec<&str> = document.blocks().map(|b| b.text.as_str()).collect();
+
+        assert_eq!(blocks, vec!["Hello world"]);
+    }
+
+    /// Without a reader the page is filed under the name it always was, because
+    /// the name is the cache key and the two readings are different documents.
+    #[test]
+    fn the_name_says_whether_a_table_was_looked_for() {
+        let bytes = fixture(&[(12.0, "Hello world")]);
+
+        let with = extract_with(Fake::rows(vec![vec!["a"]]), &bytes).expect("extract");
+        let without = extract(&bytes).expect("extract");
+
+        assert_eq!(named_by(&with), vec!["pdfium+tables"]);
+        assert_eq!(named_by(&without), vec!["pdfium"]);
     }
 
     #[test]

@@ -14,6 +14,7 @@ use docfusion_core::verify::VerifyPolicy;
 
 use crate::endpoint::{EndpointConfig, OpenAiEndpoint};
 use crate::ocr::RapidOcrBackend;
+use crate::{structure, table};
 
 /// Every engine, best fit first.
 ///
@@ -34,8 +35,24 @@ pub fn standard(
     let vision: Option<Box<dyn VisionBackend>> =
         endpoint.map(|config| Box::new(OpenAiEndpoint::new(config)) as Box<dyn VisionBackend>);
 
+    // A PDF that carries a text layer never reaches the recognition engine, and
+    // its tables were therefore never found at all — the document came out as
+    // the cells of its tables pressed into paragraphs. The two models that find
+    // a table are offered to this path as well, so that the page is shown to
+    // them and the words are taken from the file.
+    //
+    // Offered, not required: with either model missing the PDF reader is what it
+    // always was, and every page still reads.
+    let pdf = match (structure::available(), table::available()) {
+        (true, true) => PdfTextLayer::new().with_tables(Box::new(structure::PageTables::new(
+            structure::Detector::new(structure::model_path()),
+            table::Reader::new(table::model_path()),
+        ))),
+        _ => PdfTextLayer::new(),
+    };
+
     vec![
-        Box::new(PdfTextLayer::new()),
+        Box::new(pdf),
         Box::new(DocxParser),
         Box::new(XlsxParser),
         Box::new(PptxParser),

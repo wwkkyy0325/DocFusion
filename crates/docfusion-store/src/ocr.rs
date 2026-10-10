@@ -23,7 +23,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, TryLockError};
 
 use docfusion_core::backend::{BackendError, Caps, OcrBackend, PageRequest};
-use docfusion_core::image::PageImage;
 use docfusion_core::ir::{Block, BlockKind, EngineId, Rect};
 use rapidocr_core::RapidOcr;
 use rapidocr_core::config::RapidOcrConfig;
@@ -363,7 +362,7 @@ impl OcrBackend for RapidOcrBackend {
     }
 
     fn recognize(&self, request: &PageRequest<'_>) -> Result<Vec<Block>, BackendError> {
-        let rgb = to_rgb(request.image);
+        let rgb = structure::to_rgb(request.image);
 
         // Found before the recogniser runs and not after it, so that the
         // pipeline is not held for the half second the detector takes. A page
@@ -395,14 +394,6 @@ impl OcrBackend for RapidOcrBackend {
             })
         })
     }
-}
-
-fn to_rgb(image: &PageImage) -> image::RgbImage {
-    let mut rgb = image::RgbImage::new(image.width, image.height);
-    for (pixel, channels) in rgb.pixels_mut().zip(image.pixels.chunks_exact(4)) {
-        *pixel = image::Rgb([channels[0], channels[1], channels[2]]);
-    }
-    rgb
 }
 
 /// Turns recognized lines into blocks.
