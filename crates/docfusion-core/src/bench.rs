@@ -104,7 +104,16 @@ fn sorted(text: &str) -> String {
 #[derive(Debug, Default, PartialEq)]
 struct Outline {
     text: String,
-    headings: Vec<(u8, String)>,
+    /// The headings, in the reference's order, **without their depth**.
+    ///
+    /// Depth is deliberately absent. Every one of the corpus's sixty-four
+    /// references is a level-one heading — not one of them uses `##` — because
+    /// OmniDocBench's ground truth records that a block is a title, not how deep
+    /// a title it is, and the conversion to Markdown had to pick a number. A
+    /// reference that cannot express a depth cannot measure one, and comparing
+    /// two of them scored a correct section heading as a miss: measured, 8 of 64
+    /// with the level compared and 21 of 64 without it.
+    headings: Vec<String>,
     tables: Vec<Table>,
 }
 
@@ -438,14 +447,8 @@ fn outline(markdown: &str) -> Outline {
     let mut outline = Outline::default();
 
     for node in root.descendants() {
-        let heading_level = match node.data.borrow().value {
-            NodeValue::Heading(ref heading) => Some(heading.level),
-            _ => None,
-        };
-        if let Some(level) = heading_level {
-            outline
-                .headings
-                .push((level, normalize(&descendant_text(&node))));
+        if let NodeValue::Heading(..) = node.data.borrow().value {
+            outline.headings.push(normalize(&descendant_text(&node)));
             continue;
         }
 
@@ -722,12 +725,23 @@ mod tests {
         assert_eq!(score(expected, actual).character_error_rate, 0.0);
     }
 
+    /// Depth is not compared, because the reference cannot express it. See
+    /// `Outline::headings`.
     #[test]
-    fn headings_are_compared_with_their_level() {
+    fn a_heading_is_compared_by_its_text_and_not_its_depth() {
         let score = score("# Title", "## Title");
 
         assert_eq!(score.headings_total, 1);
-        assert_eq!(score.headings_matched, 0, "a demoted heading is not the same");
+        assert_eq!(score.headings_matched, 1);
+    }
+
+    /// And the words still have to be the words.
+    #[test]
+    fn a_heading_with_the_wrong_text_is_still_a_miss() {
+        let score = score("# Title", "## Something else");
+
+        assert_eq!(score.headings_total, 1);
+        assert_eq!(score.headings_matched, 0);
     }
 
     /// Present but shuffled is not the same, and the surviving text still reads
