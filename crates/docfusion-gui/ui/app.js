@@ -44,6 +44,10 @@ const TEXT = {
     to_review: (n) => `${n} to review`,
     status: { done: "done", partial: "partial", failed: "failed" },
 
+    search_placeholder: "Search the documents",
+    search_none: (query) => `Nothing in the archive holds “${query}”.`,
+    search_gone: "Its Markdown is no longer on disk.",
+
     view_record: "View",
     delete_record: "Delete",
     ask_title: "What should happen to this document?",
@@ -185,6 +189,10 @@ const TEXT = {
     nothing: "还没有记录。",
     to_review: (n) => `${n} 处待确认`,
     status: { done: "完成", partial: "部分完成", failed: "失败" },
+
+    search_placeholder: "在文档里搜",
+    search_none: (query) => `没有文档包含「${query}」。`,
+    search_gone: "它的 Markdown 已经不在磁盘上了。",
 
     view_record: "查看",
     delete_record: "删除",
@@ -450,6 +458,8 @@ function applyLang() {
   ]) {
     el(id).textContent = text;
   }
+
+  el("search").placeholder = words.search_placeholder;
 
   el("lang").title = words.switch_title;
 
@@ -781,6 +791,137 @@ function drawRecords(list) {
 
     records.append(item);
   }
+}
+
+/// Around the matching words in a passage, as the other side sends them.
+///
+/// Control characters, and they cannot occur in a document — a document is text
+/// off a page. A pair of brackets could have been typed by whoever wrote it,
+/// and then this would be marking up a match nobody made.
+const HIT_START = "\u0002";
+const HIT_END = "\u0003";
+
+/// Which search is the current one.
+///
+/// Typing is faster than searching, and every keystroke starts one. Only the
+/// answer to the latest may be drawn: two searches in flight can come back in
+/// either order, and the one that arrives last is not the one that was asked
+/// for last.
+let searching = 0;
+let searchTimer = 0;
+
+/// Runs the search in the box, or goes back to the whole list.
+///
+/// The list is asked for again rather than kept, because it is a file this
+/// process is not the only writer of — and because a document can be deleted
+/// while the box holds a query, which makes the answer to that query stale in a
+/// way the panel would not show.
+async function runSearch() {
+    const query = el("search").value.trim();
+    const mine = ++searching;
+
+    if (!query) {
+        try {
+            const view = await invoke("records");
+            if (mine !== searching) return;
+
+            current = view;
+            drawRecords(view.records);
+        } catch (error) {
+            el("records").replaceChildren(node("li", "none", String(error)));
+        }
+
+        return;
+    }
+
+    try {
+        const matches = await invoke("search", { query });
+        if (mine !== searching) return;
+
+        drawMatches(matches, query);
+    } catch (error) {
+        if (mine !== searching) return;
+        el("records").replaceChildren(node("li", "none", String(error)));
+    }
+}
+
+/// Waits for typing to stop, since every keystroke would otherwise be a search.
+const SEARCH_DELAY = 140;
+
+function searchChanged() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, SEARCH_DELAY);
+}
+
+/// The answer to a search: which documents hold it, and where.
+///
+/// The passage is built out of nodes rather than written as markup. It is
+/// somebody's document, and the only thing this side knows about it is where
+/// the match was — which the other side marked with two characters that cannot
+/// appear in a page of text, and which are turned into an element here rather
+/// than handed to anything that parses.
+function drawMatches(matches, query) {
+    const records = el("records");
+    records.replaceChildren();
+
+    if (!matches || matches.length === 0) {
+        records.append(node("li", "none", t().search_none(query)));
+        return;
+    }
+
+    for (const match of matches) {
+        const item = document.createElement("li");
+        item.className = "record";
+
+        const name = node("span", "name", match.name);
+        name.title = match.name;
+
+        const what = describe("what", [
+            name,
+            match.excerpt === null
+                ? node("span", "meta", t().search_gone)
+                : passage(match.excerpt),
+        ]);
+
+        item.append(
+            what,
+            describe("row-actions", [
+                button(t().view_record, "small", () => openMatch(match)),
+            ]),
+        );
+
+        records.append(item);
+    }
+}
+
+/// One passage, with the match marked.
+function passage(excerpt) {
+    const line = node("span", "excerpt");
+
+    // Everything before the first match, then each match and the text after it.
+    const parts = excerpt.split(HIT_START);
+    line.append(document.createTextNode(parts.shift()));
+
+    for (const part of parts) {
+        const at = part.indexOf(HIT_END);
+        // A marker without its pair would be a bug on the other side, and a
+        // pass through the whole of the rest is a better answer to it than a
+        // thrown exception and a blank panel.
+        if (at < 0) {
+            line.append(document.createTextNode(part));
+            continue;
+        }
+
+        line.append(node("mark", "", part.slice(0, at)));
+        line.append(document.createTextNode(part.slice(at + HIT_END.length)));
+    }
+
+    return line;
+}
+
+/// Opens a document a search found.
+async function openMatch(match) {
+    await read(() => invoke("open", { id: match.id, name: match.name }), match.name);
 }
 
 /// The record a question is being asked about, or `null`.
@@ -1398,7 +1539,10 @@ async function openRecords() {
   try {
     const view = await invoke("records");
     current = view;
-    drawRecords(view.records);
+    // The box is the state the list is in, so it is left as it was: switching
+    // to the tab is not asking for the whole list, and a search that emptied
+    // the box would be a search thrown away by looking at another tab.
+    if (!el("search").value.trim()) drawRecords(view.records);
   } catch (error) {
     // Said inside the list rather than over the document: the panel that failed
     // to fill is the panel that should explain itself.
@@ -1479,6 +1623,8 @@ el("fetch-models").addEventListener("click", fetchModels);
 el("set-enabled").addEventListener("change", drawEnabled);
 el("get-local").addEventListener("click", getLocalModels);
 el("stop-local").addEventListener("click", stopLocalModels);
+
+el("search").addEventListener("input", searchChanged);
 
 el("ask-cancel").addEventListener("click", () => el("record-question").close());
 el("ask-remove").addEventListener("click", () => answer("forget_record"));

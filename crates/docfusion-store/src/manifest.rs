@@ -8,10 +8,11 @@
 use std::path::{Path, PathBuf};
 
 use docfusion_core::ir::EngineStamp;
+use docfusion_core::text;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 /// Bumped whenever the schema below changes, tracked in `PRAGMA user_version`.
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 4;
 
 /// How long a writer waits for another writer, in milliseconds.
 ///
@@ -22,7 +23,8 @@ const BUSY_TIMEOUT_MS: u32 = 5_000;
 /// The columns `row_to_record` expects, in the order it reads them.
 const COLUMNS: &str = "id, source_path, source_size, source_mtime, mime, output_path, \
                        engine_id, engine_version, model, prompt_version, \
-                       status, verified, conflict_count, created_at, updated_at, output_hash";
+                       status, verified, conflict_count, created_at, updated_at, output_hash, \
+                       source_copy";
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS documents (
@@ -68,6 +70,44 @@ CREATE INDEX IF NOT EXISTS runs_by_document ON runs(document_id);
 /// output path is what the manifest remembers, and a rename breaks that link
 /// even though nothing about the document changed.
 const MIGRATION_V2: &str = "ALTER TABLE documents ADD COLUMN output_hash TEXT";
+
+/// Version 3 records where the bytes that were read are kept.
+///
+/// The knowledge base used to be Markdown plus a pointer at a file somebody
+/// else owns, which made a record whose source moved a dead pointer and
+/// re-reading a changed engine impossible. The copy is under `.docfusion/` and
+/// content-addressed; this column is where it is, relative to the root.
+///
+/// Recorded rather than derived, so that "which records have no copy" is a
+/// query rather than a walk, and so the file's extension cannot be guessed
+/// differently in two places. Null for every row that existed before this,
+/// which is exactly what those rows are.
+const MIGRATION_V3: &str = "ALTER TABLE documents ADD COLUMN source_copy TEXT";
+
+/// Version 4 is the full-text index.
+///
+/// A cache over the tree in the same way the manifest is: every row can be
+/// rebuilt from the Markdown, so an index that is empty or wrong is a thing to
+/// rebuild rather than to repair.
+///
+/// **`unicode61`, with the Chinese pulled apart before it is stored.** See
+/// `text::indexed` for why: the default tokenizer does not segment Chinese, so
+/// without that a whole clause is one token, and `trigram` — the obvious
+/// alternative — matches nothing shorter than three characters, which is most
+/// Chinese words. The pulling apart happens in the caller, so what is in this
+/// table is not readable text and is never shown to anybody.
+///
+/// **The row is the document's**, which is why `document_id` is stored as well
+/// as being the `documents` table's key. Writing an entry is then a delete and
+/// an insert by rowid — two lookups — rather than a delete by matching a
+/// column, which FTS5 answers by reading the whole content table.
+const MIGRATION_V4: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS text USING fts5(
+  document_id UNINDEXED,
+  title,
+  body
+);
+"#;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -126,6 +166,13 @@ pub struct DocumentRecord {
     /// `None` for records written before this column existed; such a document
     /// can only be relinked by re-processing it.
     pub output_hash: Option<String>,
+    /// Where the bytes that were read are kept, relative to the knowledge root.
+    ///
+    /// Under `.docfusion/sources/` and named after the document's content hash,
+    /// so the same file arriving from two folders is stored once. `None` for a
+    /// record written before copies existed, and for one whose source could not
+    /// be found when it was re-read.
+    pub source_copy: Option<PathBuf>,
 }
 
 /// Current UTC time as RFC 3339, to the second.
@@ -195,6 +242,12 @@ impl Manifest {
         }
         if existing < 2 {
             connection.execute_batch(MIGRATION_V2)?;
+        }
+        if existing < 3 {
+            connection.execute_batch(MIGRATION_V3)?;
+        }
+        if existing < 4 {
+            connection.execute_batch(MIGRATION_V4)?;
         }
 
         if existing != SCHEMA_VERSION {
@@ -281,8 +334,9 @@ impl Manifest {
             "INSERT INTO documents (
                  id, source_path, source_size, source_mtime, mime, output_path,
                  engine_id, engine_version, model, prompt_version,
-                 status, verified, conflict_count, created_at, updated_at, output_hash
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 status, verified, conflict_count, created_at, updated_at, output_hash,
+                 source_copy
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(id) DO UPDATE SET
                  source_path    = excluded.source_path,
                  source_size    = excluded.source_size,
@@ -297,7 +351,8 @@ impl Manifest {
                  verified       = excluded.verified,
                  conflict_count = excluded.conflict_count,
                  updated_at     = excluded.updated_at,
-                 output_hash    = excluded.output_hash",
+                 output_hash    = excluded.output_hash,
+                 source_copy    = excluded.source_copy",
             params![
                 record.id,
                 path_to_string(&record.source_path),
@@ -315,6 +370,7 @@ impl Manifest {
                 record.created_at,
                 record.updated_at,
                 record.output_hash,
+                record.source_copy.as_deref().map(path_to_string),
             ],
         )?;
 
@@ -338,7 +394,118 @@ impl Manifest {
     /// Only for records whose output is genuinely gone: the manifest is a cache
     /// over the file tree, and a cache entry pointing at nothing is not worth
     /// keeping. Re-processing the source rebuilds it.
+    /// Puts a document's text in the index, replacing whatever was there.
+    ///
+    /// The row is the document's own row in `documents`, so this is a delete
+    /// and an insert by rowid rather than by matching `document_id` — and that
+    /// matters on the write path, which is every ingest: FTS5 answers
+    /// `WHERE document_id = ?` by reading its whole content table, so an
+    /// archive would pay for its own size on every document added, and a
+    /// thousand-document import would pay for it a thousand times.
+    ///
+    /// The text is stored as [`text::indexed`] writes it, which is not the text
+    /// anybody reads. Nothing in this table is ever shown: an excerpt is found
+    /// in the original, by [`text::excerpt`].
+    pub fn index_text(&self, id: &str, title: &str, body: &str) -> Result<(), StoreError> {
+        let Some(row) = self.row_of(id)? else {
+            return Ok(());
+        };
+
+        self.connection
+            .execute("DELETE FROM text WHERE rowid = ?1", params![row])?;
+        self.connection.execute(
+            "INSERT INTO text(rowid, document_id, title, body) VALUES (?1, ?2, ?3, ?4)",
+            params![row, id, text::indexed(title), text::indexed(body)],
+        )?;
+
+        Ok(())
+    }
+
+    /// Takes a document's text out of the index.
+    ///
+    /// Called by [`Manifest::forget`] rather than by whoever remembers to, so
+    /// that a document leaving the index has one way of leaving and a search
+    /// cannot return one the archive no longer holds.
+    pub fn unindex(&self, id: &str) -> Result<(), StoreError> {
+        let Some(row) = self.row_of(id)? else {
+            return Ok(());
+        };
+
+        self.connection
+            .execute("DELETE FROM text WHERE rowid = ?1", params![row])?;
+
+        Ok(())
+    }
+
+    /// The documents holding every term, best match first.
+    ///
+    /// Ranked by `bm25`, which counts a word in the title eight times a word in
+    /// the body: a document *called* 产品供销合同 is a better answer to 合同
+    /// than one that merely mentions it. The two weights are the two numbers.
+    ///
+    /// `limit` is not a nicety. A term that appears in every document would
+    /// otherwise return the archive, and what a list can show is twenty rows.
+    pub fn search(&self, input: &str, limit: usize) -> Result<Vec<String>, StoreError> {
+        let query = text::as_query(input);
+
+        if query.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut statement = self.connection.prepare(
+            "SELECT document_id FROM text WHERE text MATCH ?1 \
+             ORDER BY bm25(text, 8.0, 1.0) LIMIT ?2",
+        )?;
+
+        let rows = statement.query_map(params![query, limit as i64], |row| row.get(0))?;
+
+        let mut found = Vec::new();
+        for row in rows {
+            found.push(row?);
+        }
+
+        Ok(found)
+    }
+
+    /// Empties the index, for a rebuild.
+    pub fn clear_index(&self) -> Result<(), StoreError> {
+        self.connection.execute("DELETE FROM text", [])?;
+        Ok(())
+    }
+
+    /// How many documents the index holds.
+    ///
+    /// Asked beside the number of documents, because the two disagreeing is the
+    /// one failure that makes search look broken rather than empty — and this
+    /// index is a cache, so it can be behind.
+    pub fn indexed_count(&self) -> Result<u64, StoreError> {
+        let count: i64 = self
+            .connection
+            .query_row("SELECT count(*) FROM text", [], |row| row.get(0))?;
+
+        Ok(count as u64)
+    }
+
+    /// The `documents` row a document occupies, which is the index's row too.
+    fn row_of(&self, id: &str) -> Result<Option<i64>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT rowid FROM documents WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn forget(&self, id: &str) -> Result<(), StoreError> {
+        // The text goes with the row it belongs to. Leaving it would be worse
+        // than a leak: the index is keyed by the row the document occupies, and
+        // SQLite reuses a row id once the row holding it is gone — so an
+        // orphaned entry is not merely stale, it is an entry the next document
+        // to be given that row will be found under.
+        self.unindex(id)?;
+
         self.connection
             .execute("DELETE FROM documents WHERE id = ?1", params![id])?;
         Ok(())
@@ -446,6 +613,7 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<DocumentRecord> {
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
         output_hash: row.get(15)?,
+        source_copy: row.get::<_, Option<String>>(16)?.map(PathBuf::from),
     })
 }
 
@@ -518,6 +686,7 @@ mod tests {
             created_at: now.clone(),
             updated_at: now,
             output_hash: Some("b".repeat(64)),
+            source_copy: None,
         }
     }
 

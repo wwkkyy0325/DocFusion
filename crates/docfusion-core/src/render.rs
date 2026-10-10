@@ -206,6 +206,43 @@ fn field(out: &mut String, key: &str, value: &str) {
 ///
 /// The document's own first heading is preferred over the source file name,
 /// because "2024 Annual Report" is what the document calls itself while
+/// The document without the two things this program wrapped around it: the
+/// front matter, and the conflict report at the end.
+///
+/// What is left is what a person reading the file would call the document, and
+/// it is what goes into the search index. Both of the things removed are *about*
+/// the document rather than in it — a title, a hash, an engine, and a note that
+/// two engines read one region differently — and neither is anything the person
+/// who wrote the page would recognise as theirs.
+///
+/// The report especially: it carries the extracted text of the regions the
+/// engines disagreed about, so indexing it would make a document findable by a
+/// passage that appears twice in its own file and once in the report about it,
+/// and would rank the document by the wording of a disagreement.
+///
+/// Both markers are this program's own, which is what makes this reading back
+/// what was written rather than guessing at somebody else's Markdown. A
+/// document that is not in this shape — a person's own notes in the tree — is
+/// returned whole rather than mangled.
+pub fn body_of(markdown: &str) -> &str {
+    let mut body = markdown;
+
+    if let Some(rest) = body.strip_prefix("---\n")
+        && let Some(end) = rest.find("\n---\n")
+    {
+        body = &rest[end + "\n---\n".len()..];
+    }
+
+    if let Some(at) = body.find(CONFLICT_HEADING) {
+        body = &body[..at];
+    }
+
+    body
+}
+
+/// The heading the conflict report begins at, written by [`conflicts_markdown`].
+const CONFLICT_HEADING: &str = "\n## Conflicts\n";
+
 /// `report.pdf` is merely what somebody saved it as — and the title is also what
 /// names the output file.
 pub fn title(document: &Document) -> String {

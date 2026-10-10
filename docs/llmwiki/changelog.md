@@ -4,6 +4,132 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — `reindex`, which is what the copy was for
+
+**What:** `docfusion reindex [document]` reads a document again with the engines
+this machine has now.
+
+**The state it ends.** A document is read by whatever was installed at the time,
+and that — engine, version, model, prompt — is what the manifest remembers. When
+any of them changes, the Markdown on disk is the *old* engine's answer, and
+nothing would ever ask again: `ingest` reuses on a matching stamp, and a document
+nobody drags in a second time is never looked at. That document stayed wrong for
+ever. It is the reason the copy of the source exists, and the reason it is worth
+the disk it takes.
+
+**Read from the copy, not from where the document came from.** A re-read that
+looked for the original would skip exactly the documents whose sources had moved
+— which are the ones that need it most, because they are the ones nothing else
+can reach either. The record keeps saying where the document came from: a
+re-read that replaced the path somebody recognises with one inside the state
+directory would be a re-read that lost the document. Nor is it re-dated, or
+known by a different name.
+
+**Which documents are out of date is a question about routing**, so the answer is
+the stamp the installed engines would give the same bytes against the stamp the
+record holds. Only the first few hundred bytes of each file are read to ask it: a
+scan that read every file in the archive would cost the archive's own size in I/O
+to answer a question about the head of each one.
+
+**A document nothing can find the bytes of is not called out of date.** It cannot
+be re-read, and saying it needs re-reading would be a promise this cannot keep.
+It is reported as what it is — `unreachable`, said first and on stderr — which is
+the state of every record written before copies existed, as soon as the file it
+came from moves. Its Markdown is intact and it can be read, searched and deleted
+as usual.
+
+**A dry run writes nothing**, which on the one command that can re-read a whole
+archive is the difference between a look and an afternoon. One document that
+fails does not abandon the rest, for the same reason a batch of thirty in `add`
+is not abandoned by one unreadable scan.
+
+**The read-and-render step is now one function** used by both `ingest` and
+`reindex`, because a re-read that took a slightly different path through
+extraction than a first read would produce a slightly different document — and
+the whole point of a re-read is that the only thing that changed is the engine.
+
+**Measured:** 545 tests pass, `cargo clippy --workspace --all-targets` clean.
+Run by hand on the case it exists for: a document added, its source file then
+moved away, then read again from the kept copy and still findable afterwards.
+
+---
+
+## 2026-10-10 — A copy of what was read, and a way to find it again
+
+**What:** Two things, and only one of them was in the plan.
+
+**The copy was not.** The knowledge base has been Markdown plus a pointer at a
+file somebody else owns. That makes three things true, and all three are now
+traded away: a record whose source moved is a dead pointer; **`reindex` is
+impossible**, because re-reading a document after the engine or the model
+changed needs the original bytes; and there is no provenance. The second is the
+real reason. Everything read is now kept at `.docfusion/sources/<blake3>.<ext>`
+— content-addressed, so the same file from two folders is one copy, and so
+re-adding a source whose copy is gone puts it back.
+
+**Under `.docfusion/` and not beside `docs/`**, which is the decision rather than
+the placement: a knowledge base whose `docs/` is synced or committed should not
+drag the contracts and bank statements that were read into it along with the
+Markdown. What is worth syncing and what is worth keeping are different
+questions. The cost is disk and it is the whole cost.
+
+**`forget` leaves the copy; `delete` takes it.** Forgetting stays a pure index
+operation and an unreferenced copy joins untracked Markdown as drift that
+`reconcile` reports and does not delete. Deleting a document is the other
+sentence and means the room comes back. **Neither touches the document somebody
+chose** — the promise both front ends make in the dialog's own words, and the
+one thing a person pressing a red button wants to know.
+
+**Search was in the plan**, as P3: *"SQLite FTS5 + Chinese tokenization, search
+UI"*. §2's non-goal list contradicted it, saying FTS5 was P4; the phase table
+wins and the two lines are reconciled. **No embeddings and no reranker, ever** —
+that is now written into the non-goals as a non-goal rather than a phase, along
+with the framing that made it obvious: this is an archive. Not a knowledge base.
+It stores documents and finds them again, and every feature that follows from
+the other word — backlinks, graphs, entity extraction, a reranker — is a
+different product built on this one's output.
+
+**The tokenizer was measured before anything was written, and the plan was
+wrong.** `trigram` looks like the answer: built in, any script, substring match
+as an index lookup. It also **matches nothing shorter than three characters**.
+On a probe, 合同, 供销, 学生 and 报到 all returned zero against a corpus where
+产品供销合同 and 24年 returned one — and most Chinese words are two characters,
+so the tokenizer that handles "any script" would have handled this knowledge
+base's script not at all. What replaced it needs no dependency and is smaller:
+`unicode61`, with CJK pulled apart into single characters as the text is stored,
+and each query term asked for as a quoted phrase. 合同 becomes `"合 同"`, two
+adjacent tokens, and `甲方 学生` finds only documents holding both.
+
+**The excerpt is found in the document, not asked of the index**, because the
+index holds the pulled-apart text and a passage from it would come back with a
+space between every pair of Chinese characters — which is the fault this project
+has already chased once. The markers round the match are control characters,
+which cannot occur in text off a page; the window builds an element out of them
+rather than handing anything to a parser.
+
+**The index is keyed by the document's own row.** FTS5 answers `WHERE
+document_id = ?` by reading its whole content table, so an archive would pay for
+its own size on every document added and a thousand-document import would pay a
+thousand times. Writing an entry is now two lookups, and the text is written
+from the Markdown that was just rendered rather than read back off the disk.
+
+**One contradiction in a document I wrote, caught by reading it back.** The task
+doc said the copy survives both ways out; the table I had put to the project's
+owner said `delete` takes it. The table was right, and the code, the comments
+and the doc now agree with it.
+
+**Measured:** 540 tests pass, `cargo clippy --workspace --all-targets` clean.
+Search was run by hand over a real archive: a two-character word found its
+document, a word only in one file's *name* ranked above one that merely mentions
+it, two terms found only the document holding both, `--json` carried the match
+markers, `index` rebuilt from the tree, and `--limit` bounded the answer. The
+old knowledge base was deleted by request rather than migrated, so the schema
+went in as v3 and v4 with nothing behind it — the migration itself having been
+exercised on a copy of the real one first, 13 records backfilled and clean on
+the second run.
+
+---
+
 ## 2026-10-10 — The records page learns to be used
 
 **What:** A row in the records list was one big button: clicking anywhere on it

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::hash::hash_file;
 use crate::manifest::{DocumentRecord, StoreError};
-use crate::pipeline::{DOCS_DIR, Pipeline};
+use crate::pipeline::{DOCS_DIR, Pipeline, PipelineError, SOURCES_DIR, STATE_DIR};
 
 /// Where the index and the tree disagree.
 #[derive(Debug, Default, PartialEq)]
@@ -27,19 +27,41 @@ pub struct Drift {
 
     /// Records whose output could not be found at all.
     pub missing: Vec<DocumentRecord>,
+
+    /// Records whose copy of the source is not in the state directory, and
+    /// whose source is still where the index says it is.
+    ///
+    /// Two ways to get here: a record written before copies existed, which is
+    /// every record in every knowledge base made before this, and a copy
+    /// somebody deleted. Both are fixed the same way and neither costs a read —
+    /// the bytes are copied, not interpreted.
+    pub recoverable: Vec<DocumentRecord>,
+
+    /// Copies in the state directory that no record points at.
+    ///
+    /// What `forget` leaves behind, by decision: taking a row out of the index
+    /// stays a pure index operation, and reclaiming the room is a separate act.
+    /// Reported and left alone, exactly like untracked Markdown — a file the
+    /// index claims nothing about is not a file the index gets to delete, and
+    /// a person may have put it there.
+    pub orphan_copies: Vec<PathBuf>,
 }
 
 impl Drift {
     pub fn is_empty(&self) -> bool {
-        self.untracked.is_empty() && self.relinked.is_empty() && self.missing.is_empty()
+        self.untracked.is_empty()
+            && self.relinked.is_empty()
+            && self.missing.is_empty()
+            && self.recoverable.is_empty()
+            && self.orphan_copies.is_empty()
     }
 
     /// Whether the index needs repairing.
     ///
-    /// Untracked files do not count: the index claims nothing about them, so
-    /// there is nothing for it to be wrong about.
+    /// Untracked files and orphaned copies do not count: the index claims
+    /// nothing about them, so there is nothing for it to be wrong about.
     pub fn needs_repair(&self) -> bool {
-        !self.relinked.is_empty() || !self.missing.is_empty()
+        !self.relinked.is_empty() || !self.missing.is_empty() || !self.recoverable.is_empty()
     }
 }
 
@@ -47,6 +69,8 @@ impl Drift {
 pub struct Repair {
     pub relinked: usize,
     pub forgotten: usize,
+    /// Copies of sources put back where records say they should be.
+    pub recovered: usize,
 }
 
 pub fn scan(pipeline: &Pipeline) -> Result<Drift, StoreError> {
@@ -76,7 +100,7 @@ pub fn scan(pipeline: &Pipeline) -> Result<Drift, StoreError> {
 
     let mut drift = Drift::default();
 
-    for record in records {
+    for record in &records {
         if present.contains(record.output_path.as_path()) {
             continue;
         }
@@ -84,24 +108,86 @@ pub fn scan(pipeline: &Pipeline) -> Result<Drift, StoreError> {
         // A record written before output hashes existed cannot be matched, and
         // guessing would be worse than reporting.
         let Some(wanted) = record.output_hash.as_deref() else {
-            drift.missing.push(record);
+            drift.missing.push(record.clone());
             continue;
         };
 
         match orphans.iter().position(|(_, hash)| hash == wanted) {
             Some(index) => {
                 let (path, _) = orphans.remove(index);
-                drift.relinked.push((record, path));
+                drift.relinked.push((record.clone(), path));
             }
-            None => drift.missing.push(record),
+            None => drift.missing.push(record.clone()),
+        }
+    }
+
+    // A record whose copy is missing but whose source is still where the index
+    // says it is can be put back without reading anything. One whose source has
+    // gone cannot, and is not reported here — its output is intact and there is
+    // nothing to do about the rest.
+    for record in &records {
+        if record
+            .source_copy
+            .as_ref()
+            .is_some_and(|copy| root.join(copy).is_file())
+        {
+            continue;
+        }
+
+        if source_is_reachable(pipeline, record) {
+            drift.recoverable.push(record.clone());
         }
     }
 
     drift.untracked = orphans.into_iter().map(|(path, _)| path).collect();
+    drift.orphan_copies = orphaned_copies(pipeline, &records);
     Ok(drift)
 }
 
-pub fn repair(pipeline: &Pipeline, drift: &Drift) -> Result<Repair, StoreError> {
+/// Whether a record's source can still be found, by any of its names.
+///
+/// Asked without reading, because this runs over every record in the knowledge
+/// base: whether the bytes are the right ones is [`Pipeline::keep_source_of`]'s
+/// question, and it asks it by reading them.
+fn source_is_reachable(pipeline: &Pipeline, record: &DocumentRecord) -> bool {
+    if record.source_path.is_file() {
+        return true;
+    }
+
+    pipeline
+        .manifest()
+        .aliases_of(&record.id)
+        .is_ok_and(|aliases| aliases.iter().any(|path| path.is_file()))
+}
+
+/// Copies in the state directory that no record points at.
+///
+/// Compared by file name rather than by path, because the name is the document
+/// id and the extension: a record says `sources/<id>.pdf` and the file on disk
+/// is that same name, so the two meet without either having to be resolved.
+fn orphaned_copies(pipeline: &Pipeline, records: &[DocumentRecord]) -> Vec<PathBuf> {
+    let claimed: HashSet<&std::ffi::OsStr> = records
+        .iter()
+        .filter_map(|record| record.source_copy.as_ref())
+        .filter_map(|copy| copy.file_name())
+        .collect();
+
+    let Ok(entries) = fs::read_dir(pipeline.root().join(STATE_DIR).join(SOURCES_DIR)) else {
+        return Vec::new();
+    };
+
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| !claimed.contains(path.file_name().unwrap_or_default()))
+        .collect();
+
+    found.sort();
+    found
+}
+
+pub fn repair(pipeline: &Pipeline, drift: &Drift) -> Result<Repair, PipelineError> {
     let manifest = pipeline.manifest();
 
     for (record, path) in &drift.relinked {
@@ -111,9 +197,19 @@ pub fn repair(pipeline: &Pipeline, drift: &Drift) -> Result<Repair, StoreError> 
         manifest.forget(&record.id)?;
     }
 
+    let mut recovered = 0;
+    for record in &drift.recoverable {
+        let copy = pipeline.keep_source_of(record)?;
+        let mut kept = record.clone();
+        kept.source_copy = Some(copy);
+        manifest.upsert(&kept)?;
+        recovered += 1;
+    }
+
     Ok(Repair {
         relinked: drift.relinked.len(),
         forgotten: drift.missing.len(),
+        recovered,
     })
 }
 
@@ -198,6 +294,82 @@ mod tests {
 
         assert!(drift.is_empty(), "{drift:?}");
         assert!(!drift.needs_repair());
+    }
+
+    /// A record with no copy of its source is something `--fix` can put right,
+    /// and nothing has to be read to do it.
+    #[test]
+    fn a_record_with_no_copy_can_be_given_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipeline = ingest_one(dir.path(), "notes.txt", "hello");
+
+        // As a knowledge base made before copies existed looks: the column is
+        // null for every record in it.
+        let record = pipeline.manifest().all().unwrap().remove(0);
+        pipeline
+            .manifest()
+            .upsert(&DocumentRecord {
+                source_copy: None,
+                ..record
+            })
+            .unwrap();
+
+        let drift = scan(&pipeline).unwrap();
+        assert_eq!(drift.recoverable.len(), 1, "{drift:?}");
+        assert!(drift.needs_repair());
+
+        let repaired = repair(&pipeline, &drift).unwrap();
+        assert_eq!(repaired.recovered, 1);
+
+        let after = scan(&pipeline).unwrap();
+        assert!(after.recoverable.is_empty(), "{after:?}");
+    }
+
+    /// And one whose source has gone cannot be, which is not drift — there is
+    /// nothing to be done about it, and the Markdown is intact.
+    #[test]
+    fn a_record_whose_source_is_gone_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipeline = ingest_one(dir.path(), "notes.txt", "hello");
+
+        let record = pipeline.manifest().all().unwrap().remove(0);
+        pipeline
+            .manifest()
+            .upsert(&DocumentRecord {
+                source_copy: None,
+                ..record
+            })
+            .unwrap();
+        fs::remove_file(dir.path().join("notes.txt")).unwrap();
+
+        let drift = scan(&pipeline).unwrap();
+        assert!(drift.recoverable.is_empty(), "{drift:?}");
+        assert!(!drift.needs_repair());
+    }
+
+    /// A copy nothing points at is reported and left where it is.
+    ///
+    /// This is what `forget` leaves behind, by decision: taking a row out of
+    /// the index is a pure index operation, and reclaiming the room is a
+    /// separate act somebody has to mean. A file the index claims nothing about
+    /// is not a file the index gets to delete — the same rule untracked
+    /// Markdown lives under.
+    #[test]
+    fn a_copy_nothing_points_at_is_reported_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipeline = ingest_one(dir.path(), "notes.txt", "hello");
+
+        let record = pipeline.manifest().all().unwrap().remove(0);
+        let copy = pipeline.root().join(record.source_copy.clone().expect("a copy"));
+
+        pipeline.forget(&record.id).unwrap();
+
+        let drift = scan(&pipeline).unwrap();
+        assert_eq!(drift.orphan_copies, vec![copy.clone()], "{drift:?}");
+
+        // Reported, and not a reason to repair anything: nothing is wrong.
+        assert!(!drift.needs_repair());
+        assert!(copy.is_file(), "reconcile removed a file it claims nothing about");
     }
 
     /// The case the output hash exists for: renaming a file breaks the path

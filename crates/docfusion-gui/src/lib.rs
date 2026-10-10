@@ -31,7 +31,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use state::{
-    Cause, Conflict, Local, Model, Opened, Reading, Record, Remote, Screen, Test, Trouble, View,
+    Cause, Conflict, Local, Match, Model, Opened, Reading, Record, Remote, Screen, Test, Trouble, View,
 };
 
 /// The application's shared state.
@@ -693,6 +693,11 @@ fn cause_of(error: &PipelineError) -> Cause {
         // And the two that are about a delete: the file would not go, or the
         // record pointed somewhere this program will not reach.
         PipelineError::Delete { .. } | PipelineError::Outside { .. } => Cause::Delete,
+
+        // The bytes a document was read from are not where the index says.
+        // Nothing the window does reaches this — it is `reconcile` putting
+        // copies back — but the sentence is about a file that is not there.
+        PipelineError::SourceGone { .. } => Cause::Missing,
     }
 }
 
@@ -719,6 +724,42 @@ fn extract_cause(error: &ExtractError) -> Cause {
 fn view(app: AppHandle) -> View {
     app.state::<App>().view()
 }
+
+/// Finds documents by what is in them.
+///
+/// Returns the matches rather than a [`View`], because a search is a question
+/// and the answer to it is not part of what is on screen: the view is the
+/// archive's state and this is a reply, and a view that carried a reply would
+/// have to be given another one every time the window redrew.
+///
+/// Not on a thread of its own, unlike reading a document: the index does the
+/// finding and what is read afterwards is twenty passages out of twenty files
+/// the operating system wrote and still has in hand.
+#[tauri::command]
+fn search(app: AppHandle, query: String) -> Result<Vec<Match>, String> {
+    let state = app.state::<App>();
+
+    let pipeline = state.pipeline().map_err(|trouble| trouble.detail)?;
+    let found = pipeline
+        .search(&query, SEARCH_LIMIT)
+        .map_err(|error| error.to_string())?;
+
+    Ok(found
+        .into_iter()
+        .map(|hit| Match {
+            id: hit.id,
+            name: hit.name,
+            excerpt: hit.excerpt,
+        })
+        .collect())
+}
+
+/// How many documents a search answers with.
+///
+/// A term that appears in everything would otherwise return the archive, and a
+/// list that long is not an answer to anything. The same number the command
+/// line defaults to, so the two tools answer the same question the same way.
+const SEARCH_LIMIT: usize = 20;
 
 /// Takes a record out of the index, leaving its Markdown alone.
 ///
@@ -1102,6 +1143,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             view,
             records,
+            search,
             forget_record,
             delete_record,
             choose_file,

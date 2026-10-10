@@ -13,6 +13,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use docfusion_core::extract::{ExtractError, Extractor, Router};
+use docfusion_core::text::{HIT_END, HIT_START};
 use docfusion_core::verify::{DEFAULT_MAX_VERIFY_PAGES, VerifyMode, VerifyPolicy};
 use docfusion_store::endpoint::{EndpointConfig, OpenAiEndpoint};
 use docfusion_store::manifest::StoreError;
@@ -216,6 +217,42 @@ enum Command {
         status: Option<String>,
     },
 
+    /// Find documents by what is in them.
+    ///
+    /// Every word has to appear for a document to match. Chinese needs no
+    /// special handling and no dictionary: a two-character word is found as
+    /// readily as an English one.
+    Search {
+        /// What to look for. Several words may be given, quoted or not.
+        #[arg(required = true)]
+        query: Vec<String>,
+
+        /// The most documents to show.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+
+    /// Rebuild the search index from the Markdown files.
+    ///
+    /// The index is a cache over the file tree, so this is what to run when it
+    /// is behind — or after replacing the database. Nothing is read out of the
+    /// sources, so a document whose original has gone can still be found.
+    Index,
+
+    /// Read a document again with the engines this machine has now.
+    ///
+    /// What the kept copy of the source is for. A document is read by whatever
+    /// was installed at the time, and changing a model, an endpoint or an
+    /// engine's version leaves the Markdown on disk as the old engine's answer
+    /// — and nothing asks again, because a document nobody adds a second time
+    /// is never looked at again.
+    Reindex {
+        /// One document to read again, named the way `forget` takes it.
+        /// Without one, every document whose reading the current engines would
+        /// not produce.
+        document: Option<String>,
+    },
+
     /// Take a document out of the index, leaving its Markdown where it is.
     ///
     /// The reversible half. The file stays on disk and `reconcile` reports it
@@ -306,6 +343,9 @@ fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
         Command::Add { paths } => add(cli, reporter, paths),
         Command::Show { document } => show(cli, reporter, document),
         Command::List { status } => list(cli, reporter, status.as_deref()),
+        Command::Search { query, limit } => search(cli, reporter, query, *limit),
+        Command::Index => rebuild_index(cli, reporter),
+        Command::Reindex { document } => reindex(cli, reporter, document.as_deref()),
         Command::Forget { document } => forget(cli, reporter, document),
         Command::Delete { document } => delete(cli, reporter, document),
         Command::Reconcile { fix } => reconcile(cli, reporter, *fix),
@@ -339,6 +379,15 @@ fn reconcile(cli: &Cli, reporter: &Reporter, fix: bool) -> Result<u8, CliError> 
     for path in &drift.untracked {
         reporter.note(format!("extra  {} (not tracked)", path.display()));
     }
+    for record in &drift.recoverable {
+        reporter.note(format!(
+            "copy   {} (no copy of its source; its source is still there, so --fix takes one)",
+            record.output_path.display()
+        ));
+    }
+    for path in &drift.orphan_copies {
+        reporter.note(format!("spare  {} (no record claims it)", path.display()));
+    }
 
     // An unclaimed file is reported but is not drift: the index says nothing
     // about it, so it cannot be wrong about it. A person may keep their own
@@ -350,7 +399,9 @@ fn reconcile(cli: &Cli, reporter: &Reporter, fix: bool) -> Result<u8, CliError> 
                 "drift": false,
                 "relinked": 0,
                 "forgotten": 0,
+                "recovered": 0,
                 "untracked": drift.untracked.len(),
+                "orphan_copies": drift.orphan_copies.len(),
             }),
             "the index matches the file tree",
         );
@@ -370,11 +421,16 @@ fn reconcile(cli: &Cli, reporter: &Reporter, fix: bool) -> Result<u8, CliError> 
             "drift": true,
             "relinked": repaired.relinked,
             "forgotten": repaired.forgotten,
+            "recovered": repaired.recovered,
             "untracked": drift.untracked.len(),
+            "orphan_copies": drift.orphan_copies.len(),
         }),
         format!(
-            "relinked {}, forgot {}",
-            repaired.relinked, repaired.forgotten
+            "relinked {}, forgot {}, copied {} source{}",
+            repaired.relinked,
+            repaired.forgotten,
+            repaired.recovered,
+            if repaired.recovered == 1 { "" } else { "s" }
         ),
     );
 
@@ -482,6 +538,158 @@ fn list(cli: &Cli, reporter: &Reporter, status: Option<&str>) -> Result<u8, CliE
             ),
         );
     }
+
+    Ok(OK)
+}
+
+/// Finds documents by what is in them.
+///
+/// **Finding nothing is not a failure.** A search is a question, and an archive
+/// that does not hold the answer is an archive answering the question — exit
+/// code zero and no lines, which is what a script driving this expects. There
+/// is a code for "the index disagreed with the tree" and none for "no", and
+/// inventing one would make every `search` in a loop need a guard.
+///
+/// The passage is printed with the match's markers taken out, because they are
+/// control characters and the machine's rather than the terminal's. What is
+/// left is a window centred on the match, which is where a person looks anyway.
+/// `--json` carries them.
+fn search(cli: &Cli, reporter: &Reporter, query: &[String], limit: usize) -> Result<u8, CliError> {
+    let pipeline = open(cli)?;
+
+    // Said before the answer, not after it, and on stderr: an index that is
+    // behind is **the** reason a search finds nothing while the archive plainly
+    // holds it, and a person who has just been told "no" is not going to read a
+    // footnote. It costs one count against another.
+    let (indexed, documents) = pipeline.index_coverage()?;
+    if indexed < documents {
+        reporter.note(format!(
+            "the search index holds {indexed} of {documents} documents; \
+             `docfusion index` rebuilds it"
+        ));
+    }
+
+    let query = query.join(" ");
+    let found = pipeline.search(&query, limit)?;
+
+    for hit in &found {
+        let readable = hit
+            .excerpt
+            .as_deref()
+            .map(|excerpt| {
+                excerpt
+                    .chars()
+                    .filter(|c| *c != HIT_START && *c != HIT_END)
+                    .collect::<String>()
+            })
+            .unwrap_or_else(|| "(its Markdown is gone)".to_owned());
+
+        reporter.record(
+            json!({
+                "command": "search",
+                "id": hit.id,
+                "name": hit.name,
+                "excerpt": hit.excerpt,
+            }),
+            format!("{}  {}\n    {}", &hit.id[..8], hit.name, readable),
+        );
+    }
+
+    Ok(OK)
+}
+
+/// Reads documents again with the engines this machine has now.
+///
+/// **Nothing to do is the ordinary answer**, and it is said rather than left as
+/// silence: an archive whose engines have not changed is an archive that
+/// reindexes to nothing, and a command that printed nothing would be
+/// indistinguishable from one that found nothing to work with.
+///
+/// What cannot be re-read is said first and on stderr. Those are the documents
+/// whose sources moved before copies existed — a real state for a knowledge base
+/// made before any of this — and their Markdown is intact; what they cannot do
+/// is be read again.
+fn reindex(cli: &Cli, reporter: &Reporter, document: Option<&str>) -> Result<u8, CliError> {
+    let pipeline = open(cli)?;
+    let mode = if cli.dry_run { Mode::DryRun } else { Mode::Apply };
+
+    let records = match document {
+        // Named: read that one, whether or not it looks out of date. Somebody
+        // who asked for a document by name has a reason, and a re-read that
+        // quietly declined because nothing had changed would be this program
+        // second-guessing the one thing it was told to do.
+        Some(query) => vec![pipeline.resolve(query)?],
+        None => pipeline.stale()?,
+    };
+
+    if document.is_none() {
+        for record in pipeline.unreachable()? {
+            reporter.note(format!(
+                "cannot re-read {}: its source is not where the index says it is and \
+                 no copy of it was kept",
+                record.output_path.display()
+            ));
+        }
+    }
+
+    if records.is_empty() {
+        reporter.record(
+            json!({ "command": "reindex", "stale": 0, "read": 0, "failed": 0, "dry_run": cli.dry_run }),
+            "every document was read by the engines installed now",
+        );
+        return Ok(OK);
+    }
+
+    let mut failures: Vec<CliError> = Vec::new();
+
+    for record in &records {
+        match pipeline.reindex(record, mode) {
+            Ok(outcome) => {
+                reporter.record(
+                    json!({
+                        "command": "reindex",
+                        "id": outcome.id,
+                        "output": outcome.output,
+                        "conflicts": outcome.conflicts,
+                        "status": outcome.status.as_str(),
+                        "dry_run": cli.dry_run,
+                    }),
+                    format!(
+                        "{}  {}",
+                        if cli.dry_run { "would read" } else { "read      " },
+                        outcome.output.display()
+                    ),
+                );
+            }
+            Err(error) => {
+                // One document that cannot be read again should not abandon the
+                // rest, for the same reason a batch of thirty in `add` is not
+                // abandoned by one unreadable scan.
+                reporter.note(format!("{}: {error}", record.output_path.display()));
+                failures.push(error.into());
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        return Ok(OK);
+    }
+    if failures.len() < records.len() {
+        return Ok(PARTIAL);
+    }
+
+    Ok(FAILED)
+}
+
+/// Rebuilds the search index from the tree.
+fn rebuild_index(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
+    let pipeline = open(cli)?;
+    let indexed = pipeline.rebuild_index()?;
+
+    reporter.record(
+        json!({ "command": "index", "indexed": indexed, "dry_run": cli.dry_run }),
+        format!("indexed {indexed} document{}", if indexed == 1 { "" } else { "s" }),
+    );
 
     Ok(OK)
 }

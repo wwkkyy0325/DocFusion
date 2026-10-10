@@ -587,11 +587,64 @@ button.link:hover { background: none; filter: brightness(1.15); }
   gap: 4px;
 }
 
+/* The passage a search matched, with the match marked. */
+#records .excerpt {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  /* Wraps, unlike the name above it. A passage cut off at the column edge is
+     a passage with the match missing from the end of it. */
+  overflow-wrap: anywhere;
+}
+
+/* Marked by tinting, not by inverting. A block of accent-coloured text in a
+   list of twelve of them reads as twelve buttons; a tint reads as a highlighter
+   and leaves the words themselves alone. */
+#records mark {
+  background: light-dark(#fde68a, #4a3c14);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
 #records .none {
   color: var(--muted);
   padding: 24px 10px;
   font-size: 13px;
   text-align: center;
+}
+
+/* ── the search box ────────────────────────────────────────────────────── */
+
+/* Centred and bounded like the list under it, so the two line up and the box
+   does not stretch to the width of a maximised window while the results stay
+   in a column. */
+.search {
+  flex: none;
+  width: 100%;
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 12px 10px 0;
+}
+
+.search input {
+  font: inherit;
+  width: 100%;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.search input::placeholder { color: var(--muted); }
+
+.search input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: transparent;
 }
 
 /* ── settings ───────────────────────────────────────────────────────────── */

@@ -79,6 +79,7 @@ impl Pipeline {
                 created_at: now.clone(),
                 updated_at: now,
                 output_hash: Some("0".repeat(64)),
+                source_copy: None,
             })
             .unwrap();
         self.manifest.add_alias(&content_hash, source).unwrap();
@@ -168,6 +169,7 @@ fn an_engine_upgrade_invalidates_everything() {
             created_at: now.clone(),
             updated_at: now,
             output_hash: None,
+            source_copy: None,
         })
         .unwrap();
 

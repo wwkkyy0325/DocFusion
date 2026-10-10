@@ -92,6 +92,28 @@ pub struct Local {
     pub total_bytes: u64,
 }
 
+/// One document a search found.
+///
+/// Its own type rather than a [`Record`] with the passage in it, because the
+/// two are asked for differently and drawn differently: a record is the
+/// archive's whole list and a match is the answer to a question, and merging
+/// them would mean the list had a field that is empty except after a search.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Match {
+    pub id: String,
+    /// The file this was read from, as somebody would recognise it.
+    pub name: String,
+    /// The passage the match is in, with it between two control characters the
+    /// window splits on — see [`docfusion_core::text::HIT_START`]. Not markup:
+    /// the text is somebody's document, and the window builds nodes out of it
+    /// rather than parsing anything.
+    ///
+    /// `None` when the document's Markdown has gone since it was indexed, which
+    /// is drift rather than a failure and is said in words rather than by
+    /// dropping the row.
+    pub excerpt: Option<String>,
+}
+
 /// Something that went wrong, split the way the window has to say it.
 ///
 /// Two halves, and the split is the point. `cause` is the kind of failure, the
@@ -516,6 +538,7 @@ mod tests {
             created_at: "2026-10-08T12:00:00Z".into(),
             updated_at: "2026-10-08T12:00:00Z".into(),
             output_hash: None,
+            source_copy: None,
         }
     }
 }

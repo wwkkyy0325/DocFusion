@@ -78,6 +78,21 @@
         aria-labelledby="tab-records"
         hidden
       >
+        <!-- Above the list rather than beside it, because what it does is
+             change what the list below it is: empty is everything in the
+             archive, and anything typed is the answer to a question. One panel
+             with two states, rather than two panels showing the same documents
+             in two ways. -->
+        <div class="search">
+          <input
+            id="search"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            aria-controls="records"
+          />
+        </div>
+
         <ul id="records"></ul>
       </section>
 

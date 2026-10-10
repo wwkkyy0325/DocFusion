@@ -41,11 +41,25 @@ Explicitly out of scope, so they don't creep in:
 - Legacy Office formats (`.doc`, `.xls`, `.ppt`) — detect and error with a
   conversion hint.
 - Web page scraping, email (`.eml`/`.msg`), EPUB, archive batch import.
-- Vector / semantic search. FTS5 only, and only in P4.
+- **Embeddings and rerankers, ever.** Not "later" and not "optional": a lexical
+  index (FTS5) and nothing on top of it. See below for why this is a
+  non-goal rather than a phase.
 - Multi-user, server deployment, auth, quotas.
 - LLM semantic enrichment (summaries, entity extraction, auto-tagging).
   That is a *different project* that would consume DocFusion's output.
 - OCR of handwritten text as a first-class goal.
+
+**This is an archive, and calling it a knowledge base was the wrong word.**
+The job is: put a document in, and find it again. Not link it, not tag it, not
+summarise it, not answer questions from it. Every feature that follows from the
+*knowledge base* framing — backlinks, graphs, embeddings, a reranker, entity
+extraction — is a different product built on top of this one's output, and the
+output is plain Markdown precisely so that building it elsewhere is easy.
+
+What that buys is that the priorities are measurable: **how fast a document goes
+in, and how fast it comes back out.** No model to load, no vector to maintain,
+no index to re-embed when something upstream changes. A search here is one SQL
+query against one SQLite file, and it should stay that.
 
 ---
 
@@ -854,7 +868,9 @@ knowledge/
     _assets/
       a3f9c2.png                   # extracted figures, content-addressed
   .docfusion/
-    manifest.db                    # SQLite
+    manifest.db                    # SQLite, and the full-text index beside it
+    sources/
+      a3f9c2….pdf                  # the bytes that were read, content-addressed
     cache/                         # engine result cache
 ```
 
@@ -863,6 +879,25 @@ is immediately usable by an agent with no adapter.
 
 `_assets/` is empty until P1: no deterministic engine produces figure blocks, so
 there is nothing to write there yet.
+
+**`.docfusion/sources/` holds a copy of everything that was read**, named after
+the document's own content hash so that the same file arriving from two folders
+is kept once — the aliases table already models the two names. The reason is not
+provenance, and not that the file might be deleted: it is that **a document
+whose original moved can never be read again.** `reindex` exists to re-read
+documents after the engine, the model or the prompt changed, and it needs the
+bytes. Before this, moving a file ended that permanently.
+
+It is under `.docfusion/` and not beside `docs/` on purpose: a knowledge base
+whose `docs/` is synced or committed should not drag the contracts and bank
+statements that were read into it along with the Markdown. What is worth syncing
+and what is worth keeping are different questions.
+
+The cost is disk, and it is the whole cost: the knowledge base is now about as
+large as what has been put into it. `docfusion delete` is how something stops
+taking up room — and `forget` deliberately does not, because it is the
+reversible half and because a copy nothing points at is a file `reconcile`
+reports rather than one it decides to remove.
 
 ### 9.2 Manifest schema
 
@@ -978,9 +1013,12 @@ documented commands rather than something that could be verified here.
 docfusion add <paths...>       Process and ingest
 docfusion show <id|path>       Emit Markdown to stdout
 docfusion list [--status]      List documents
+docfusion search <words...>    Find documents by what is in them
+docfusion index                Rebuild the search index from the Markdown
+docfusion reindex [id|path]    Read documents again with the engines installed now
 docfusion forget <id|path>     Take it out of the index; the Markdown stays
-docfusion delete <id|path>     Delete it and its Markdown; never the source
-docfusion reconcile            Repair the index against the file tree
+docfusion delete <id|path>     Delete it, its Markdown and its copy; never the source
+docfusion reconcile [--fix]    Repair the index against the file tree
 docfusion reindex --stale      Reprocess after an engine/model/prompt change
 docfusion bench --set <dir>    Compare backends on a golden corpus
 docfusion doctor               What this installation can read, and what is missing
@@ -1096,8 +1134,8 @@ different amounts:
 
 | | Removes | Leaves |
 |---|---|---|
-| Remove from the list | the index row | the Markdown, at `docs/<name>.md` |
-| Delete the file | the index row **and** the Markdown | nothing |
+| Remove from the list | the index row | the Markdown and the copy of the source |
+| Delete the file | the index row, the Markdown, **and the copy** | nothing |
 
 So a row's Delete asks, in a modal `dialog` — the browser's, for the same reason
 the settings tab's model field is a `select`: the focus trap, the Escape key and
@@ -1109,11 +1147,14 @@ wording of a button. The irreversible one is disabled with the reason said in
 its own row rather than left greyed out — a greyed-out button is a thing people
 press twice.
 
-**Neither way touches the document somebody chose.** It was never copied into
-the knowledge base, so what goes is what this program wrote, and the question
-says exactly that. Both are consistent with what `reconcile` already believes: a
-record whose file has gone is drift it forgets, and a file whose record has gone
-is untracked drift it reports and does not put back.
+**Neither way touches the document somebody chose.** It was read where it lay
+and what the knowledge base holds is a copy, so destroying the record destroys
+what this program made and not the original — and the question says exactly
+that, because it is the thing somebody pressing a red button wants to know. Both
+are consistent with what `reconcile` already believes: a record whose file has
+gone is drift it forgets, and a file whose record has gone is untracked drift it
+reports and does not put back. A copy left behind by `forget` joins that second
+list.
 
 **The operations live in `Pipeline`, not in the window.** `Pipeline::forget` and
 `Pipeline::delete`, so that `docfusion forget` and `docfusion delete` are the
@@ -1627,7 +1668,7 @@ Each phase is independently usable — no phase requires the next to be useful.
 | **P0 Foundation** | IR, store, deterministic PDF/Office extractors, CLI (`add`/`show`/`list`/`reconcile`), atomic write | Clean file tree; **agents can use it immediately** |
 | **P1 Dual verification** | **Bench harness + golden corpus first**, then `VlmBackend`, Ollama backend, RapidOCR backend, alignment, conflicts, model selection | Scans handled; disagreements visible; default local VLM chosen from measurement |
 | **P2 GUI** | Tauri shell, rendering, copy-as-plain-text, conflict panel | Users can review conflicts |
-| **P3 Retrieval** | SQLite FTS5 + Chinese tokenization, search UI, tags | Knowledge base for humans |
+| **P3 Retrieval** | SQLite FTS5 + Chinese tokenization, search UI | An archive you can find things in |
 | **P4 Optional** | Vector search, MCP server, environment detection UI, daemon/queue | — |
 
 Environment detection and capability tiers land with P1, since they determine
