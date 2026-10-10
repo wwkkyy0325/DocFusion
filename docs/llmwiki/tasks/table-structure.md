@@ -155,10 +155,15 @@ count of tables whose shape came back.
 |---|---|---|
 | 061 | 0/1 | 0.39 |
 | 062 | 1/1 | **0.98** |
-| 082 | 2/3 | 0.64 |
+| 082 | 3/3 | 0.78 |
 | 101, 102 | 1/1 | **1.00** |
 | 111, 112 | 1/1 | **0.94** |
-| | **7 of 9** | **0.840** |
+| | **8 of 9** | **0.861** |
+
+The last step to 8 of 9 was a preprocessing bug rather than a reading one: a
+crop taller than it is wide was laid into the model's square with the picture's
+own stride. 082's third table is portrait, and it is the one that moved. See the
+changelog for 2026-10-10.
 
 **The mean is over the cases that had a table in the reference and not over all
 of them.** A document with no tables scores one, and seventeen of the corpus's

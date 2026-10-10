@@ -4,6 +4,175 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — A bigger recogniser, measured and not taken
+
+**What:** Nothing shipped. The two larger model sets in the family the embedded
+recogniser comes from were measured on the corpus, and neither earns its
+download.
+
+**Why it was worth asking:** a photographed bank schedule came back with every
+cell in the right place and three characters wrong — `63,00.00` for
+`63,000.00`, and `合计` missing from the total row. Structure solved, words not,
+and the assumption was that the 6.9 MB recogniser embedded for the no-setup
+promise was the thing to blame. `rapidocr-core` already knows both larger sets,
+so it was a one-line change and a bench run.
+
+**Measured:**
+
+| | tiny (embedded, 6.9 MB) | small (32 MB) | medium (139 MB) |
+|---|---|---|---|
+| mean loss | **0.413** | 0.412 | 0.418 |
+| content error | 0.187 | **0.185** | 0.190 |
+| reading order | **0.324** | 0.325 | 0.331 |
+| headings | 8/64 | **9/64** | 8/64 |
+| tables alike | 0.878 | 0.890 | **0.900** |
+| corpus time | **552 s** | 665 s | 1224 s |
+
+Small is nine cases better and four worse — a wash with a 32 MB price. Medium is
+worse than the embedded model on loss, content and order, at twice the time.
+
+**The result worth keeping:** `small` fixes the cell it was reached for and
+breaks another on the same page. `63,00.00` becomes `63,000.00`, and the header
+`固定资产 | 金额` becomes `国产 | 空`. The larger *detection* model moves the
+line boxes, and the line boxes are what the layout model and the table model
+both read. A recogniser is not a drop-in: it is one of three models in a chain
+and the one in the middle does not get to change alone.
+
+**What it says about where the error is:** the recogniser is not the ceiling.
+Two larger models moved `content` by 0.002 and left `headings` at 8 of 64. The
+remaining loss is structural — headings found and reading order — and that is
+where the next work is, not here.
+
+---
+
+## 2026-10-10 — Two references that were not Markdown tables
+
+**What:** The scorer now joins a table row that was written across several
+lines back into one. Measured on the corpus: mean loss 0.425 → **0.413**, tables
+**8 of 9 → 10 of 10**, similarity 0.861 → **0.878**.
+
+**Why:** Markdown has no way to put a line break inside a table cell, so a table
+whose cells held one is written out with the break left in — and the row, and
+the table with it, end at the first of those lines. OmniDocBench keeps the
+`<br>` the original table had, and two of the corpus's references arrived that
+way: 061, whose fourth row spills onto a fifth line, and 111, whose
+eleven-column header is spread over eleven.
+
+Read strictly, 061's reference says its table has one row and is followed by a
+paragraph. The engine returned the six rows that are actually on the page and
+was scored against a table that never existed. **061 was written down as the
+worst table in the set at 0.39 and it is not a bad table at all** — repaired, it
+is found, and 111 turns out to hold two tables rather than one.
+
+**Key decisions:**
+
+- **The repair is in the reader, not in the corpus.** The corpus is data outside
+  this repository and may be regenerated from OmniDocBench, at which point a
+  hand-edit is lost; and a corpus is the instrument, so editing it to move a
+  score is the one thing not to do quietly. A rule that says how to read a
+  reference is versioned with the code that reads it.
+- **Only a row that is not closed is joined.** A row ending in `|` is complete
+  and has nothing to continue it, so a looser rule would swallow the horizontal
+  rule or the paragraph below a table. An unclosed row is what a break inside a
+  cell produces and the only thing that does.
+- **Applied to both sides.** The renderer writes one line per row, so for the
+  output it does nothing; applying it anyway is what makes it a rule about
+  Markdown rather than a thumb on the scale. The evidence that it is not one:
+  **111's similarity goes down**, 0.94 to 0.93, when its reference stops lying
+  about its shape.
+
+---
+
+## 2026-10-10 — A table taller than it is wide
+
+**What:** Fixed the table model's preprocessing writing a resized picture into
+its square with *the picture's* stride instead of the square's. The fix is one
+line of index arithmetic. Measured on the corpus it takes tables from **7 of 9
+to 8 of 9** and their similarity from 0.840 to 0.861.
+
+**Why it hid for so long:** the two strides are equal exactly while the
+picture is wider than it is tall. `squashed` resizes the longest side to 488, so
+a landscape crop gets `across == 488` and the two agree; a portrait crop gets
+`across < 488` and the picture is folded into the square every 488 pixels. Every
+table in the corpus was landscape. A bank schedule photographed in portrait,
+1196×1746, came back as twenty-eight rows of text jumbled into four columns —
+and the model's *structure* was perfect the whole time, 28 rows by 5 columns,
+which is what made it look like a reading problem rather than a geometry one.
+
+**The tell:** the row count is right and the column count is not. A model that
+cannot see the table gets both wrong; a model given a sheared picture can still
+find the rulings between rows, which survive any vertical smear, and loses the
+columns, which do not.
+
+**How it was found:** by having a second implementation to disagree with. A
+Python chain that reproduces the pipeline (`target/table-probe/chain.py`,
+written earlier to choose between structure models) got the table exactly right
+on the same picture with the same weights, which narrowed the search to what the
+two do differently — six lines, one of them the write. Two implementations of
+one pipeline disagreeing is a much better signal than one implementation looking
+wrong, and the Python half is worth keeping for that alone.
+
+**Also:** the regression test asserts the row it is about lands on the square's
+second row and that the place the picture's stride would have used is still the
+zero padding. Confirmed to fail against the old code, which is the only thing
+that makes the test worth having.
+
+---
+
+## 2026-10-10 — The models the window could not fetch
+
+**What:** A run through the window produced Markdown with no table in it. Nothing
+was wrong with the pipeline: the two models the local engine reads a page with
+had never been downloaded on this machine. The window now says which of them are
+here and fetches the missing ones itself, with progress and a stop.
+
+**Why:** Every measurement in the table work was taken under
+`DOCFUSION_HOME=target/layout-home`, a home with the models in it. The window
+runs under the real home, which had none. Both sets of numbers were true about
+different installations, and the front matter's `engines: [rapidocr]` was the
+only sign, in a place nobody reads. The one way to fetch them was
+`docfusion doctor --fetch`, which means the case that needs the models most — a
+person opening a document in a window — was the case that could not get them.
+
+**Key decisions:**
+
+- **The window fetches them, rather than telling people to use the command
+  line.** A desktop application that asks its user to open a terminal has not
+  finished the job, and "the layout model" is not a thing to send somebody to a
+  terminal for.
+- **The availability check is now forgettable, and that is the load-bearing
+  part.** It was a `OnceLock`, taken once for the process, on the reasoning that
+  nothing changes while a program runs. Fetching from the window breaks that
+  premise, and a button that appeared to work but changed nothing until the next
+  launch is worse than no button. `layout::Cached` remembers the answer and
+  `forget()` throws it away; the next document read gets the new name. Between
+  documents is early enough, because what the answer decides is the name a page
+  is filed under and that has to be stable within one.
+- **Progress, and a stop.** 124 MB is minutes. A line that only changes at the
+  end is a line that cannot be told apart from a download that has stopped, and
+  a fetch that cannot be stopped is one somebody cannot call back on a metered
+  connection. Stopping keeps what arrived; the fetch resumes from there.
+- **The models are not part of the endpoint switch.** The switch above them is
+  about a model at the other end of a network; these are files on this disk with
+  no address and no key, and they are what decides whether a table comes out as
+  a table. Greying them out with the endpoint would have been a settings page
+  saying tables are off when they are not.
+
+**Also corrected:** the conflict note told the reader the engine inside "does not
+know what a table is, so its readings are always text and nothing else". That
+was true when it was written and false the moment the table model was wired in.
+It now says what the engine does and what a plain-text reading means.
+
+**Also removed:** `layout::ensure_table`, which no caller had ever used — the
+doctor fetches both models through `ensure_of` directly.
+
+**Measured:** case 062 without the models, 11×11 table, read as a hundred loose
+lines; with them, `engines: [rapidocr+layout+tables]` and the table. Bench totals
+unchanged at 0.428 loss, 0.332 order, 7 of 9 tables alike 0.840 — the caching
+change alters when the answer is taken, not what it is.
+
+---
+
 ## 2026-10-10 — A table is measured by what is in it now
 
 **What:** TEDS, in `docfusion_core::bench`, reported per case and as a mean.

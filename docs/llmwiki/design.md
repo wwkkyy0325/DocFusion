@@ -431,11 +431,17 @@ which is why the local engine scored 0 of 64 headings and 0 of 9 tables. The
 second model closes that, and it is the one thing this tool needs that is not
 inside it.
 
-- **124 MB, downloaded on request** — `docfusion doctor --fetch`. The line is
-  *can* against *nice*: 6.9 MB of recognition weights are embedded because they
-  are the promise (a scan is readable with no setup, offline), and moving that
-  promise behind a download would cost all of it to save 6.9 MB. This model is
-  an improvement, and every page reads without it.
+- **124 MB, downloaded on request** — from the window's settings tab, or
+  `docfusion doctor --fetch`. The line is *can* against *nice*: 6.9 MB of
+  recognition weights are embedded because they are the promise (a scan is
+  readable with no setup, offline), and moving that promise behind a download
+  would cost all of it to save 6.9 MB. This model is an improvement, and every
+  page reads without it.
+- **A model that is not here is silent about it.** The engine drops it and calls
+  itself `rapidocr`, which is the whole of what the front matter says. That is
+  how a run through the window produced plain text with no table for a week
+  while the corpus measurements, taken under a home that had the models, said 7
+  of 9. The window now says which of the two are here; nothing else changed.
 - **Twenty classes, seven kinds.** The whole of the judgement about a page is
   one table in `structure.rs`. See the changelog for what is deliberately in it
   and what is deliberately not.
@@ -451,13 +457,22 @@ inside it.
   `Table` with no rows renders as nothing, so this is a data-loss question and
   not a cosmetic one.
 - **A table is read by a model, not inferred from whitespace.** `SLANet_plus`,
-  **7.4 MB**, fetched by `docfusion doctor --fetch` beside the layout model and
-  run in the same process. It answers with the rows, the columns and a box for
-  every cell; `rapidocr` supplies the words and they go into the cells by where
-  the boxes are, which is the PP-Structure pipeline with the two thirds this
-  project already had. **Measured 1 of 9 tables before it and 7 of 9 after.**
+  **7.4 MB**, fetched from the window beside the layout model, or by
+  `docfusion doctor --fetch`, and run in the same process. It answers with the
+  rows, the columns and a box for every cell; `rapidocr` supplies the words and
+  they go into the cells by where the boxes are, which is the PP-Structure
+  pipeline with the two thirds this project already had. **Measured 1 of 9
+  tables before it and 8 of 9 after.**
   The geometry is still there, under it, for an installation that has not
   downloaded the model and for a table the model does not understand.
+- **The crop is laid down with the square's stride, and that matters.** The
+  model is handed a 488×488 square, and a table that is taller than it is wide
+  leaves most of that square empty. Writing the resized picture in the order it
+  is stored elsewhere folds it every 488 pixels: for a landscape table the two
+  strides are equal and nothing happens, for a portrait one the picture arrives
+  sheared. The model still reports the right number of rows — row rulings
+  survive a vertical smear — and gets every column wrong, which reads as a bad
+  reading rather than a bad picture.
 - **Reading order is column-aware.** The page is cut into vertical corridors by
   measuring how much of its *height* is covered at each x, then into bands by
   anything spanning the width; between two bands the columns are read one after
@@ -1369,7 +1384,19 @@ read without it, and simply finds no headings or tables, which is what a text
 detector and a recogniser are.
 
 **So it is fetched on request and never on its own.** No startup fetch, no
-background refresh: `docfusion doctor --fetch` or nothing. The downloader
+background refresh. For a long time the only way to ask was
+`docfusion doctor --fetch`, which meant the case that needed the models most —
+somebody opening a document in the window — was the case that could not get
+them. The window now shows which of the two are here and fetches the missing
+ones, with progress and a stop; the command line keeps its own way in. That
+change is why the answer to "is the model here" is no longer a `OnceLock`: it
+is taken once for a process on the reasoning that nothing changes while a
+program runs, and a window that downloads a model is a window that changes one.
+`layout::Cached` remembers it and `forget()` throws it away, which is safe
+between documents because the answer decides the name a page is filed under and
+that has to be stable within one.
+
+The downloader
 follows the same decisions as the one in the Verse project — a state a caller
 can watch, resume rather than restart, mirrors tried in order, the digest
 checked before anything is trusted, and **a failure reported *and* returned**.
