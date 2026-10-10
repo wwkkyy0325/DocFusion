@@ -179,6 +179,30 @@ impl Report {
             .sum()
     }
 
+    /// The mean of how alike the tables are, over the cases that had any.
+    ///
+    /// **Over the cases that had a table in the reference, and not over all of
+    /// them.** A document with no tables scores one — there is nothing to be
+    /// wrong about — and seventeen of the corpus's twenty-four are documents
+    /// with no tables. Averaging those in reported 0.953 for a set whose seven
+    /// table cases average 0.84, which is the kind of number that is true of
+    /// nothing.
+    pub fn mean_table_similarity(&self) -> Option<f64> {
+        let scores: Vec<f64> = self
+            .cases
+            .iter()
+            .filter_map(|case| case.score.as_ref())
+            .filter(|score| score.tables_total > 0)
+            .map(|score| score.table_similarity)
+            .collect();
+
+        if scores.is_empty() {
+            None
+        } else {
+            Some(scores.iter().sum::<f64>() / scores.len() as f64)
+        }
+    }
+
     pub fn tables_total(&self) -> usize {
         self.cases
             .iter()
@@ -290,6 +314,7 @@ pub fn report(reporter: &Reporter, report: &Report) {
             "content_error_rate": case.score.as_ref().map(|score| score.content_error_rate),
             "headings": case.score.as_ref().map(|score| (score.headings_matched, score.headings_total)),
             "tables": case.score.as_ref().map(|score| (score.tables_matched, score.tables_total)),
+            "table_similarity": case.score.as_ref().map(|score| score.table_similarity),
             "duration_ms": case.duration.as_secs_f64() * 1000.0,
             "error": case.error,
         });
@@ -297,7 +322,7 @@ pub fn report(reporter: &Reporter, report: &Report) {
         let human = match (&case.score, &case.error) {
             (Some(score), _) => format!(
                 "{:<24} loss {:.3}  order {:.3}  content {:.3}  \
-                 headings {}/{}  tables {}/{}  {:>6.0} ms",
+                 headings {}/{}  tables {}/{} alike {:.2}  {:>6.0} ms",
                 case.name,
                 score.loss(),
                 score.character_error_rate,
@@ -306,6 +331,7 @@ pub fn report(reporter: &Reporter, report: &Report) {
                 score.headings_total,
                 score.tables_matched,
                 score.tables_total,
+                score.table_similarity,
                 case.duration.as_secs_f64() * 1000.0,
             ),
             (None, Some(error)) => format!("{:<24} FAILED: {error}", case.name),
@@ -326,12 +352,13 @@ pub fn report(reporter: &Reporter, report: &Report) {
         "mean_content_error_rate": report.mean_content_error_rate(),
         "headings": (report.headings_matched(), report.headings_total()),
         "tables": (report.tables_matched(), report.tables_total()),
+        "mean_table_similarity": report.mean_table_similarity(),
         "total_duration_ms": report.total_duration().as_secs_f64() * 1000.0,
     });
 
     let human = format!(
         "---\n{} cases, {} failed\nmean loss {:.3}   mean error {:.3} in reading order, \
-         {:.3} ignoring it\nheadings {}/{}   tables {}/{}   {:.0} ms total",
+         {:.3} ignoring it\nheadings {}/{}   tables {}/{} alike {:.3}   {:.0} ms total",
         report.cases.len(),
         report.failures(),
         report.mean_loss().unwrap_or(f64::NAN),
@@ -341,6 +368,7 @@ pub fn report(reporter: &Reporter, report: &Report) {
         report.headings_total(),
         report.tables_matched(),
         report.tables_total(),
+        report.mean_table_similarity().unwrap_or(f64::NAN),
         report.total_duration().as_secs_f64() * 1000.0,
     );
 

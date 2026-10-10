@@ -4,6 +4,55 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — A table is measured by what is in it now
+
+**What:** TEDS, in `docfusion_core::bench`, reported per case and as a mean.
+The count beside it — *was a table of the right shape returned* — is unchanged,
+because the two answer different questions and a table can pass one and fail
+the other.
+
+```
+061  tables 0/1  alike 0.39      101  tables 1/1  alike 1.00
+062  tables 1/1  alike 0.98      102  tables 1/1  alike 1.00
+082  tables 2/3  alike 0.64      111  tables 1/1  alike 0.94
+                                 112  tables 1/1  alike 0.94
+                       7 of 9 found, alike 0.840
+```
+
+**A shape is not a table.** Two tables of fifteen rows by three columns with
+not one word in common share a shape, and the count has always called both
+found. One of them is right and the other is a page of wrong numbers under the
+right headings, which is the failure that reads as success.
+
+**The first mean this reported was 0.953 and it was wrong.** Seventeen of the
+corpus's twenty-four documents have no table at all, and a document with no
+tables scores one — there is nothing to be wrong about. Averaging those in
+against the seven that do reported 0.953 for a set whose table cases average
+**0.840**. A vacuous perfect score is still a score, and it has to be kept out
+of an average by hand.
+
+### Three bugs, all found by the tests, none of them in the model
+
+**The traversal only walked the first child.** A node's leftmost leaf comes from
+its first child, and that is what the code took — so every node not on the
+leftmost path was left holding a zero, which the distance below then subtracted
+from.
+
+**The keyroots were collected in the wrong order.** A subtree's distance is read
+out of the table while a larger one containing it is being computed, so the
+smaller has to have been done first. Collected in the order the leftmost leaves
+happened to run in, the root came out before its own rows and every distance was
+measured against an empty table: **two documents with no table in common scored
+0.98.**
+
+**And two of the test expectations were wrong rather than the code.** A table
+whose rows are deleted takes its cells with it, so three edits and not two; and
+two tables of the same shape are not zero apart when the structure is identical
+and only the words differ — that is what TEDS means, and the test was rewritten
+to say so, side by side with the count that calls it a match.
+
+---
+
 ## 2026-10-10 — Tables are read by a model now, and 1 of 9 became 7 of 9
 
 **What:** `SLANet_plus`, 7.4 MB, downloaded by the same command as the layout

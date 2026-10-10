@@ -143,3 +143,27 @@ rows are split differently scores worse than the same words as loose prose —
 `062`'s own cells were measured at 165 of 165 by the probe and its content error
 still rose. The project's own design says tables need TEDS; `docfusion bench`
 does not compute one yet.
+
+## Afterwards: TEDS
+
+The page-level character metric is the wrong instrument for a table, so
+`docfusion bench` now computes **TEDS** — the tree edit distance between the
+reference table and the produced one, over the larger of the two — beside the
+count of tables whose shape came back.
+
+| case | tables | alike |
+|---|---|---|
+| 061 | 0/1 | 0.39 |
+| 062 | 1/1 | **0.98** |
+| 082 | 2/3 | 0.64 |
+| 101, 102 | 1/1 | **1.00** |
+| 111, 112 | 1/1 | **0.94** |
+| | **7 of 9** | **0.840** |
+
+**The mean is over the cases that had a table in the reference and not over all
+of them.** A document with no tables scores one, and seventeen of the corpus's
+twenty-four have none; the first version averaged those in and reported 0.953.
+
+That number is the answer to the question the character metric could not
+answer: the tables are right, and the metric that said otherwise was measuring
+the page.

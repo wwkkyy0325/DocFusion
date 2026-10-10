@@ -648,8 +648,8 @@ Coverage the corpus must include, since these are where engines actually diverge
 - low-quality scans (fax-grade, uneven lighting)
 
 Ground truth is human-corrected Markdown. Metrics: per-block text accuracy after
-normalization, table TEDS, reading-order correctness, latency, and cost per 1000
-pages. Weighting is deliberate: **reading-order and table errors are weighted
+normalization, **table TEDS**, reading-order correctness, latency, and cost per
+1000 pages. Weighting is deliberate: **reading-order and table errors are weighted
 above character-level noise**, because they are the failures that silently
 corrupt downstream use.
 

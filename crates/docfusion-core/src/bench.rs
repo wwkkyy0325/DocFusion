@@ -32,6 +32,13 @@ pub struct Score {
     /// Reference tables found with the same shape, in order.
     pub tables_matched: usize,
     pub tables_total: usize,
+    /// How alike the tables are in what they hold, from none to identical.
+    ///
+    /// Beside the count above rather than instead of it, because they answer
+    /// two questions and a table can pass one and fail the other. Two tables of
+    /// fifteen rows by three columns with not one word in common are found by
+    /// the count and worth almost nothing here.
+    pub table_similarity: f64,
 }
 
 impl Score {
@@ -65,17 +72,23 @@ fn ratio(matched: usize, total: usize) -> f64 {
     }
 }
 
-pub fn score(expected: &str, actual: &str) -> Score {
-    let expected = outline(expected);
-    let actual = outline(actual);
+pub fn score(expected_raw: &str, actual_raw: &str) -> Score {
+    let expected = outline(expected_raw);
+    let actual = outline(actual_raw);
+
+    // Compared by shape and not by what is in them, which is what this count
+    // has always meant. What is in them is the similarity beside it.
+    let wanted: Vec<(usize, usize)> = expected.tables.iter().map(Table::shape).collect();
+    let produced: Vec<(usize, usize)> = actual.tables.iter().map(Table::shape).collect();
 
     Score {
         character_error_rate: error_rate(&expected.text, &actual.text),
         content_error_rate: error_rate(&sorted(&expected.text), &sorted(&actual.text)),
         headings_matched: ordered_matches(&expected.headings, &actual.headings),
         headings_total: expected.headings.len(),
-        tables_matched: ordered_matches(&expected.tables, &actual.tables),
+        tables_matched: ordered_matches(&wanted, &produced),
         tables_total: expected.tables.len(),
+        table_similarity: table_similarity(expected_raw, actual_raw),
     }
 }
 
@@ -92,7 +105,269 @@ fn sorted(text: &str) -> String {
 struct Outline {
     text: String,
     headings: Vec<(u8, String)>,
-    tables: Vec<(usize, usize)>,
+    tables: Vec<Table>,
+}
+
+/// A table, as a comparison needs one: its cells, row by row.
+///
+/// The shape was all this kept, and a shape is a poor description of a table —
+/// two tables of fifteen rows by eleven columns with nothing in common share
+/// one, and both count as found. The cells are kept so that the distance below
+/// has something to be a distance between.
+#[derive(Debug, Default, PartialEq)]
+struct Table {
+    rows: Vec<Vec<String>>,
+}
+
+impl Table {
+    fn shape(&self) -> (usize, usize) {
+        (
+            self.rows.len(),
+            self.rows.iter().map(|row| row.len()).max().unwrap_or(0),
+        )
+    }
+
+    /// The table as an ordered labelled tree: a table, its rows, their cells.
+    ///
+    /// Three levels, because that is what a Markdown table is. A cell's label
+    /// is its own text, so a cell that says the wrong thing is one node away
+    /// from the cell that says the right one.
+    fn tree(&self) -> Tree {
+        let mut tree = Tree::default();
+        let root = tree.add("table".to_owned());
+
+        for row in &self.rows {
+            let at = tree.add("tr".to_owned());
+            let mut children = Vec::with_capacity(row.len());
+
+            for cell in row {
+                children.push(tree.add(format!("td:{}", cell.trim())));
+            }
+
+            tree.children[at] = children;
+            tree.children[root].push(at);
+        }
+
+        tree
+    }
+}
+
+/// An ordered, labelled tree, which is what a table edit distance is a distance
+/// between.
+#[derive(Debug, Default)]
+struct Tree {
+    labels: Vec<String>,
+    children: Vec<Vec<usize>>,
+}
+
+impl Tree {
+    fn add(&mut self, label: String) -> usize {
+        self.labels.push(label);
+        self.children.push(Vec::new());
+        self.labels.len() - 1
+    }
+
+    /// The nodes in post-order: children before their parent, left before right.
+    fn postorder(&self) -> Vec<usize> {
+        let mut order = Vec::with_capacity(self.labels.len());
+        if self.labels.is_empty() {
+            return order;
+        }
+
+        let mut stack = vec![(0usize, false)];
+        while let Some((node, seen)) = stack.pop() {
+            if seen {
+                order.push(node);
+                continue;
+            }
+
+            stack.push((node, true));
+            for child in self.children[node].iter().rev() {
+                stack.push((*child, false));
+            }
+        }
+
+        order
+    }
+
+    /// For each node, the post-order position of its own leftmost leaf.
+    ///
+    /// A leaf is its own; anything else is its first child's. That is what
+    /// makes a subtree a contiguous run of post-order positions, which is the
+    /// property the algorithm below is built on.
+    fn leftmost(&self, positions: &[usize]) -> Vec<usize> {
+        fn walk(tree: &Tree, node: usize, positions: &[usize], out: &mut [usize]) -> usize {
+            // Every child has to be walked and not only the first: a node's
+            // leftmost leaf comes from its first child, but its second child is
+            // a subtree whose own positions need filling in. Following only the
+            // first left every node that is not on the leftmost path with a
+            // zero, which the distance below then subtracted from.
+            let mut leftmost = positions[node];
+
+            for (index, child) in tree.children[node].iter().enumerate() {
+                let below = walk(tree, *child, positions, out);
+                if index == 0 {
+                    leftmost = below;
+                }
+            }
+
+            out[positions[node]] = leftmost;
+            leftmost
+        }
+
+        let mut out = vec![0usize; self.labels.len() + 1];
+        if !self.labels.is_empty() {
+            walk(self, 0, positions, &mut out);
+        }
+
+        out
+    }
+}
+
+/// The positions that have to be visited for every subtree to be covered.
+///
+/// Every node whose leftmost leaf is a given one ends a prefix of the same run,
+/// so only the largest of them has to be computed and the rest fall out of it.
+///
+/// **Sorted, and not merely collected.** The order matters: a subtree's
+/// distance is read out of the table while a larger one that contains it is
+/// being computed, so the smaller has to have been done first. Collected in the
+/// order the leftmost leaves happen to run in, the root came out before its own
+/// rows and every distance measured against an empty table — two documents with
+/// no table in common scored 0.98.
+fn keyroots(leftmost: &[usize]) -> Vec<usize> {
+    let mut largest = std::collections::BTreeMap::new();
+
+    for (position, leaf) in leftmost.iter().enumerate().skip(1) {
+        largest.insert(*leaf, position);
+    }
+
+    let mut roots: Vec<usize> = largest.into_values().collect();
+    roots.sort_unstable();
+    roots
+}
+
+/// The tree edit distance between two ordered labelled trees.
+///
+/// Zhang and Shasha's algorithm: a node may be deleted, inserted, or renamed,
+/// each at a cost of one, and renaming two nodes that say the same thing costs
+/// nothing. Every pair of keyroots is visited and the forests between them are
+/// compared, which is what keeps this off the square-of-the-square path.
+fn tree_distance(left: &Tree, right: &Tree) -> f64 {
+    let lorder = left.postorder();
+    let rorder = right.postorder();
+    let (n, m) = (lorder.len(), rorder.len());
+
+    if n == 0 || m == 0 {
+        return n.max(m) as f64;
+    }
+
+    let mut lpos = vec![0usize; left.labels.len()];
+    for (index, node) in lorder.iter().enumerate() {
+        lpos[*node] = index + 1;
+    }
+
+    let mut rpos = vec![0usize; right.labels.len()];
+    for (index, node) in rorder.iter().enumerate() {
+        rpos[*node] = index + 1;
+    }
+
+    let lleaf = left.leftmost(&lpos);
+    let rleaf = right.leftmost(&rpos);
+
+    let mut distance = vec![vec![0.0f64; m + 1]; n + 1];
+
+    for i in keyroots(&lleaf) {
+        for j in keyroots(&rleaf) {
+            let across = i - lleaf[i] + 1;
+            let down = j - rleaf[j] + 1;
+            let mut forest = vec![vec![0.0f64; down + 1]; across + 1];
+
+            for x in 1..=across {
+                forest[x][0] = forest[x - 1][0] + 1.0;
+            }
+            for y in 1..=down {
+                forest[0][y] = forest[0][y - 1] + 1.0;
+            }
+
+            for x in 1..=across {
+                let left_at = lleaf[i] + x - 1;
+
+                for y in 1..=down {
+                    let right_at = rleaf[j] + y - 1;
+                    let same = left.labels[lorder[left_at - 1]]
+                        == right.labels[rorder[right_at - 1]];
+
+                    forest[x][y] = (forest[x - 1][y] + 1.0)
+                        .min(forest[x][y - 1] + 1.0)
+                        .min(forest[x - 1][y - 1] + if same { 0.0 } else { 1.0 });
+
+                    if lleaf[left_at] == lleaf[i] && rleaf[right_at] == rleaf[j] {
+                        distance[left_at][right_at] = forest[x][y];
+                    } else {
+                        forest[x][y] = forest[x][y].min(
+                            forest[lleaf[left_at] - lleaf[i]][rleaf[right_at] - rleaf[j]]
+                                + distance[left_at][right_at],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    distance[n][m]
+}
+
+/// How alike two documents' tables are, from nothing in common to identical.
+///
+/// One minus the tree edit distance over the larger of the two, which is what
+/// TEDS is. Each reference table is matched to the table it is most alike, so
+/// that two tables returned in the wrong order are not both scored as nothing.
+///
+/// **This exists because a shape is not a table.** The count above says whether
+/// a table of the right size came back; this says whether what is in it is
+/// right, and a table with every cell correct and its rows split differently
+/// no longer scores the same as one with the words shuffled.
+pub fn table_similarity(expected: &str, actual: &str) -> f64 {
+    let wanted = outline(expected).tables;
+    if wanted.is_empty() {
+        return 1.0;
+    }
+
+    let produced = outline(actual).tables;
+    let mut taken = vec![false; produced.len()];
+    let mut total = 0.0;
+
+    for want in &wanted {
+        let mut best = 0.0f64;
+        let mut pick = None;
+
+        for (index, got) in produced.iter().enumerate() {
+            if taken[index] {
+                continue;
+            }
+
+            let (a, b) = (want.tree(), got.tree());
+            let nodes = a.labels.len().max(b.labels.len());
+            if nodes == 0 {
+                continue;
+            }
+
+            let score = (1.0 - tree_distance(&a, &b) / nodes as f64).max(0.0);
+            if score > best {
+                best = score;
+                pick = Some(index);
+            }
+        }
+
+        if let Some(index) = pick {
+            taken[index] = true;
+        }
+
+        total += best;
+    }
+
+    total / wanted.len() as f64
 }
 
 fn outline(markdown: &str) -> Outline {
@@ -118,16 +393,26 @@ fn outline(markdown: &str) -> Outline {
             continue;
         }
 
-        let columns = match node.data.borrow().value {
-            NodeValue::Table(ref table) => Some(table.alignments.len()),
-            _ => None,
-        };
-        if let Some(columns) = columns {
-            let rows = node
+        let is_table = matches!(node.data.borrow().value, NodeValue::Table(..));
+        if is_table {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+
+            for row in node
                 .descendants()
                 .filter(|child| matches!(child.data.borrow().value, NodeValue::TableRow(..)))
-                .count();
-            outline.tables.push((rows, columns));
+            {
+                let mut cells: Vec<String> = Vec::new();
+
+                for cell in row.children() {
+                    if matches!(cell.data.borrow().value, NodeValue::TableCell) {
+                        cells.push(descendant_text(&cell));
+                    }
+                }
+
+                rows.push(cells);
+            }
+
+            outline.tables.push(Table { rows });
             continue;
         }
 
@@ -514,5 +799,113 @@ mod tests {
         let actual: Vec<char> = "abc".chars().collect();
 
         assert_eq!(trimmed_distance(&expected, &actual), 3);
+    }
+
+    // ── Table similarity ─────────────────────────────────────────────────────
+
+    const WANTED: &str = "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n";
+
+    #[test]
+    fn a_tree_is_no_distance_from_itself() {
+        let tree = Table {
+            rows: vec![vec!["a".into(), "b".into()], vec!["1".into(), "2".into()]],
+        };
+
+        assert_eq!(tree_distance(&tree.tree(), &tree.tree()), 0.0);
+    }
+
+    /// One node against another is one edit, whichever way round it is read.
+    #[test]
+    fn distance_is_symmetric() {
+        let left = Table {
+            rows: vec![vec!["a".into()], vec!["b".into()], vec!["c".into()]],
+        };
+        let right = Table {
+            rows: vec![vec!["a".into()], vec!["z".into()]],
+        };
+
+        let there = tree_distance(&left.tree(), &right.tree());
+        let back = tree_distance(&right.tree(), &left.tree());
+
+        assert_eq!(there, back);
+        // Two edits: a row renamed to the other's, and one row deleted — and a
+        // deleted row takes its cell with it, which is the third.
+        assert_eq!(there, 3.0);
+    }
+
+    #[test]
+    fn a_table_is_identical_to_itself() {
+        assert_eq!(table_similarity(WANTED, WANTED), 1.0);
+    }
+
+    #[test]
+    fn one_wrong_cell_is_not_the_same_table() {
+        let actual = "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 9 |\n";
+
+        let score = table_similarity(WANTED, actual);
+
+        assert!(score > 0.5 && score < 1.0, "{score}");
+    }
+
+    /// The reason this exists, and the reason the count beside it stays.
+    ///
+    /// Fifteen rows by three columns either way, and not one word in common.
+    /// **The count calls it a match, and it is not one** — the structure is
+    /// there and the table is not. Two numbers because they answer two
+    /// questions: was a table of the right shape returned, and is what is in it
+    /// right.
+    #[test]
+    fn the_same_shape_with_different_words_is_not_the_same_table() {
+        let mut wanted = String::from("| a | b | c |\n| --- | --- | --- |\n");
+        let mut actual = String::from("| x | y | z |\n| --- | --- | --- |\n");
+        for row in 0..14 {
+            wanted.push_str(&format!("| left{row} | mid{row} | right{row} |\n"));
+            actual.push_str(&format!("| one{row} | two{row} | three{row} |\n"));
+        }
+
+        let found = score(&wanted, &actual);
+        assert_eq!(found.tables_matched, 1, "the shape is the shape");
+
+        // The table, the rows and the root are all the same node; the
+        // forty-five cells are all renames.
+        let alike = table_similarity(&wanted, &actual);
+        assert!((alike - (1.0 - 45.0 / 61.0)).abs() < 1e-9, "{alike}");
+    }
+
+    /// And the same table twice is worth one, which is what makes the number
+    /// above mean anything.
+    #[test]
+    fn the_same_words_in_the_same_places_is_the_same_table() {
+        let mut wanted = String::from("| a | b | c |\n| --- | --- | --- |\n");
+        for row in 0..14 {
+            wanted.push_str(&format!("| left{row} | mid{row} | right{row} |\n"));
+        }
+
+        assert_eq!(table_similarity(&wanted, &wanted), 1.0);
+    }
+
+    /// Paired by likeness and not by position: two tables returned the other
+    /// way round are two tables found, which pairing by index got wrong.
+    #[test]
+    fn two_tables_in_the_wrong_order_are_both_found() {
+        let first = "| a |\n| --- |\n| 1 |\n";
+        let second = "| z |\n| --- |\n| 9 |\n";
+
+        let wanted = format!("{first}\n\n{second}\n");
+        let actual = format!("{second}\n\n{first}\n");
+
+        assert_eq!(table_similarity(&wanted, &actual), 1.0);
+    }
+
+    /// A table that is missing is worth nothing, and one that was not asked for
+    /// does not make up for it.
+    #[test]
+    fn a_missing_table_scores_nothing() {
+        assert_eq!(table_similarity(WANTED, "no tables here"), 0.0);
+    }
+
+    #[test]
+    fn a_document_with_no_tables_is_vacuously_perfect() {
+        assert_eq!(table_similarity("just prose", "just prose"), 1.0);
     }
 }
