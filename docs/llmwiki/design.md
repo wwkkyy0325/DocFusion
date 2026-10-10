@@ -762,6 +762,19 @@ would hide them:
    math-heavy pages both rates measure notation rather than reading. 14 of the 24
    cases contain LaTeX; they are the worst-scoring ones and should be read with
    that in mind.
+
+   **What the output claims is a separate question, and the answer is `$$` with
+   the glyphs inside it.** The layout model finds formula regions and the
+   renderer writes them as display maths, so the Markdown says *a formula is
+   here* — which is true — and says it in the only notation Markdown has. The
+   text inside is what a recogniser made of the glyphs, which is not LaTeX.
+   Keeping the delimiters is deliberate and was argued rather than assumed:
+   written as prose, `M3 = 34.8°√3` reads as a sentence the document does not
+   contain, and a reader cannot tell a bad transcription from a bad sentence;
+   written as nothing, the page stops saying a formula was here at all. The
+   cost is real — anything that renders maths renders this wrongly — and it sits
+   inside the contamination above rather than beside it. A model that reads
+   formulae would keep the delimiters and replace only what is inside them.
 3. **The pages are born-digital, rendered to images.** No skew, no phone-camera
    noise, no uneven lighting — so every number here is optimistic about
    real-world scans.

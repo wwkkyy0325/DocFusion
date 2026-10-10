@@ -281,6 +281,25 @@ fn block_markdown(out: &mut String, block: &Block) {
             out.push_str(&block.text);
             out.push_str("\n```\n");
         }
+        // Written as display maths, and **the text inside is not LaTeX**. It is
+        // what a recogniser made of the glyphs of a formula, and the difference
+        // matters enough to say out loud: nothing here reads a formula, and
+        // `docfusion doctor` cannot fetch a model that would.
+        //
+        // The delimiters stay anyway. The region **is** display maths — the
+        // layout model found a formula — and `$$` is the only way Markdown says
+        // so, so this is not a claim that the text is LaTeX but a claim about
+        // what the region is, which is true. Two things would be worse. Written
+        // as prose, `M3 = 34.8°√3` reads as a sentence the document does not
+        // contain, and a reader has no way to know it is a bad transcription
+        // rather than a bad sentence. Written as nothing, the page stops saying
+        // that a formula was here at all, which is the one thing about it that
+        // is known and worth passing on — to a person, or to whatever can read
+        // it when a formula model arrives.
+        //
+        // The cost is on the record: 14 of the corpus's 24 cases carry LaTeX in
+        // their references, and on those the error rates measure notation
+        // rather than reading. See the design notes.
         BlockKind::Formula => {
             out.push_str("$$\n");
             out.push_str(&block.text);
