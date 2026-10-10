@@ -43,10 +43,9 @@ Comment Request
 ```
 
 — and the engine returns `SECURITIES AND EXCHANGE` and `Submission for OMB
-Review;`. The layout model marks the first line as a heading and the second as
-body text, so the heading loses its last word or two and matches nothing.
+Review;`.
 
-That was **not** the engine's reading but its writing. The front matter's title
+That is **not** the reading but the writing. The front matter's title
 held both lines the whole time — `SECURITIES AND EXCHANGE
 COMMISSION` — so the
 block was right and the renderer wrote it with the break left in, and Markdown
