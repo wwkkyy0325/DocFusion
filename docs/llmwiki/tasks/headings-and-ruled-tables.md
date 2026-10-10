@@ -74,6 +74,32 @@ Headings 25 of 64 to **27 of 64**, mean loss 0.300 to **0.298**.
 an OCR error — and `[SEC File No. 270-121, 0MB Control No. 3235-0110]`, with a
 digit zero where the letter O belongs.
 
+### 2b. What is left of the thirty-two misses, looked at one by one
+
+Not guessed at. Each case was run and its headings diffed against the reference.
+
+| what | headings | is it the engine's? |
+|---|---|---|
+| **LaTeX in the reference** — 041, 042 | 7 | No. `$u_{r}(V_{2})$` cannot come out of a recogniser; the page has to be read as maths. The corpus has exactly seven headings containing `$` and they are exactly these seven. |
+| **A reference that is itself wrong** — `推厂` for `推广`, `Submlsslon`, `0MB` | 3 | No |
+| **Reading order** — 082, 101 | 6 | Yes, and it needs article segmentation |
+| **A full-width bracket read as half-width** — 111, `（五）` written `(五）` | 2 | Yes, and **one character wide** |
+| **A space dropped** — 112, `8. 铝箔` written `8.铝箔` | 1 | Yes, and **one character wide** |
+| **A heading not found at all** — 101, the exam instructions | 2 | Yes |
+| the rest | ~11 | Yes |
+
+**The measurement is deliberately not being widened for any of it.** The two
+single-character ones are the tempting ones — fold full-width to half-width in
+`normalize` and 111 comes back, allow a space to be one or the other and 112
+does — and both would be hiding a real defect: the engine wrote `(五）`, with the
+two brackets at different widths, which is not a thing any typesetter writes.
+A heading scored as found for that would be a number that says the engine is
+better than it is. The character metric already counts the character once.
+
+**041 and 042 are a dead end** and are written down so they are not walked into
+again: seven headings, all blocked by the same thing, none of it reachable
+without reading formulae.
+
 ### 3. Rules are the right idea for merged cells and are not ready — not done
 
 Built `rules.rs`: the grid from the lines a form is drawn with, with a merged
