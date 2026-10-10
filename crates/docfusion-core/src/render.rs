@@ -5,7 +5,7 @@
 //! structure the document never had, so text is escaped before it is written.
 
 use crate::ir::{Block, BlockKind, ConflictKind, Document};
-use crate::text::needs_space;
+use crate::text::{is_cjk, needs_space};
 
 /// Characters that change the meaning of a line when they begin one.
 const BLOCK_MARKERS: [char; 8] = ['#', '>', '-', '+', '*', '=', '~', '`'];
@@ -258,12 +258,12 @@ fn block_markdown(out: &mut String, block: &Block) {
             out.push('\n');
         }
         BlockKind::Paragraph => {
-            out.push_str(&escape(&block.text));
+            out.push_str(&escape(&unbroken(&block.text)));
             out.push('\n');
         }
         BlockKind::ListItem => list_item_markdown(out, block, 0),
         BlockKind::Quote => {
-            for (index, line) in block.text.lines().enumerate() {
+            for (index, line) in unbroken(&block.text).lines().enumerate() {
                 if index > 0 {
                     out.push('\n');
                 }
@@ -387,6 +387,40 @@ fn one_line(text: &str) -> String {
             out.push(' ');
         }
         out.push_str(line);
+    }
+
+    out
+}
+
+/// A block of prose with the line breaks a Chinese line should not show.
+///
+/// The same fault `one_line` fixes for a heading, and it cannot be fixed the
+/// same way here: a paragraph's line breaks are worth keeping, because between
+/// two Latin words the break **is** a space and where they are is where the page
+/// put them. So only the break between two Chinese characters goes, and the rest
+/// stay where the page had them.
+///
+/// What it is for: Markdown turns a newline inside a paragraph into a space when
+/// it is rendered, so a Chinese paragraph arrives in the window with a space at
+/// every place the column ran out — spaces the document does not have.
+fn unbroken(text: &str) -> String {
+    let characters: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+
+    for (at, character) in characters.iter().enumerate() {
+        if character == &'\n' {
+            let left = at.checked_sub(1).and_then(|before| characters.get(before));
+            let right = characters.get(at + 1);
+
+            if let (Some(left), Some(right)) = (left, right)
+                && is_cjk(*left)
+                && is_cjk(*right)
+            {
+                continue;
+            }
+        }
+
+        out.push(*character);
     }
 
     out
@@ -1107,6 +1141,30 @@ mod tests {
         let parsed = reparse(&markdown(&source, CREATED_AT));
 
         assert_eq!(parsed.headings, vec![(1, "洛阳市抗旱从种子抓起".to_owned())]);
+    }
+
+    /// A paragraph keeps its line breaks, except where one would be rendered as
+    /// a space the document does not have.
+    ///
+    /// Markdown turns a newline inside a paragraph into a space, so a Chinese
+    /// paragraph arrives in the window with a space at every place the column
+    /// ran out. The break between two Latin words is left alone: there it **is**
+    /// a space, and where it is is where the page put it.
+    #[test]
+    fn a_chinese_paragraph_is_not_given_spaces_at_its_line_breaks() {
+        let source = document(vec![
+            block(BlockKind::Paragraph, "我国大豆基因组研究
+取得重大突破"),
+            block(BlockKind::Paragraph, "one two
+three four"),
+        ]);
+
+        let rendered = markdown(&source, CREATED_AT);
+        let page = html(&rendered);
+
+        assert!(page.contains("我国大豆基因组研究取得重大突破"), "{page}");
+        assert!(page.contains("one two
+three four"), "{page}");
     }
 
     #[test]
