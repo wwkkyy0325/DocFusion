@@ -465,6 +465,27 @@ inside it.
   tables before it and 8 of 9 after.**
   The geometry is still there, under it, for an installation that has not
   downloaded the model and for a table the model does not understand.
+- **A heading is compared by its words and not its depth.** Every one of the
+  corpus's sixty-four reference headings is level one — the ground truth says a
+  block *is* a title, not how deep a title it is, and the Markdown conversion had
+  to pick a number. Comparing depth against a reference that cannot express it
+  was measuring the converter: with it 8 of 64, without it **21 of 64** and the
+  mean loss 0.413 to 0.313. The words are still compared; only the depth is
+  dropped.
+- **A heading written over two lines is cut in half.** The layout model marks the
+  first line of `SECURITIES AND EXCHANGE / COMMISSION` as a heading and the
+  second as body text, so the engine returns `SECURITIES AND EXCHANGE` and
+  matches nothing. That is the largest single loss left in the corpus (three
+  columns of SEC notices, seven headings, none found) and it is an engine fault
+  rather than a measurement one. Not yet fixed.
+- **Reading a table from its rules is the right idea and is not ready.** The grid
+  a form is drawn with says where its cells are, and a merged cell is a position
+  with no line through it — exact, where the model invents a `<td>` it never
+  closes. Built, unit-tested to read a row span and a column span exactly, and
+  measured on the corpus at **7 of 10 tables against the model's 10 of 10**: a
+  coloured header band swallows the rules around it, and there is no merged-cell
+  case in the corpus to tune the detector against. Out of the tree; see the
+  changelog for what would have to be true to try again.
 - **Merged cells: Markdown cannot hold them, and the model does not find them
   reliably.** GFM has no colspan and no rowspan, so a merged cell is laid out as
   a full grid with the positions it covers left empty — not filled in, because

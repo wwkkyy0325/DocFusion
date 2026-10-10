@@ -4,6 +4,80 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — Reading a table from its rules, built and not taken
+
+**What:** Nothing shipped. A table was read from the lines a form is drawn with,
+with a merged cell being a position that has no line through it. It is exact
+where the model is not, and it is worse where the model is fine, and it is out
+of the tree.
+
+**Why it was tried:** a question about merged cells. The table model has a token
+for a span and measured, it gets them wrong: `<td> rowspan="2" <td >` for a cell
+it never closes, a span of two for a cell three rows tall, and no span at all
+for a header spanning two columns. A rule has no such trouble — the absence of a
+line **is** the merge, stated by the page.
+
+**Measured.** On two generated tables, one with a row span and one with a column
+span, the rules read both exactly where the model read neither. On the corpus,
+where several tables are ruled:
+
+| | model | rules first |
+|---|---|---|
+| tables | **10/10** | 7/10 |
+| similarity | **0.878** | 0.828 |
+
+**Why it lost.** A table with a coloured header band — a slide exported to a
+table, which the corpus has — puts a block of dark pixels across its top, and
+that block swallows the rules around it: the top two rows came back as one cell
+each, two columns wide. Excluding colour from "ink" so the band is not a line
+made it worse rather than better, because the band's own edges are then not
+lines either. A skew of a pixel or two was a second source of false merges, and
+looking within a pixel or two of where each line was found fixed that one.
+
+**Why it is not worth tuning further now.** There is nothing to tune against. No
+corpus case has a merged cell, so the only ground truth for the case this exists
+for is a table drawn by hand — and a detector fitted to two hand-made pictures
+is a detector fitted to two hand-made pictures. The idea is right and the
+detector is not, and the way to try again is a corpus with ruled tables that
+have merges in them.
+
+---
+
+## 2026-10-10 — A heading is compared by its words, not its depth
+
+**What:** The scorer no longer compares the depth of a heading. Measured on the
+corpus: headings **8 of 64 → 21 of 64**, mean loss **0.413 → 0.313**.
+
+**Why:** every one of the corpus's sixty-four reference headings is level one.
+Not one uses `##`. OmniDocBench's ground truth records that a block **is** a
+title and not how deep a title it is, and the conversion to Markdown had to
+write a number — so a section heading on a page comes out as `#`, and the engine
+calling a section a section and marking it `##` was scored as a miss. A
+reference that cannot express a depth cannot measure one, and comparing them was
+measuring the converter.
+
+The words still have to be the words: a heading whose text differs is still a
+miss, and there is a test for it. This is the same shape of decision as the
+table row Markdown had split in two — a rule about how to read a reference,
+made in the reader and not by editing the corpus.
+
+**What it exposes:** the remaining forty-three are the engine's. They are
+concentrated: a three-column SEC notice (071) with seven headings and none
+found, two Chinese books (041, 042) with eight between them, and the two
+newspapers (081, 082) with twenty-three. Looked at rather than guessed at, 071's
+headings are each **two lines** —
+
+```
+SECURITIES AND EXCHANGE
+COMMISSION
+```
+
+— and the layout model marks the first line a heading and the second body text,
+so the engine returns `SECURITIES AND EXCHANGE` and matches nothing. That is
+the next thing to fix, and it is in the engine rather than the measurement.
+
+---
+
 ## 2026-10-10 — Merged cells: one bug of ours, and a ceiling that is the model's
 
 **What:** A cell spanning rows was read as a cell spanning columns, which put
