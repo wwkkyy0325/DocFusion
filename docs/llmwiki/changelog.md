@@ -4,6 +4,48 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — The status bar stops speaking machine
+
+**What:** A document read by the local engine with both models installed was
+drawn in the status bar as `rapidocr+layout+tables` — raw, in Chinese, to
+somebody who had just installed the three models and could not read it.
+
+**Why it happened.** The window keeps a list from an engine's name to words for
+it, and the list held the names somebody had thought of. An engine does not have
+a fixed name: it **assembles one out of what it had to read with**, so
+installing a layout model changes the name to one nobody had written words for.
+The lookup missed and the fallback is the machine's own name, which is the right
+fallback for a name from nowhere and the wrong answer here.
+
+**Listing every combination was the thing that was wrong**, not the list being
+short. `rapidocr+layout+tables` is three parts, `pdfium+tables` is two, and
+whatever gets appended next would have been missed in exactly the same way. The
+window now **reads an assembled name back the way it was built** — the first
+part is what read the page, the rest are what it had to read with — so what has
+to be named is the parts:
+
+| | |
+|---|---|
+| `rapidocr` | 本机识别 |
+| `rapidocr+layout` | 本机识别（版面） |
+| `rapidocr+layout+tables` | 本机识别（版面、表格） |
+| `pdfium` | PDF 文字层 |
+| `pdfium+tables` | PDF 文字层（表格） |
+| `docx` | Word 文档 |
+
+**The same fault was there for `pdfium`, `docx`, `xlsx`, `pptx` and
+`text-passthrough`**, which had no words either and had been drawn raw for as
+long as those engines have existed. Naming the parts named all of them at once.
+
+**And a test, because a list with a hole in it is invisible until somebody
+installs something.** Every part the program can produce — the engines that read
+a page, and the two capabilities that get appended to one — is held against both
+language blocks. Checked to fail with a word taken out.
+
+**Measured:** 546 tests pass, `cargo clippy --workspace --all-targets` clean.
+
+---
+
 ## 2026-10-10 — `reindex`, which is what the copy was for
 
 **What:** `docfusion reindex [document]` reads a document again with the engines

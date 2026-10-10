@@ -139,10 +139,24 @@ const TEXT = {
       "the engines read it differently": "the two readings do not match",
       "one engine found text the other did not": "one engine found text the other did not",
     },
+    // The parts an engine's name is built from, not the names themselves: the
+    // name is assembled out of what an engine had to read with, so it is read
+    // back the same way. See `engineName`.
     engine_names: {
       "openai-compatible": "the configured endpoint",
       rapidocr: "the engine inside this app",
+      pdfium: "the PDF's own text layer",
+      scan: "a scan",
+      docx: "Word",
+      xlsx: "Excel",
+      pptx: "PowerPoint",
+      "text-passthrough": "plain text",
+      layout: "layout",
+      tables: "tables",
     },
+
+    /// What an engine that read with something extra is called.
+    engine_with: (name, parts) => `${name} (${parts.join(", ")})`,
 
     causes: {
       unsupported: "Nothing here can read this kind of file.",
@@ -284,7 +298,17 @@ const TEXT = {
     engine_names: {
       "openai-compatible": "云端模型",
       rapidocr: "本机识别",
+      pdfium: "PDF 文字层",
+      scan: "扫描件",
+      docx: "Word 文档",
+      xlsx: "Excel 表格",
+      pptx: "PowerPoint 演示",
+      "text-passthrough": "纯文本",
+      layout: "版面",
+      tables: "表格",
     },
+
+    engine_with: (name, parts) => `${name}（${parts.join("、")}）`,
 
     causes: {
       unsupported: "没有能读这种文件的引擎。",
@@ -678,7 +702,7 @@ function findings(report) {
       // one can find the other.
       const label = node("p", "engine", "");
       label.append(
-        document.createTextNode(t().engine_names[reading.engine] ?? reading.engine),
+        document.createTextNode(engineName(reading.engine)),
         node("span", "id", reading.engine),
       );
 
@@ -713,7 +737,7 @@ function drawStatus(state) {
   // What each engine is called here, with the name it is called everywhere else
   // kept one hover away. "openai-compatible" is the protocol its client speaks
   // and says nothing to anybody about what it is.
-  const named = state.engines.map((id) => t().engine_names[id] ?? id);
+  const named = state.engines.map(engineName);
   const engines = node("span", "", named.join(" · ") || t().read);
   engines.title = state.engines.join(" · ");
   status.append(engines);
@@ -1235,6 +1259,31 @@ function drawLocalProgress(progress) {
 /// How far along a fetch is, as a whole number of percent.
 const percent = ({ received = 0, total = 0 } = {}) =>
   total > 0 ? Math.round((received / total) * 100) : 0;
+
+/// What an engine is called here.
+///
+/// **Assembled names are taken apart rather than listed.** An engine gives
+/// itself a name built out of the parts it had — `rapidocr+layout+tables` is
+/// the recognition engine, reading with a layout model and a table model — so
+/// the name is read back the same way it was built. Listing every combination
+/// instead is what was here before, and it went wrong the moment somebody
+/// installed all three models: the list held the base names, the lookup found
+/// nothing, and the machine's own name for it was drawn in the status bar, in
+/// Chinese, to somebody who could not read it.
+///
+/// The convention is the one both places that build a name follow: the first
+/// part is what read the page, and the rest are what it had to read with.
+///
+/// A part nobody has words for is shown as itself, which is smaller than the
+/// whole name and is the most a program can do about a name it was not told
+/// about — and the test that watches this list is what stops it happening.
+function engineName(id) {
+  const [reader, ...using] = String(id).split("+");
+  const called = (part) => t().engine_names[part] ?? part;
+  const name = called(reader);
+
+  return using.length === 0 ? name : t().engine_with(name, using.map(called));
+}
 
 /// Whole megabytes, rounded up.
 ///

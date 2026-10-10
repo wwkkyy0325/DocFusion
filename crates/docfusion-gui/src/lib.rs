@@ -1503,6 +1503,54 @@ code
         found
     }
 
+    /// Every name an engine can give itself has words behind it, twice.
+    ///
+    /// **This is the test for something that went wrong.** `rapidocr+layout+tables`
+    /// was drawn raw in the status bar — in Chinese, to somebody who had just
+    /// installed all three models and could not read it. The window's list held
+    /// the names it had thought of, and an engine assembles its name out of
+    /// what it had to read with, so installing a model produced a name nobody
+    /// had written words for.
+    ///
+    /// The window now reads an assembled name back the same way it was built,
+    /// so what has to be named is the **parts** rather than the combinations.
+    /// The list here is every part this program can produce: the engines that
+    /// read a page, and the two capabilities that get appended to one. It is
+    /// short because the ways of appending are two — see `RapidOcrBackend::id`
+    /// and `PdfTextLayer::id`, which are the only places a `+` is put in.
+    #[test]
+    fn every_part_of_an_engine_name_has_words_in_both_languages() {
+        let js = include_str!("../ui/app.js");
+        let blocks = blocks(js, "engine_names: {");
+
+        assert_eq!(blocks.len(), 2, "there should be one block per language");
+
+        let written: Vec<Vec<String>> = blocks.iter().map(|block| keys_in(block)).collect();
+
+        for part in [
+            // What can read a page.
+            "pdfium",
+            "scan",
+            "docx",
+            "xlsx",
+            "pptx",
+            "text-passthrough",
+            "rapidocr",
+            "openai-compatible",
+            // What gets appended to one, wherever the `+` is written.
+            "layout",
+            "tables",
+        ] {
+            for (at, keys) in written.iter().enumerate() {
+                assert!(
+                    keys.iter().any(|key| key == part),
+                    "no {} name for `{part}`, so an engine called that is drawn raw",
+                    if at == 0 { "English" } else { "Chinese" }
+                );
+            }
+        }
+    }
+
     /// Every kind of failure has a sentence, in both languages.
     ///
     /// The gap this exists to catch was real and was here: `Download` was added
