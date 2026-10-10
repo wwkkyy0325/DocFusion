@@ -245,7 +245,15 @@ fn block_markdown(out: &mut String, block: &Block) {
                 out.push('#');
             }
             out.push(' ');
-            out.push_str(&escape(&block.text));
+            // One line, however many it ran to on the page. Markdown ends a
+            // heading at the first newline, so a heading whose words ran onto a
+            // second line is written as a heading followed by a paragraph: the
+            // second half is not part of the heading any more and matches
+            // nothing. Measured on a three-column Security and Exchange
+            // Commission notice — seven headings, every one of them two lines,
+            // and not one of them found. The break is where the column ran out,
+            // not where the heading ends.
+            out.push_str(&escape(&one_line(&block.text)));
             out.push('\n');
         }
         BlockKind::Paragraph => {
@@ -362,6 +370,16 @@ fn table_row(out: &mut String, row: &Block, columns: usize) {
 /// only at the start of one. Escaping inline punctuation too would turn
 /// ordinary text such as `5 * 3` into `5 \* 3` — noise that changes nothing,
 /// because an unpaired `*` already renders literally.
+/// The words of a block as one line, with the breaks between them turned into
+/// single spaces.
+fn one_line(text: &str) -> String {
+    text.split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn escape(text: &str) -> String {
     text.split('\n')
         .map(escape_line)
@@ -1040,6 +1058,28 @@ mod tests {
             });
         }
         table
+    }
+
+    /// A heading whose words ran onto a second line on the page is one heading,
+    /// and the parser has to see it as one. Written with the break left in, the
+    /// heading ends at the newline and its second half becomes a paragraph —
+    /// measured on a three-column notice, seven headings and none found.
+    #[test]
+    fn a_heading_that_ran_to_two_lines_is_still_one_heading() {
+        let source = document(vec![block(
+            BlockKind::Heading { level: 1 },
+            "SECURITIES AND EXCHANGE\nCOMMISSION",
+        )]);
+
+        let rendered = markdown(&source, CREATED_AT);
+        let parsed = reparse(&rendered);
+
+        assert_eq!(
+            parsed.headings,
+            vec![(1, "SECURITIES AND EXCHANGE COMMISSION".to_owned())],
+            "{rendered}"
+        );
+        assert!(parsed.paragraphs.is_empty(), "{rendered}");
     }
 
     #[test]
