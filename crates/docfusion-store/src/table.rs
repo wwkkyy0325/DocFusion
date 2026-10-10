@@ -113,8 +113,16 @@ const DICTIONARY: [&str; 47] = [
 pub struct Cell {
     /// The token this cell came from, which is also the index of its box.
     pub token: usize,
-    /// How many columns it covers. One, unless it spans.
+    /// How many columns it covers. One, unless it spans across.
     pub across: usize,
+    /// How many rows it covers. One, unless it spans down.
+    ///
+    /// Kept apart from `across` because the model has a token for each and they
+    /// are not the same thing: `rowspan="3"` is a cell three rows tall, and a
+    /// table whose merged label was read as three columns wide comes out with
+    /// every column after it in the wrong place and every value in the wrong
+    /// cell. Measured that way on an equipment register with one merged label.
+    pub down: usize,
 }
 
 /// The grid the model answered with, in order.
@@ -376,7 +384,10 @@ fn rows_of(tokens: &[u32]) -> Vec<Vec<Cell>> {
     let mut rows: Vec<Vec<Cell>> = Vec::new();
     let mut row: Option<Vec<Cell>> = None;
     let mut across = 1;
+    let mut down = 1;
     let mut inside = false;
+    // Where the cell now open began, for a cell the model never closes.
+    let mut opened: Option<usize> = None;
 
     for (index, token) in tokens.iter().copied().enumerate() {
         let name = DICTIONARY.get(token.wrapping_sub(1) as usize).copied();
@@ -385,39 +396,107 @@ fn rows_of(tokens: &[u32]) -> Vec<Vec<Cell>> {
             PLAIN_CELL => {
                 // The merged form of a cell with no span, and one token for the
                 // whole cell: its box is its own.
+                //
+                // A cell left open is deliberately **not** finished here, even
+                // though a plain cell is plainly a new one. Finishing it puts
+                // its position before the words that follow, and the words are
+                // what the page has: measured on the register, closing it here
+                // moved every value in the row one column to the right and put
+                // an empty column where the count should be. Left open, it is
+                // finished at the end of the row and its position falls after
+                // them, which costs an empty column at the edge and nothing
+                // else.
                 if let Some(row) = row.as_mut() {
-                    row.push(Cell { token: index, across: 1 });
+                    row.push(Cell {
+                        token: index,
+                        across: 1,
+                        down: 1,
+                    });
                 }
             }
             _ => match name {
                 Some("<tr>") => {
                     row = Some(Vec::new());
                     across = 1;
+                    down = 1;
                     inside = false;
+                    opened = None;
                 }
                 Some("</tr>") => {
+                    // A cell still open here was never closed either.
+                    if inside
+                        && let (Some(row), Some(opened)) = (row.as_mut(), opened)
+                    {
+                        row.push(Cell {
+                            token: opened,
+                            across,
+                            down,
+                        });
+                    }
+
+                    inside = false;
+                    opened = None;
+                    across = 1;
+                    down = 1;
+
                     if let Some(taken) = row.take() {
                         rows.push(taken);
                     }
                 }
                 Some("<td>") | Some("<td") => {
+                    // A cell the model never closed. It emits
+                    // `<td> rowspan="2" <td >` when it means one tall cell —
+                    // seen on an equipment register with a merged label — and a
+                    // reader that only finishes a cell at `</td>` drops that
+                    // cell, and the merge with it, entirely. A new `<td` is
+                    // where the one before it ended.
+                    //
+                    // The box it is given is the one from where it **opened**
+                    // and not from the token that replaced it. Measured on that
+                    // register: the token that opened the tall cell carried the
+                    // box of the whole merged label, and the `<td` that followed
+                    // carried the box of something else, so closing onto the
+                    // later one left the label with no cell to land in.
+                    if inside
+                        && let (Some(row), Some(opened)) = (row.as_mut(), opened)
+                    {
+                        row.push(Cell {
+                            token: opened,
+                            across,
+                            down,
+                        });
+                    }
+
                     across = 1;
+                    down = 1;
                     inside = true;
+                    opened = Some(index);
                 }
                 Some("</td>") => {
                     if inside
                         && let Some(row) = row.as_mut()
                     {
-                        // The box is the one this token was given, and the
-                        // tokens and boxes are one apiece.
-                        row.push(Cell { token: index, across });
+                        // A cell the model closed: the box is the one this
+                        // token was given, and the tokens and boxes are one
+                        // apiece.
+                        row.push(Cell {
+                            token: index,
+                            across,
+                            down,
+                        });
                     }
                     inside = false;
+                    opened = None;
                     across = 1;
+                    down = 1;
                 }
                 Some(other) => {
-                    if let Some(count) = span(other) {
+                    // Two kinds of span and two counters. Reading either one as
+                    // the other is what put a merged label in the wrong place.
+                    if let Some(count) = span(other, "colspan") {
                         across = count;
+                    } else if let Some(count) = span(other, "rowspan") {
+                        down = count;
                     }
                 }
                 None => {}
@@ -435,7 +514,16 @@ fn rows_of(tokens: &[u32]) -> Vec<Vec<Cell>> {
 }
 
 /// How many columns or rows a span token covers.
-fn span(name: &str) -> Option<usize> {
+///
+/// Which of the two is asked for by name. The model has `colspan="n"` and
+/// `rowspan="n"`, both of the form `name="digits"`, and the digits alone do not
+/// say which direction a cell grows in.
+fn span(name: &str, kind: &str) -> Option<usize> {
+    let name = name.trim_start();
+    if !name.starts_with(kind) {
+        return None;
+    }
+
     name.rsplit('"')
         .nth(1)
         .and_then(|digits| digits.parse().ok())
@@ -598,9 +686,106 @@ mod tests {
 
     #[test]
     fn a_span_token_is_read_as_a_number() {
-        assert_eq!(span(" colspan=\"2\""), Some(2));
-        assert_eq!(span(" rowspan=\"17\""), Some(17));
-        assert_eq!(span("<tr>"), None);
+        assert_eq!(span(" colspan=\"2\"", "colspan"), Some(2));
+        assert_eq!(span(" rowspan=\"17\"", "rowspan"), Some(17));
+        assert_eq!(span("<tr>", "colspan"), None);
+    }
+
+    /// The two spans are two counters, and reading either as the other is what
+    /// put a merged label three rows deep into three columns instead.
+    #[test]
+    fn a_rowspan_is_not_a_colspan() {
+        assert_eq!(span(" rowspan=\"3\"", "colspan"), None);
+        assert_eq!(span(" colspan=\"3\"", "rowspan"), None);
+    }
+
+    /// The sequence the model emitted for a table whose first column is one cell
+    /// two rows tall, shortened to the part that matters.
+    #[test]
+    fn a_cell_that_spans_down_keeps_its_columns() {
+        // <tr><td rowspan="2"></td><td></td><td></td></tr>
+        let rowspan_two = DICTIONARY
+            .iter()
+            .position(|entry| *entry == " rowspan=\"2\"")
+            .expect("the dictionary has one")
+            + 1;
+
+        let tokens = [
+            5,
+            7,
+            rowspan_two as u32,
+            9,
+            10,
+            PLAIN_CELL,
+            PLAIN_CELL,
+            6,
+        ];
+        let rows = rows_of(&tokens);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 3, "a tall cell is still one cell wide: {rows:?}");
+        assert_eq!(rows[0][0].down, 2, "the first cell is two rows tall");
+        assert_eq!(rows[0][0].across, 1, "and one column wide");
+        assert_eq!(rows[0][1].down, 1);
+    }
+
+    /// The sequence the model actually emitted for a register whose first
+    /// column is one cell three rows tall — the cell it never closed.
+    ///
+    /// It writes `<td> rowspan="2" <td >` where it means one tall cell, and the
+    /// box that belongs to that cell is the one on the `<td>` that opened it.
+    /// Measured: the `<td` that follows carries the box of something else, so
+    /// closing the cell onto the later token leaves the merged label with no
+    /// cell to land in and it ends up in the header.
+    #[test]
+    fn a_cell_the_model_never_closed_keeps_the_box_it_opened_on() {
+        let rowspan_two = DICTIONARY
+            .iter()
+            .position(|entry| *entry == " rowspan=\"2\"")
+            .expect("the dictionary has one")
+            + 1;
+
+        // <tr> <td> rowspan="2" <td > <td></td> <td></td> </tr>
+        let tokens = [
+            5,
+            7,
+            rowspan_two as u32,
+            8,
+            9,
+            PLAIN_CELL,
+            PLAIN_CELL,
+            6,
+        ];
+        let rows = rows_of(&tokens);
+
+        assert_eq!(rows.len(), 1);
+        let first = rows[0][0];
+        assert_eq!(first.down, 2, "the merge is a merge: {rows:?}");
+        assert_eq!(first.across, 1);
+        assert_eq!(first.token, 1, "the box is the one from the token that opened it");
+        assert_eq!(rows[0][1].token, 5, "and the words after it are their own cells:
+            the cell the model left open is finished at the end of the row, so it
+            costs an empty column at the edge rather than putting every word in
+            the row one place to the right");
+    }
+
+    /// And the other token still widens a row, so the fix for one is not the
+    /// loss of the other.
+    #[test]
+    fn a_colspan_is_still_a_colspan() {
+        // <tr><td colspan="2"></td><td></td></tr>
+        let colspan_two = DICTIONARY
+            .iter()
+            .position(|entry| *entry == " colspan=\"2\"")
+            .expect("the dictionary has one")
+            + 1;
+
+        let tokens = [5, 7, colspan_two as u32, 9, 10, PLAIN_CELL, 6];
+        let rows = rows_of(&tokens);
+
+        assert_eq!(rows[0].len(), 2);
+        assert_eq!(rows[0][0].across, 2);
+        assert_eq!(rows[0][0].down, 1);
     }
 
     /// The picture the model is handed is square, normalised, and in the order

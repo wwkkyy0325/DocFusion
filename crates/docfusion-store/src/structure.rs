@@ -920,6 +920,79 @@ fn laid_out(
     )
 }
 
+/// Where every cell sits, once the rows a cell reaches down into are counted.
+///
+/// One entry per **grid position**, row by row: the cell that holds it, and how
+/// many columns that cell covers, or `None` for a position that is the inside
+/// of a cell which started in a row above.
+///
+/// The rows below a tall cell are the whole reason this is not just a running
+/// column count. A cell covering three rows holds one column in each of them,
+/// and a row that did not know that would start its own cells three columns too
+/// early: measured on an equipment register with one merged label, the label
+/// landed in the header and the three rows under it lost their item and their
+/// count.
+///
+/// The positions inside a cell are kept as empty ones rather than filled in.
+/// Markdown cannot say "this cell covers three rows" — GFM has no span of any
+/// kind — so the choice is between an empty position and the same words written
+/// three times, and writing words the page does not have is the one thing this
+/// project does not do.
+fn seatings(rows: &[Vec<table::Cell>]) -> Vec<Vec<Option<(usize, usize)>>> {
+    let mut seats: Vec<Vec<Option<(usize, usize)>>> = Vec::new();
+
+    // By column, the first row the cell there is **not** in: zero for a column
+    // nothing reaches into. An end rather than a countdown, because a countdown
+    // has to be decremented once per row and the row that decrements the value
+    // it just wrote is a row that erases its own span.
+    let mut through: Vec<usize> = Vec::new();
+
+    for (index_of_row, cells) in rows.iter().enumerate() {
+        let mut row: Vec<Option<(usize, usize)>> = Vec::new();
+        let mut column = 0;
+
+        for (index, cell) in cells.iter().enumerate() {
+            // Past the columns a cell above still holds.
+            while through
+                .get(column)
+                .is_some_and(|end| index_of_row < *end)
+            {
+                row.push(None);
+                column += 1;
+            }
+
+            let across = cell.across.max(1);
+            let down = cell.down.max(1);
+
+            while row.len() < column + across {
+                row.push(None);
+            }
+            row[column] = Some((index, across));
+
+            if down > 1 {
+                through.resize(through.len().max(column + across), 0);
+                for held in through[column..column + across].iter_mut() {
+                    *held = (*held).max(index_of_row + down);
+                }
+            }
+
+            column += across;
+        }
+
+        // A row can end before the columns a cell above still holds.
+        while through
+            .get(row.len())
+            .is_some_and(|end| index_of_row < *end)
+        {
+            row.push(None);
+        }
+
+        seats.push(row);
+    }
+
+    seats
+}
+
 /// Where one cell sits: in the grid, and on the page.
 #[derive(Clone, Copy)]
 struct Place {
@@ -966,42 +1039,28 @@ fn laid_out_grid(
         Some((x0 + left, y0 + top, x1 + left, y1 + top))
     };
 
-    // Every cell, with the place it takes, gathered first so that a line can
-    // be put in the best of them rather than in the first that will have it.
+    // Where every cell sits in the grid, worked out before a single word is
+    // placed, because a line has to be able to choose between all of them.
+    let seats = seatings(&grid.rows);
+    let widest = seats.iter().map(Vec::len).max().unwrap_or(0);
+
     let mut places: Vec<Place> = Vec::new();
-    let mut taken: Vec<Vec<(usize, usize)>> = Vec::new();
 
-    for (row, cells) in grid.rows.iter().enumerate() {
-        let mut column = 0;
-        let mut line: Vec<(usize, usize)> = Vec::new();
+    for (row, seats) in seats.iter().enumerate() {
+        for (column, seat) in seats.iter().enumerate() {
+            let Some((cell, _)) = seat else {
+                continue;
+            };
 
-        for cell in cells {
-            if let Some(at) = on_page(cell.token) {
+            if let Some(at) = on_page(grid.rows[row][*cell].token) {
                 places.push(Place { row, column, at });
             }
-            line.push((column, cell.across));
-            // A cell covering several columns takes the place of several, so
-            // that the cells after it are under their own headings rather than
-            // under the wrong ones.
-            column += cell.across.max(1);
         }
-
-        taken.push(line);
     }
 
-    let widest = taken
+    let mut written: Vec<Vec<Vec<usize>>> = seats
         .iter()
-        .map(|row| row.iter().map(|(_, across)| across).sum::<usize>())
-        .max()
-        .unwrap_or(0);
-
-    let mut written: Vec<Vec<Vec<usize>>> = taken
-        .iter()
-        .map(|row| {
-            row.iter()
-                .flat_map(|(_, across)| std::iter::repeat_with(Vec::new).take(*across))
-                .collect()
-        })
+        .map(|row| row.iter().map(|_| Vec::new()).collect())
         .collect();
 
     for index in indices {
@@ -1801,7 +1860,11 @@ mod tests {
         ];
         let region = region(RegionKind::Table, 100.0, 200.0, 900.0, 350.0);
 
-        let cell = |token: usize, across: usize| table::Cell { token, across };
+        let cell = |token: usize, across: usize| table::Cell {
+            token,
+            across,
+            down: 1,
+        };
         let grid = table::Grid {
             rows: vec![
                 vec![cell(0, 1), cell(1, 1), cell(2, 1)],
@@ -1854,7 +1917,11 @@ mod tests {
         ];
         let region = region(RegionKind::Table, 100.0, 200.0, 900.0, 350.0);
 
-        let cell = |token: usize, across: usize| table::Cell { token, across };
+        let cell = |token: usize, across: usize| table::Cell {
+            token,
+            across,
+            down: 1,
+        };
         let grid = table::Grid {
             rows: vec![
                 vec![cell(0, 2), cell(1, 1)],
@@ -1890,13 +1957,66 @@ mod tests {
         );
     }
 
+    /// A cell three rows tall holds its column in the two rows under it, so
+    /// those rows start their own cells in the right columns.
+    ///
+    /// Without this they start them at the left, and every word after the merge
+    /// lands one cell over: measured on an equipment register with one merged
+    /// label, the label went into the header and the rows under it lost their
+    /// item and their count.
+    #[test]
+    fn a_row_a_tall_cell_reaches_into_keeps_its_columns() {
+        let tall = |token: usize, down: usize| table::Cell {
+            token,
+            across: 1,
+            down,
+        };
+
+        let rows = vec![
+            vec![tall(0, 3), tall(1, 1), tall(2, 1)],
+            vec![tall(3, 1), tall(4, 1)],
+            vec![tall(5, 1), tall(6, 1)],
+            vec![tall(7, 1), tall(8, 1), tall(9, 1)],
+        ];
+
+        let seats = seatings(&rows);
+
+        // Three wide, with the first position held by the cell above.
+        assert_eq!(seats[0].len(), 3);
+        assert_eq!(seats[0][0], Some((0, 1)));
+        assert_eq!(seats[1].len(), 3, "the row put its cells after the held one");
+        assert_eq!(seats[1][0], None, "the first column is still the same cell");
+        assert_eq!(seats[1][1], Some((0, 1)), "and its first cell is the next one over");
+        assert_eq!(seats[2][0], None);
+
+        // Out of its reach, the row starts its own cells again.
+        assert_eq!(seats[3].len(), 3);
+        assert_eq!(seats[3][0], Some((0, 1)));
+    }
+
+    /// The row under a tall cell can be shorter than the columns that cell
+    /// holds, and the positions still have to be there or the table is ragged.
+    #[test]
+    fn a_row_that_ends_early_still_has_the_held_columns() {
+        let rows = vec![
+            vec![table::Cell { token: 0, across: 1, down: 1 }, table::Cell { token: 1, across: 2, down: 2 }],
+            vec![table::Cell { token: 2, across: 1, down: 1 }],
+        ];
+
+        let seats = seatings(&rows);
+
+        assert_eq!(seats[1].len(), 3, "{seats:?}");
+        assert_eq!(seats[1][1], None);
+        assert_eq!(seats[1][2], None);
+    }
+
     /// A grid with nothing in it leaves the geometry its answer rather than
     /// producing a table with no cells in it.
     #[test]
     fn an_empty_grid_is_not_a_table() {
         let region = region(RegionKind::Table, 100.0, 200.0, 900.0, 350.0);
         let grid = table::Grid {
-            rows: vec![vec![table::Cell { token: 0, across: 1 }]],
+            rows: vec![vec![table::Cell { token: 0, across: 1, down: 1 }]],
             boxes: vec![(10.0, 10.0, 90.0, 40.0)],
         };
 
