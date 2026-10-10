@@ -465,6 +465,18 @@ inside it.
   tables before it and 8 of 9 after.**
   The geometry is still there, under it, for an installation that has not
   downloaded the model and for a table the model does not understand.
+- **Merged cells: Markdown cannot hold them, and the model does not find them
+  reliably.** GFM has no colspan and no rowspan, so a merged cell is laid out as
+  a full grid with the positions it covers left empty — not filled in, because
+  repeating the words down the rows is text the page does not have. The reading
+  side had a real bug and no longer does: `colspan="n"` and `rowspan="n"` are the
+  same shape of token, and both were read as a column count, which put every
+  column after a merged cell in the wrong place; a row under a tall cell also had
+  to be told to hold its column. What is left is the model: measured, it emits a
+  merged cell it never closes and gives a three-row label a span of two, and it
+  gives a two-column header no span at all. **Real forms are ruled**, and a rule
+  through a grid is a better statement of where the cells are than a sequence
+  model's tokens — that is where irregular tables should be read from.
 - **The crop is laid down with the square's stride, and that matters.** The
   model is handed a 488×488 square, and a table that is taller than it is wide
   leaves most of that square empty. Writing the resized picture in the order it

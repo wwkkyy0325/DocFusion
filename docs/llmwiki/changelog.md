@@ -4,6 +4,54 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — Merged cells: one bug of ours, and a ceiling that is the model's
+
+**What:** A cell spanning rows was read as a cell spanning columns, which put
+every column after it in the wrong place. Fixed, with the rows under a tall cell
+now holding its columns. Measured on a generated equipment register with one
+merged label, rows one and two come out exactly right. What is still wrong on it
+is the model's prediction, not the reading of it.
+
+**Why it came up:** a question about whether a table with merged cells can be
+brought across faithfully. Three separate answers, and only the first is about
+this code.
+
+- **Markdown cannot express a merged cell.** GFM has no colspan and no rowspan.
+  So the cells are laid out in a full grid, the positions inside a merged cell
+  are left empty, and the alternative — repeating the words down the rows — is
+  text the page does not have. The two honest options are empty positions or
+  emitting HTML for those tables; HTML was not taken because it makes the output
+  two different formats in one file.
+
+- **The span bug was ours.** The model has `colspan="n"` and `rowspan="n"`, both
+  of the form `name="digits"`, and `span()` read the digits without the name:
+  both set the column count. `Cell` now carries `down` beside `across`.
+  `seatings` lays the grid out before a word is placed, because a row that does
+  not know a cell above still holds its column starts its own cells three places
+  too early.
+
+- **The rest is the model, and it is measured rather than assumed.** On the
+  register it emits `<td> rowspan="2" <td >` for the tall cell: one it never
+  closes, and a span of two for a cell that covers three rows. On a table with a
+  header spanning two columns it emitted five plain cells and no span at all.
+  Both are the prediction being wrong, and no reader can recover from them. The
+  one part that was ours to fix is that a never-closed cell was dropped
+  entirely; it is now finished at the next `<td`, keeping the box from the token
+  that opened it — measured, that token carries the merged label's box and the
+  `name="digits"` that follows carries something else's.
+
+**What this suggests for real forms:** the documents people actually ask about —
+bank schedules, equipment registers, tax forms — are fully ruled, and a ruled
+form says where its cells are with its own lines. Building the grid from the
+rules is the classic answer, it needs no model, and a merged cell is simply a
+position with no rule through it. That is where the accuracy for irregular
+tables is, not in a better parse of a sequence model's tokens.
+
+**Unchanged:** the corpus, at 0.413 loss and 10 of 10 tables. None of its tables
+has a span, which is why none of this was visible there.
+
+---
+
 ## 2026-10-10 — Tables in a PDF that has a text layer
 
 **What:** A PDF whose pages carry a text layer now comes out with its tables as
