@@ -266,11 +266,23 @@ fn squashed(picture: &image::RgbImage) -> (Vec<f32>, (f32, f32)) {
 
     let mut pixels = vec![0.0f32; 3 * SIDE * SIDE];
 
-    for (index, pixel) in small.pixels().enumerate() {
-        for channel in 0..3 {
-            // Reversed, so the channel the model calls first is blue.
-            let value = f32::from(pixel[2 - channel]) / 255.0;
-            pixels[channel * SIDE * SIDE + index] = (value - MEAN[channel]) / DEVIATION[channel];
+    // Written a row at a time into a square that is `SIDE` wide, which is what
+    // the model reads. Walking `small`'s own pixels instead would use its width
+    // as the stride: for a picture whose long side is its height the two differ,
+    // and the image is then laid down sheared — each line of the square carrying
+    // a line and a half of the picture — which the model answers with a correct
+    // row count and boxes that belong to nothing. Every table in the corpus was
+    // wider than it was tall, where the two strides are equal and the bug has
+    // nothing to do.
+    for (y, row) in small.rows().enumerate() {
+        for (x, pixel) in row.enumerate() {
+            let at = y * SIDE + x;
+
+            for channel in 0..3 {
+                // Reversed, so the channel the model calls first is blue.
+                let value = f32::from(pixel[2 - channel]) / 255.0;
+                pixels[channel * SIDE * SIDE + at] = (value - MEAN[channel]) / DEVIATION[channel];
+            }
         }
     }
 
@@ -421,6 +433,55 @@ fn span(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture whose long side is its height goes into the square with the
+    /// square's stride, not its own.
+    ///
+    /// The two strides are equal exactly while the picture is wider than it is
+    /// tall, which is every table in the corpus — so writing the pixels down in
+    /// the order the picture holds them looked correct for as long as anyone
+    /// looked. A portrait crop is where they come apart: written with its own
+    /// stride, the picture is folded every `SIDE` pixels and arrives sheared,
+    /// and the model answers with the right number of rows and boxes that
+    /// belong to nothing. Measured on an 1196×1746 bank schedule, which came
+    /// back as twenty-eight rows of jumbled text and now comes back as itself.
+    #[test]
+    fn a_portrait_picture_is_not_folded_into_the_square() {
+        // Exactly half, because that makes the resize the identity: a 244×488
+        // picture is scaled by 488/488 and lands back at 244×488, so every
+        // pixel below is the one that was put there and the arithmetic is the
+        // stride and nothing else.
+        let (width, height) = (SIDE / 2, SIDE);
+        let mut picture = image::RgbImage::from_pixel(width as u32, height as u32, WHITE);
+        // The whole second row, black.
+        for x in 0..width as u32 {
+            picture.put_pixel(x, 1, BLACK);
+        }
+
+        let (pixels, size) = squashed(&picture);
+        assert_eq!(size, (width as f32, height as f32), "resized when it should not have been");
+
+        // Channel zero on its own: both rows are one colour across, so which
+        // channel this is does not matter. Black normalises negative and white
+        // positive, so the sign is the row and no constant has to be repeated.
+        let at = |x: usize, y: usize| pixels[y * SIDE + x];
+
+        assert!(at(0, 0) > 0.0, "the first row of the picture is not the first row of the square");
+        assert!(at(0, 1) < 0.0, "the second row of the picture is not the second row of the square");
+
+        // And where the picture's own stride would have put that black row: one
+        // picture-width along the square's first line. That is past the right
+        // edge of the picture, so nothing was written there and it is still the
+        // zero the square started as.
+        assert_eq!(
+            at(width, 0),
+            0.0,
+            "the picture was laid down with its own stride"
+        );
+    }
+
+    const WHITE: image::Rgb<u8> = image::Rgb([255, 255, 255]);
+    const BLACK: image::Rgb<u8> = image::Rgb([0, 0, 0]);
 
     /// The sequence the model actually emitted for an eleven-column financial
     /// table, shortened. Every tag decoded correctly and every cell did not,
