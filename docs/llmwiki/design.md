@@ -472,12 +472,15 @@ inside it.
   was measuring the converter: with it 8 of 64, without it **21 of 64** and the
   mean loss 0.413 to 0.313. The words are still compared; only the depth is
   dropped.
-- **A heading written over two lines is cut in half.** The layout model marks the
-  first line of `SECURITIES AND EXCHANGE / COMMISSION` as a heading and the
-  second as body text, so the engine returns `SECURITIES AND EXCHANGE` and
-  matches nothing. That is the largest single loss left in the corpus (three
-  columns of SEC notices, seven headings, none found) and it is an engine fault
-  rather than a measurement one. Not yet fixed.
+- **A heading over two lines is one heading, and a kicker over a headline is
+  two.** Both arrive as one layout region with two lines in it, and the size of
+  the type is the whole of the difference between them — a wrapped heading's
+  lines are within a third of each other and a kicker's are more than twice
+  apart, measured across the corpus with nothing falling between. A heading is
+  written on one line whatever it ran to, because Markdown ends a heading at the
+  first newline, and a heading region is split where the sizes differ. Together
+  they took the headings from **8 of 64 to 27 of 64** and the mean loss from
+  0.413 to 0.298.
 - **Reading a table from its rules is the right idea and is not ready.** The grid
   a form is drawn with says where its cells are, and a merged cell is a position
   with no line through it — exact, where the model invents a `<td>` it never

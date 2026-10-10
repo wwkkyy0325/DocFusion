@@ -53,15 +53,21 @@ ends a heading at the first newline. One line fixes it: 071 goes from 0 of 7 to
 **4 of 7**, the corpus from 21 of 64 to **25 of 64**, the mean loss from 0.313 to
 **0.300**.
 
-**One case gets worse, and the two cases are genuinely different.** A newspaper
+**One case got worse, and the two cases are genuinely different.** A newspaper
 page has a kicker above a headline —
 `中宣部、中央文明办等14部委下发通知要求` over `2011年深入开展文化科技卫生"三下乡"活动`
 — the layout model puts both in one region, and that reference calls them two
-headings, where 071's reference calls its two lines one. The difference that
-tells them apart is the one thing the renderer cannot see: the two lines of a
-wrapped heading are the same size and a kicker is not. 081 goes from 5 of 13 to
-4, and acting on the heights needs the block built where the lines are rather
-than where they are written.
+headings, where 071's reference calls its two lines one. 081 went from 5 of 13
+to 4.
+
+The difference that tells them apart is the size of the type, which the renderer
+cannot see and the block builder can. Measured across the corpus: a wrapped
+heading's lines differ by between **1.00 and 1.26**, and a kicker's by **2.31
+and 2.42**. Nothing falls between, so the threshold is a half rather than
+something tuned. Splitting a heading region at 1.5 takes 081 back to **6 of 13**,
+keeps 071 at 4 of 7, and leaves **every other case unchanged**.
+
+Headings 25 of 64 to **27 of 64**, mean loss 0.300 to **0.298**.
 
 **Two of the seven are unreachable whatever is done.** The reference has
 `Submlsslon for OMB Revlew; Comment Request` — the ground truth itself carries

@@ -4,6 +4,26 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — One heading region, one heading or two
+
+**What:** A layout region holding two lines of text is split into two headings
+when its lines are **not** the same size. Measured: headings 25 of 64 to **27 of
+64**, mean loss 0.300 to **0.298**, and every case but one unchanged.
+
+**Why:** both a wrapped heading and a newspaper kicker arrive as one region with
+two lines in it, and the references disagree about them — 071 writes
+`SECURITIES AND EXCHANGE` over `COMMISSION` as one heading, 081 writes a kicker
+over its headline as two. Joining both cost 081 a heading to gain 071 four.
+
+**The sizes are the whole of the difference, and they are only where the lines
+are.** Measured across the corpus, a wrapped heading's lines differ by between
+1.00 and 1.26 and a kicker's by 2.31 and 2.42 — nothing in between, so 1.5 is a
+half rather than a number tuned until the cases passed. Each part keeps its own
+place on the page, so the page is still read in order, and only a heading region
+is ever split: a paragraph with a larger first line is a paragraph.
+
+---
+
 ## 2026-10-10 — A heading is written on one line
 
 **What:** A heading whose words ran onto a second line on the page was written
