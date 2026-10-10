@@ -25,6 +25,7 @@ use super::{
     ExtractError, Extractor, Fit, FoundTable, Input, InputProbe, PageSource, TableReader, TextLine,
 };
 use crate::mime::Container;
+use crate::text::needs_space;
 
 const ENGINE_ID: &str = "pdfium";
 const ENGINE_VERSION: &str = "1.0.0";
@@ -851,25 +852,6 @@ fn join_line(paragraph: &mut String, line: &str) {
         paragraph.push(' ');
     }
     paragraph.push_str(line);
-}
-
-fn needs_space(left: &str, right: &str) -> bool {
-    match (left.chars().next_back(), right.chars().next()) {
-        (Some(a), Some(b)) => !is_cjk(a) && !is_cjk(b),
-        _ => false,
-    }
-}
-
-fn is_cjk(character: char) -> bool {
-    matches!(character as u32,
-        0x3000..=0x303F     // CJK punctuation
-        | 0x3040..=0x30FF   // kana
-        | 0x3400..=0x4DBF   // CJK extension A
-        | 0x4E00..=0x9FFF   // CJK unified ideographs
-        | 0xF900..=0xFAFF   // compatibility ideographs
-        | 0xFF00..=0xFFEF   // full-width forms
-        | 0x20000..=0x2FA1F // extensions B and beyond
-    )
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@
 //! structure the document never had, so text is escaped before it is written.
 
 use crate::ir::{Block, BlockKind, ConflictKind, Document};
+use crate::text::needs_space;
 
 /// Characters that change the meaning of a line when they begin one.
 const BLOCK_MARKERS: [char; 8] = ['#', '>', '-', '+', '*', '=', '~', '`'];
@@ -370,14 +371,25 @@ fn table_row(out: &mut String, row: &Block, columns: usize) {
 /// only at the start of one. Escaping inline punctuation too would turn
 /// ordinary text such as `5 * 3` into `5 \* 3` — noise that changes nothing,
 /// because an unpaired `*` already renders literally.
-/// The words of a block as one line, with the breaks between them turned into
-/// single spaces.
+/// The words of a block as one line, with the break between each pair of them
+/// closed up.
+///
+/// Closed with a space between two Latin words and with nothing between two
+/// Chinese ones: a break in a Chinese line is where the column ran out, and a
+/// space written there is a space the page does not have. Measured on a
+/// newspaper page, five of its ten headings were missed for that and nothing
+/// else — `洛阳市抗旱从种子抓起` written as `洛阳市抗旱 从种子抓起`.
 fn one_line(text: &str) -> String {
-    text.split('\n')
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::new();
+
+    for line in text.split('\n').map(str::trim).filter(|line| !line.is_empty()) {
+        if needs_space(&out, line) {
+            out.push(' ');
+        }
+        out.push_str(line);
+    }
+
+    out
 }
 
 fn escape(text: &str) -> String {
@@ -1080,6 +1092,21 @@ mod tests {
             "{rendered}"
         );
         assert!(parsed.paragraphs.is_empty(), "{rendered}");
+    }
+
+    /// And a Chinese heading is closed up, because a break in a Chinese line is
+    /// where the column ran out and not a space the page has.
+    #[test]
+    fn a_chinese_heading_is_not_given_a_space_at_the_break() {
+        let source = document(vec![block(
+            BlockKind::Heading { level: 1 },
+            "洛阳市抗旱
+从种子抓起",
+        )]);
+
+        let parsed = reparse(&markdown(&source, CREATED_AT));
+
+        assert_eq!(parsed.headings, vec![(1, "洛阳市抗旱从种子抓起".to_owned())]);
     }
 
     #[test]
