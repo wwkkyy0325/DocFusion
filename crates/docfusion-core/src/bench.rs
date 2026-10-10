@@ -370,7 +370,63 @@ pub fn table_similarity(expected: &str, actual: &str) -> f64 {
     total / wanted.len() as f64
 }
 
+/// Puts a table row that was written across several lines back into one.
+///
+/// Markdown has no way to put a line break inside a cell, so a table whose cells
+/// held one is written out with the break left in — and a row, and the table
+/// with it, then end at the first of those lines. The corpus's references come
+/// from OmniDocBench, which keeps the `<br>` the original table had: two of the
+/// twenty-four arrive that way, one of them an eleven-column table whose header
+/// is spread over eleven lines.
+///
+/// Read strictly, such a reference says its table has one row and is followed by
+/// a paragraph. An engine that returns the six rows that are actually on the
+/// page is then scored against a table that never existed, which is how a
+/// correct reading of a five-column table came out at 0.39 and was written down
+/// as the worst table in the set.
+///
+/// **Only a row that is not closed is joined.** A row that ends in `|` is
+/// complete and has nothing left to continue it, so a rule that joined anyway
+/// would swallow the horizontal rule or the paragraph below a table. The
+/// unclosed row is the whole of the signal, and it is a reliable one: it is what
+/// a break inside a cell produces and nothing else does.
+///
+/// Applied to both sides. The renderer writes one line per row — a newline in a
+/// cell becomes a space before it is written — so for the output this does
+/// nothing, and applying it there anyway is what keeps it a rule about Markdown
+/// rather than a thumb on the scale.
+fn joined_rows(markdown: &str) -> String {
+    let mut rows: Vec<String> = Vec::new();
+    let mut inside = false;
+
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        // Nothing above, or a row that is closed: either way there is nothing
+        // for this line to be the rest of.
+        let open = rows
+            .last()
+            .is_some_and(|last| !last.trim_end().ends_with('|'));
+
+        if trimmed.starts_with('|') {
+            inside = true;
+            rows.push(line.to_owned());
+        } else if inside && !trimmed.is_empty() && open {
+            let last = rows.last_mut().expect("open means something is above");
+            last.push(' ');
+            last.push_str(trimmed);
+        } else {
+            inside = false;
+            rows.push(line.to_owned());
+        }
+    }
+
+    rows.join("\n")
+}
+
 fn outline(markdown: &str) -> Outline {
+    let joined = joined_rows(markdown);
+    let markdown = joined.as_str();
+
     let arena = Arena::new();
     let mut options = Options::default();
     options.extension.table = true;
@@ -730,6 +786,50 @@ mod tests {
         let actual = "a b\n";
 
         assert_eq!(score(expected, actual).tables_matched, 0);
+    }
+
+    /// The reference two of the corpus's cases are written in: a cell held a
+    /// line break, Markdown has nowhere to put one, and the row is written
+    /// across two lines with the first one left open.
+    #[test]
+    fn a_row_written_across_two_lines_is_one_row() {
+        let expected = "| a | b |\n| --- | --- |\n| c | one\n two |\n";
+        let actual = "| a | b |\n| --- | --- |\n| c | one two |\n";
+
+        assert_eq!(score(expected, actual).tables_matched, 1);
+        assert_eq!(score(expected, actual).table_similarity, 1.0);
+    }
+
+    /// The guard on the rule: only a row that is not closed can be continued,
+    /// so what follows a finished table is left where it is. Lines rather than
+    /// text, so the trailing newline of the input is not in the answer.
+    #[test]
+    fn what_follows_a_closed_row_is_not_swallowed() {
+        assert_eq!(
+            joined_rows("| a | b |\n| --- | --- |\n| c | d |\n---\nafter\n"),
+            "| a | b |\n| --- | --- |\n| c | d |\n---\nafter"
+        );
+    }
+
+    /// And a blank line still ends a table, because an open row is not a
+    /// licence to read the rest of the document into it.
+    #[test]
+    fn a_blank_line_ends_a_table_that_is_mid_row() {
+        assert_eq!(joined_rows("| a | b\n\nafter\n"), "| a | b\n\nafter");
+    }
+
+    /// The worst table in the corpus, reduced: an eleven-column header whose
+    /// cells each carried a line or two, so the header arrives as eleven lines.
+    #[test]
+    fn a_header_written_over_eleven_lines_is_one_header() {
+        let mut expected = String::from("| 名称 | 代码 |\n");
+        for i in 0..9 {
+            expected.push_str(&format!("line {i}\n"));
+        }
+        expected.push_str("| --- | --- |\n| x | 1 |\n");
+        let actual = "| 名称 | 代码 |\n| --- | --- |\n| x | 1 |\n";
+
+        assert_eq!(score(&expected, actual).table_similarity, 1.0);
     }
 
     /// A missing table and a missing heading are worse than character noise,
