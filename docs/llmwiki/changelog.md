@@ -4,6 +4,250 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — A page is read a column at a time
+
+**What:** reading order stops being top-to-bottom-then-left-to-right and becomes
+column-aware. The page is cut into vertical corridors first and into bands
+second; anything spanning the width separates the bands, and between two of them
+the columns are read one after another.
+
+**It is the largest single improvement the corpus has recorded**, and it went
+where the numbers said it would — the pages that read well and scored badly,
+where the characters were all present and the sequence was wrong.
+
+| | `rapidocr` | `+layout`, before | `+layout`, now |
+|---|---|---|---|
+| error, reading order included | 0.466 | 0.419 | **0.360** |
+| error, order ignored | 0.203 | 0.197 | 0.197 |
+| mean loss | 0.566 | 0.511 | **0.481** |
+| headings, tables | 0/64, 0/9 | 8/64, 1/9 | 8/64, 1/9 |
+
+| case | before | after |
+|---|---|---|
+| 021 academic, two column | 0.523 | **0.145** |
+| 022 academic, two column | 0.591 | **0.054** |
+| 082 newspaper, Chinese | 0.803 | **0.550** |
+| 102 exam paper, Chinese | 0.866 | **0.713** |
+| 101 exam paper, Chinese | 0.849 | **0.732** |
+
+**Nothing regressed**, because the single-column case still goes through the same
+comparison it always did — a page this cannot help is not a page it can hurt.
+
+### The corridor was there and the code could not see it
+
+**The first attempt merged the boxes' horizontal spans and looked at the gaps,
+and it did not fire on half the pages it should have.** The first two-column page
+measured has columns 39% of the width each with a clean 26-pixel corridor between
+them, and the answer came back one column. The cause was not the corridor: a
+**running head nineteen pixels tall** lying across the top of it bridged the gap,
+because a box that crosses a gap is indistinguishable from a box that fills it
+when all you have is spans.
+
+**So the corridor is measured instead of inferred.** The page is cut into 256
+strips and each is asked how much of the page's *height* is covered at that x. A
+gutter is a run of strips that is almost entirely empty. The head covers 0.9% of
+a 2017-pixel page, which is nothing, and the columns separate.
+
+**Two thresholds were wrong before the right question was asked.** The gutter
+width was first 2% of the page and then 1%, and both were guesses about a
+corridor that the algorithm could not find either way. The 26-pixel corridor on
+that page is 1.9% — the first threshold missed it by 1.4 pixels — but lowering
+the threshold to 1% changed nothing at all, and that was the useful result: it
+said the number was not what was being measured.
+
+### What still does not work, and now for a reason
+
+**The three newspaper cases did not move**, and they are not a bug this time.
+Their coverage across the page is 65–98% of the height with no dip anywhere: the
+columns are filled at every height by something at a different height. **There is
+no corridor to find.** A newspaper page's reading order is not column-major
+anyway — it is article-major, and articles cross columns — so what those pages
+need is article segmentation, which is a different problem from this one and is
+now named as such.
+
+**The engine's version was raised to 1.1.0**, because the identity is half the
+cache key and a page read before this change is not the page this build
+produces. Raised for the whole engine rather than only the layout-aware half,
+which re-reads more than it must and never serves a page it should not.
+
+---
+
+## 2026-10-10 — The layout model, scored on a corpus instead of by hand
+
+**What:** `rapidocr` against `rapidocr+layout` on the 24-case corpus, same
+build, same pages, engine chosen by whether the model is on disk. The first
+numbers the layout work has had that were not counted by hand.
+
+| | `rapidocr` | `rapidocr+layout` |
+|---|---|---|
+| headings found | **0 / 64** | **8 / 64** |
+| tables found | **0 / 9** | **1 / 9** |
+| error, reading order included | 0.466 | **0.419** |
+| error, order ignored | 0.203 | **0.197** |
+| mean loss | 0.566 | **0.511** |
+| 24 pages | 53.2 s | 63.5 s |
+
+**The layout model does what it was bought for, and not much of it.** Every
+number moves the right way, headings go from none to some, and it costs 19%
+more time. But **1 of 9 tables** is not a feature, it is a toehold.
+
+**The earlier "7 of 7" was measuring something else, and this entry is the
+correction.** That figure counted table *regions detected by label*, on seven
+pages picked because they had tables, using a probe rather than the tool. This
+counts tables that survive into the artifact, on all twenty-four pages, through
+the whole pipeline. **Detecting a table is not producing one**: a region that
+comes back as a table and cannot be turned into rows and cells is rendered as a
+paragraph, deliberately, so that its words are not lost — and it counts as a
+table not found. The second number is the honest one and the first should not
+have been quoted as if it were.
+
+**Where it fails is where the design said it would.** The worst reading-order
+scores are the Chinese exam paper (0.849) and the Chinese newspaper (0.803) —
+both multi-column, which this module documents as not solved. The content
+score is much better than the order score on the same pages, which is the
+signature of an engine that read the words and then put them in the wrong
+sequence: exactly the distinction §8.5's two error rates exist to expose.
+
+**The corpus was there all along, one directory outside the repository.**
+`D:\workspace-new\wwkkyy0325\docfusion-corpus` — twenty-four cases from
+OmniDocBench v1.5's base subset, covering single, double and three-column
+layouts in both languages, across papers, books, slides, newspapers, magazines,
+exam papers, reports and notes. It was reported missing twice in this session
+because it was looked for inside the project and one level of the parent. It is
+referenced by path, as §8.5 intends, and the path is worth writing down.
+
+---
+
+## 2026-10-09 — PaddleOCR-VL, run rather than read about
+
+**What:** the local VLM candidate, actually run on this machine against the page
+the local engine was measured on. It was not added. The short version is that it
+**cannot use the graphics card at all**, and on the processor it is **155×
+slower and worse at the one thing it was going to be better at**.
+
+| | this page, end to end | the table |
+|---|---|---|
+| `rapidocr` + layout model | **1.6 s** | correct |
+| PaddleOCR-VL, DirectML | **fails** | — |
+| PaddleOCR-VL, CPU (int8) | 247 / 262 / 273 s | **degenerate in all three** |
+
+### The graphics card cannot run it
+
+All three ONNX graphs **load** on DirectML and **none of them run**. The failure
+is a `Reshape` node — `node_view_5` in the vision encoder, `node_view_2` in the
+decoder — in `MLOperatorAuthorImpl.cpp`. DirectML needs static shapes and a
+transformer with a KV cache is made of dynamic ones. This is the risk that was
+named before the test and it is now a measurement.
+
+**And the error it produces is itself broken.** DirectML's message comes back in
+the machine's own language — this is a Chinese Windows — and pybind11 decodes it
+as UTF-8, so what a caller sees is `UnicodeDecodeError: 'utf-8' codec can't
+decode byte 0xd3`, a sentence about bytes that says nothing about reshapes. The
+cause is only visible in the log line above it. Worth knowing before shipping
+anything on this provider on a non-English machine.
+
+### The processor runs it into a wall
+
+```
+VLM Table Recognition: hit max_tokens without detectable loop
+(max_tokens=2048, gen_tokens=2048, len=2048)
+```
+
+The table region ran to the token ceiling and produced `1980s 2000s 2005s 2010s
+…` until it was cut off — **in three runs out of three**, with the fourth, the
+first one, producing a correct table. This is the int8 export's documented
+weakness: it holds up on a small block and degenerates on a whole region, and a
+whole region is what it was given. The fp32 export is said not to have the
+problem, and is 3.6 GB rather than 1.2 and substantially slower than a figure
+already too slow to use.
+
+### What this does not say
+
+**The page is the easy case, and the easy case is where the VLM has nothing to
+add.** A ruled table of printed text is what the recognition engine and the
+layout model already read correctly in 1.6 seconds; a model twice as good at it
+would still be 155× slower for no gain. The property the VLM is *for* is the
+hard page — handwriting, a skewed photograph, a table with no rules, merged
+cells — and **none of that was tested**, because the corpus that had such pages
+is gone and a synthetic page cannot be made hard on purpose.
+
+So the result rules out this model at this quantization on this page. It does
+not rule out the class, and it should not be read as doing so.
+
+**Also, for the record:** the output was not byte-identical between runs, which
+is disqualifying on its own for a design whose cache key is a content hash. The
+sampler in the harness explains some of that; the degenerate loop explains the
+rest.
+
+### What it cost
+
+About two hours, 1.2 GB in the Hugging Face cache, and one venv — and it settled
+a question that had been argued from blog posts for several turns. The reference
+implementation was used rather than written, which is why it cost hours and not
+a week.
+
+---
+
+## 2026-10-09 — The GPU, measured before it was believed in
+
+**What:** a `directml` feature on `docfusion-store`, off by default, and the
+numbers that decided it stays off. Not a capability: the models run 5–6× faster
+on the graphics card and **the tool gets 9% faster**, because the models are not
+where the time goes.
+
+**The question was whether a GPU can be used without asking the user to install
+anything.** It can. `DirectML` ships with Windows, works on NVIDIA, AMD and
+Intel alike, needs no toolkit, and `ort` and `rapidocr-core` already carry the
+feature — this was a flag and three lines, not an integration.
+
+| | processor | DirectML |
+|---|---|---|
+| layout model, isolated | 451 ms | **77 ms** | 
+| text detector, isolated | 275 ms | **56 ms** |
+| one page, end to end | **2.335 s** | 2.637 s |
+| eight pages | 13.11 s | **12.02 s** |
+| twenty-four pages | 38.15 s | **34.69 s** |
+| output | — | **identical** |
+
+**The models get six times faster and a page gets nine percent faster**, and
+that gap is the whole finding. A page is mostly things a graphics card cannot
+help with: decoding the PNG, finding the contours in the detector's probability
+map, joining the recognised lines, writing the file, and starting the process.
+The inference is a minority share, and making a minority share six times smaller
+does not make a page six times faster. It makes it 9% faster.
+
+**On one page it is a loss**, because building a DirectML session costs about
+two seconds of shader compilation the first time, and a one-page run never earns
+that back. From eight pages on the cost is paid and the saving is steady at
+**about 0.14 s a page** — measured at eight and at twenty-four, where the saving
+grew with the page count rather than levelling off, so it is linear and not an
+artefact of the first few.
+
+**Off by default, and the fallback is written anyway.** A machine with no
+DirectML device is the ordinary case, so a build that fails there drops back to
+the processor instead of refusing to read the page — for both the detector and
+the recogniser. It must not drop back *silently*: nothing downstream can tell
+which provider ran, and that is the reason the feature is opt-in rather than on.
+**The fallback itself is untested**, because there is no such machine here.
+
+**CUDA was not the path.** It needs cuDNN alongside the toolkit, and cuDNN is
+not on this machine — which is exactly the "user must install something first"
+that rules it out. DirectML needs nothing, and that difference is the whole
+reason to prefer the slower of the two interfaces.
+
+**Whether the provider belongs in the engine's name is left open.** The output
+was byte-identical here, down to the boxes, but the detector's probability map
+differs in the fifth decimal, and a threshold is exactly where a fifth decimal
+can flip a box. If this is ever turned on by default it has to join `rapidocr`
+and `rapidocr+layout` in the identity, because the identity is the cache key and
+the same bytes have to mean the same answer.
+
+**How to re-measure:** the `directml` feature, and `cargo test --release
+--features docfusion-store/directml -- --ignored times_the_detector`, which
+prints the per-page time either way.
+
+---
+
 ## 2026-10-09 — The layout model on the engine, and a page that stops being one column
 
 **What:** the second half of the layout work. The detector runs in the same

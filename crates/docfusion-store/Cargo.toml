@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Runs the models on the GPU through DirectML. On by default once it has been
+# measured on real pages; a spike until then.
+directml = ["ort/directml", "rapidocr-core/directml"]
+
 [dependencies]
 base64 = "0.23.1"
 blake3 = "1.8.7"

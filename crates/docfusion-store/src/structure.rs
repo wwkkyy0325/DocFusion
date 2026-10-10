@@ -40,13 +40,38 @@ const SIDE: usize = 800;
 /// the document as a heading.
 const FLOOR: f32 = 0.5;
 
-/// How much of the region's width a line may cover before it stops counting as
-/// evidence of where the columns are.
+/// How much of the space a box may cover before it stops counting as evidence
+/// of where the columns are.
 ///
-/// A row spanning the whole table crosses every column, so counting it would
-/// weld the columns into one and lose the table. Such a line still becomes a
-/// cell; it just does not get a vote on where the boundaries are.
+/// A row spanning a whole table crosses every column, and a title spanning a
+/// whole page crosses every column, so counting either would weld the columns
+/// into one — losing a table, or reading a two-column page as one. Neither
+/// disappears: a spanning line is still a cell, and a spanning region is still
+/// read, just not asked where the boundaries are.
 const SPANNING: f32 = 0.8;
+
+/// How wide a gap has to be, as a share of the page, before it is a gutter
+/// between columns rather than a ragged right margin.
+///
+/// **One per cent, and the number came from being wrong.** At two per cent the
+/// first two-column page measured came out as one column: its gutter is 26
+/// pixels on a 1370-pixel page, which is 1.9%, and the boundary sat 1.4 pixels
+/// the wrong side of it. Nothing about the page was ambiguous — the two columns
+/// are 39% of the width each with a clean corridor between them — so the
+/// threshold was.
+///
+/// Smaller is the safe direction here, because the boxes being merged are whole
+/// detected regions and not lines: a region already spans its column, so two
+/// regions of one column overlap heavily, and a gap between them means a gutter.
+/// The error the other way — reading one column as two — is what the corpus is
+/// for, and it did not appear at this setting.
+const COLUMN_GUTTER: f32 = 0.01;
+
+/// How little of a page's height a strip has to cover before it is white.
+///
+/// Five per cent of a page is a hundred pixels of a two-thousand-pixel scan — a
+/// running head, a rule, a page number. Anything that is not a column.
+const COLUMN_FILL: f32 = 0.05;
 
 /// How much room between two lines of the same column before they are two
 /// cells rather than one wrapped one.
@@ -280,15 +305,44 @@ impl Detector {
     }
 
     fn load(&self) -> Result<Session, BackendError> {
-        let failed = |error: ort::Error| {
-            BackendError::Unavailable(format!(
-                "the structure model at {} could not be loaded: {error}",
-                self.model.display()
-            ))
-        };
+        // Offered rather than chosen. Whether this machine has a DirectML
+        // device is answered by handing one to ONNX Runtime and seeing what
+        // comes back, which is the same answer as inspecting the machine and a
+        // great deal less code — the design's rule about probing backends
+        // rather than detecting hardware.
+        //
+        // A machine without one is the ordinary case and not an error, so a
+        // build that fails there falls back to the processor rather than
+        // refusing to read the page. What it must not do is fall back
+        // *silently*: nothing downstream can tell which provider ran, which is
+        // the reason this is off by default rather than on.
+        #[cfg(feature = "directml")]
+        if let Ok(session) = self.build(true) {
+            return Ok(session);
+        }
 
-        let mut builder = Session::builder().map_err(failed)?;
-        builder.commit_from_file(&self.model).map_err(failed)
+        self.build(false).map_err(|error| self.failed(error))
+    }
+
+    #[cfg_attr(not(feature = "directml"), allow(unused_mut, unused_variables))]
+    fn build(&self, on_gpu: bool) -> ort::Result<Session> {
+        let mut builder = Session::builder()?;
+
+        #[cfg(feature = "directml")]
+        if on_gpu {
+            builder = builder.with_execution_providers([
+                ort::ep::DirectML::default().build().error_on_failure(),
+            ])?;
+        }
+
+        builder.commit_from_file(&self.model)
+    }
+
+    fn failed(&self, error: impl std::fmt::Display) -> BackendError {
+        BackendError::Unavailable(format!(
+            "the structure model at {} could not be loaded: {error}",
+            self.model.display()
+        ))
     }
 }
 
@@ -374,38 +428,199 @@ pub fn blocks_from(
         }
     }
 
-    // Ordered by the region's own box rather than by the words inside it, so
-    // that a short line hanging above its region cannot reorder two regions.
-    let mut ordered: Vec<(f32, f32, Block)> = Vec::new();
+    // Ordered by the piece of the page each came from and not by the words
+    // inside it, so that a short line hanging above its region cannot reorder
+    // two regions. A word the detector put nowhere is still a word on the page,
+    // so it goes through the same ordering as the rest.
+    let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
+    let mut blocks: Vec<Block> = Vec::new();
 
     for (region, indices) in regions.iter().zip(&held) {
         if let Some(block) = region_block(region, indices, &lines, width, height, engine) {
-            ordered.push((region.y0, region.x0, block));
+            boxes.push((region.x0, region.y0, region.x1, region.y1));
+            blocks.push(block);
         }
     }
 
-    // A word the detector put nowhere is still a word on the page, and it keeps
-    // its own place in the order by its own box.
     for index in loose {
-        let block = one_block(
+        blocks.push(one_block(
             BlockKind::Paragraph,
             std::slice::from_ref(&index),
             &lines,
             width,
             height,
             engine,
-        );
-        let (_, top, _, _) = extent(lines[index]);
-        ordered.push((top, left_of(lines[index]), block));
+        ));
+        boxes.push(extent(lines[index]));
     }
 
-    ordered.sort_by(|left, right| {
-        left.0
-            .total_cmp(&right.0)
-            .then(left.1.total_cmp(&right.1))
-    });
+    let mut waiting: Vec<Option<Block>> = blocks.into_iter().map(Some).collect();
 
-    ordered.into_iter().map(|(_, _, block)| block).collect()
+    page_order(&boxes, width as f32, height as f32)
+        .into_iter()
+        .filter_map(|index| waiting[index].take())
+        .collect()
+}
+
+/// The order a person reads a page in.
+///
+/// Top to bottom and then left to right is right for one column and wrong for
+/// two: on a two-column page it reads the left column's first line, the right
+/// column's first line, then the left column's second. **Measured on the corpus,
+/// the characters survive that and the meaning does not** — a Chinese exam
+/// paper scores 0.63 on content and 0.85 once order counts, and a Chinese
+/// newspaper 0.03 and 0.80. That gap is this function's whole reason.
+///
+/// So the page is cut into columns first and into bands second. Anything
+/// spanning the width — a title, an abstract, a full-width figure — separates
+/// the bands, and between two of them the columns are read one after another,
+/// which is what a person does with a paper or a newspaper.
+///
+/// The single-column case is answered by the same code it always was, to the
+/// comparison, so a page this cannot help is not a page it can hurt.
+fn page_order(boxes: &[(f32, f32, f32, f32)], page_width: f32, page_height: f32) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..boxes.len()).collect();
+
+    if boxes.len() < 2 {
+        return order;
+    }
+
+    let columns = page_columns(boxes, page_width, page_height);
+    if columns.len() < 2 {
+        order.sort_by(|left, right| upper_then_left(boxes, *left, *right));
+        return order;
+    }
+
+    let spanning = page_width * SPANNING;
+    let (mut wide, narrow): (Vec<usize>, Vec<usize>) = order
+        .into_iter()
+        .partition(|index| boxes[*index].2 - boxes[*index].0 >= spanning);
+
+    wide.sort_by(|left, right| boxes[*left].1.total_cmp(&boxes[*right].1));
+
+    let mut out = Vec::with_capacity(boxes.len());
+    let mut top = f32::NEG_INFINITY;
+
+    for band in wide {
+        columns_between(&mut out, &narrow, &columns, boxes, top, boxes[band].1);
+        out.push(band);
+        top = boxes[band].3;
+    }
+
+    columns_between(&mut out, &narrow, &columns, boxes, top, f32::INFINITY);
+
+    out
+}
+
+/// Appends the boxes whose middle falls between two bands, a column at a time.
+///
+/// The middle rather than the top, because a box that crosses a band boundary
+/// belongs to whichever side it is mostly on, and a top edge can be above a
+/// band without any of the box being in it.
+fn columns_between(
+    out: &mut Vec<usize>,
+    narrow: &[usize],
+    columns: &[(f32, f32)],
+    boxes: &[(f32, f32, f32, f32)],
+    from: f32,
+    to: f32,
+) {
+    for column in 0..columns.len() {
+        let mut inside: Vec<usize> = narrow
+            .iter()
+            .copied()
+            .filter(|index| {
+                let (x0, y0, x1, y1) = boxes[*index];
+                let middle = (y0 + y1) / 2.0;
+
+                middle >= from
+                    && middle < to
+                    && column_of((x0 + x1) / 2.0, columns) == column
+            })
+            .collect();
+
+        inside.sort_by(|left, right| boxes[*left].1.total_cmp(&boxes[*right].1));
+        out.extend(inside);
+    }
+}
+
+/// The vertical corridors of white that run the length of a page.
+///
+/// A corridor is measured, not inferred: the page is cut into narrow strips and
+/// each strip is asked **how much of the page's height is covered at this x**.
+/// A gutter is a run of strips that is almost entirely empty.
+///
+/// **The obvious way is to merge the boxes' horizontal spans and look at the
+/// gaps, and a real page shows why that is wrong.** On the first two-column page
+/// measured the columns are 39% of the width each with a clean 26-pixel corridor
+/// between them, and a **running head nineteen pixels tall** lying across the top
+/// of that corridor welded the two columns into one — the page is 2017 pixels
+/// tall and the head covers 0.9% of it. A box that crosses a gap is not evidence
+/// that the gap is filled, and counting spans cannot tell the two apart.
+fn page_columns(
+    boxes: &[(f32, f32, f32, f32)],
+    page_width: f32,
+    page_height: f32,
+) -> Vec<(f32, f32)> {
+    /// Thin enough that a gutter is several strips wide, few enough to be free.
+    const STRIPS: usize = 256;
+
+    let strip = page_width / STRIPS as f32;
+    if strip <= 0.0 || page_height <= 0.0 {
+        return vec![(0.0, page_width)];
+    }
+
+    let mut covered = [0.0f32; STRIPS];
+    for &(x0, y0, x1, y1) in boxes {
+        let tall = (y1 - y0).max(0.0);
+        if tall <= 0.0 || x1 <= x0 {
+            continue;
+        }
+
+        let first = (x0 / strip).floor().max(0.0) as usize;
+        let last = (x1 / strip).ceil().max(0.0) as usize;
+
+        for height in covered.iter_mut().take(last.min(STRIPS)).skip(first.min(STRIPS)) {
+            *height += tall;
+        }
+    }
+
+    let empty = page_height * COLUMN_FILL;
+    let mut columns: Vec<(f32, f32)> = Vec::new();
+
+    for (index, height) in covered.iter().enumerate() {
+        if *height <= empty {
+            continue;
+        }
+
+        let left = index as f32 * strip;
+
+        match columns.last_mut() {
+            // White inside a column is not a gutter when the column carries on
+            // the other side of it, which is what a paragraph break looks like.
+            Some(last) if left - last.1 < page_width * COLUMN_GUTTER => {
+                last.1 = left + strip;
+            }
+            _ => columns.push((left, left + strip)),
+        }
+    }
+
+    if columns.is_empty() {
+        vec![(0.0, page_width)]
+    } else {
+        columns
+    }
+}
+
+fn upper_then_left(
+    boxes: &[(f32, f32, f32, f32)],
+    left: usize,
+    right: usize,
+) -> std::cmp::Ordering {
+    boxes[left]
+        .1
+        .total_cmp(&boxes[right].1)
+        .then(boxes[left].0.total_cmp(&boxes[right].0))
 }
 
 /// Which region a recognised line belongs to.
@@ -1024,6 +1239,151 @@ mod tests {
         assert_eq!(found[0].text, "Annual Report");
     }
 
+    /// The failure the corpus measured and this function exists to fix.
+    ///
+    /// Two columns read top-to-bottom-then-left-to-right come out interleaved:
+    /// left one, right one, left two, right two. The characters are all there,
+    /// which is why the content score looks fine and the reading-order score
+    /// does not.
+    #[test]
+    fn a_two_column_page_is_read_a_column_at_a_time() {
+        let lines = [
+            line("left one", 100.0, 200.0, 400.0, 240.0),
+            line("right one", 600.0, 200.0, 900.0, 240.0),
+            line("left two", 100.0, 300.0, 400.0, 340.0),
+            line("right two", 600.0, 300.0, 900.0, 340.0),
+        ];
+        let regions = [
+            region(RegionKind::Text, 90.0, 190.0, 420.0, 350.0),
+            region(RegionKind::Text, 590.0, 190.0, 910.0, 350.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+        let texts: Vec<&str> = found.iter().map(|block| block.text.as_str()).collect();
+
+        assert_eq!(texts, vec!["left one\nleft two", "right one\nright two"]);
+    }
+
+    /// A title runs across both columns, so it comes first and the columns
+    /// below it are still read separately.
+    #[test]
+    fn a_full_width_title_precedes_the_columns_under_it() {
+        let lines = [
+            line("A Title Across The Page", 100.0, 100.0, 900.0, 140.0),
+            line("left one", 100.0, 300.0, 400.0, 340.0),
+            line("right one", 600.0, 300.0, 900.0, 340.0),
+            line("left two", 100.0, 400.0, 400.0, 440.0),
+            line("right two", 600.0, 400.0, 900.0, 440.0),
+        ];
+        let regions = [
+            region(RegionKind::Title, 90.0, 90.0, 910.0, 150.0),
+            region(RegionKind::Text, 90.0, 290.0, 420.0, 450.0),
+            region(RegionKind::Text, 590.0, 290.0, 910.0, 450.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+        let texts: Vec<&str> = found.iter().map(|block| block.text.as_str()).collect();
+
+        assert_eq!(
+            texts,
+            vec![
+                "A Title Across The Page",
+                "left one\nleft two",
+                "right one\nright two"
+            ]
+        );
+    }
+
+    /// Three columns, which is what a newspaper is and what the corpus scores
+    /// worst after the exam papers.
+    #[test]
+    fn a_three_column_page_is_read_left_to_right_a_column_at_a_time() {
+        let lines = [
+            line("a1", 100.0, 300.0, 300.0, 340.0),
+            line("b1", 500.0, 300.0, 700.0, 340.0),
+            line("c1", 900.0, 300.0, 1100.0, 340.0),
+            line("a2", 100.0, 400.0, 300.0, 440.0),
+            line("b2", 500.0, 400.0, 700.0, 440.0),
+            line("c2", 900.0, 400.0, 1100.0, 440.0),
+        ];
+        let regions = [
+            region(RegionKind::Text, 90.0, 290.0, 320.0, 450.0),
+            region(RegionKind::Text, 490.0, 290.0, 720.0, 450.0),
+            region(RegionKind::Text, 890.0, 290.0, 1120.0, 450.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+        let texts: Vec<&str> = found.iter().map(|block| block.text.as_str()).collect();
+
+        assert_eq!(texts, vec!["a1\na2", "b1\nb2", "c1\nc2"]);
+    }
+
+    /// The case that must not regress: one column is read exactly as it was,
+    /// and a page this cannot help must not be a page it can hurt.
+    #[test]
+    fn a_one_column_page_is_read_in_the_same_order_as_before() {
+        let lines = [
+            line("second", 100.0, 400.0, 700.0, 440.0),
+            line("first", 100.0, 300.0, 700.0, 340.0),
+            line("third", 100.0, 500.0, 700.0, 540.0),
+        ];
+        let regions = [
+            region(RegionKind::Text, 90.0, 390.0, 710.0, 450.0),
+            region(RegionKind::Text, 90.0, 290.0, 710.0, 350.0),
+            region(RegionKind::Text, 90.0, 490.0, 710.0, 550.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+        let texts: Vec<&str> = found.iter().map(|block| block.text.as_str()).collect();
+
+        assert_eq!(texts, vec!["first", "second", "third"]);
+    }
+
+    /// A ragged right margin is not a column boundary.
+    #[test]
+    fn a_short_line_does_not_start_a_column_of_its_own() {
+        let lines = [
+            line("a full line of text here", 100.0, 300.0, 900.0, 340.0),
+            line("short", 100.0, 400.0, 300.0, 440.0),
+        ];
+        let regions = [
+            region(RegionKind::Text, 90.0, 290.0, 910.0, 350.0),
+            region(RegionKind::Text, 90.0, 390.0, 310.0, 450.0),
+        ];
+
+        let found = blocks(&lines, &regions);
+        let texts: Vec<&str> = found.iter().map(|block| block.text.as_str()).collect();
+
+        assert_eq!(texts, vec!["a full line of text here", "short"]);
+    }
+
+    /// A real two-column page from the corpus, with the boxes the detector
+    /// actually returned for it. Kept because the synthetic tests all passed
+    /// while this page was still being read as one column.
+    #[test]
+    fn a_real_two_column_page_splits_into_two() {
+        let boxes: Vec<(f32, f32, f32, f32)> = vec![
+            (683.8, 213.0, 1221.9, 1736.0),
+            (126.1, 211.2, 657.4, 716.3),
+            (120.2, 1650.1, 657.5, 1788.0),
+            (127.1, 1025.7, 654.1, 1444.1),
+            (121.5, 747.4, 658.0, 880.3),
+            (120.1, 1473.5, 658.0, 1583.1),
+            (685.4, 1734.8, 1221.6, 1788.4),
+            (529.0, 163.2, 859.4, 181.9),
+            (125.1, 160.2, 168.4, 181.2),
+            (471.6, 1541.0, 573.3, 1561.5),
+            (260.6, 836.8, 360.1, 857.6),
+            (790.2, 1181.5, 920.5, 1207.7),
+            (528.9, 814.2, 625.2, 835.3),
+            (689.2, 1155.0, 741.6, 1180.3),
+        ];
+
+        let columns = page_columns(&boxes, 1370.0, 2017.0);
+
+        assert_eq!(columns.len(), 2, "the page has two columns: {columns:?}");
+    }
+
     #[test]
     fn blocks_come_back_top_to_bottom() {
         let lines = [
@@ -1378,6 +1738,42 @@ mod tests {
     /// the session loads, that the three inputs are the right three, and that
     /// the boxes come back in the coordinates of the page rather than of the
     /// square the model was fed.
+    /// Times the detector through this crate's own code path.
+    ///
+    /// A measurement rather than a test: it asserts nothing and its number
+    /// depends on the machine. It exists because "the provider is configured"
+    /// and "the provider is running the model" are different claims, and only a
+    /// clock tells them apart — with the `directml` feature this prints 77 ms
+    /// against 451 without it, on an RTX 3060.
+    #[test]
+    #[ignore = "a measurement, not a test"]
+    fn times_the_detector() {
+        assert!(
+            available(),
+            "no model at {}; run `docfusion doctor --fetch` first",
+            model_path().display()
+        );
+
+        let page = image::RgbImage::from_pixel(1700, 2200, image::Rgb([255, 255, 255]));
+        let detector = Detector::new(model_path());
+
+        // Once to load, then measured, because the first run pays for a session
+        // build that no later page ever pays again.
+        let loaded = std::time::Instant::now();
+        detector.detect(&page).expect("detect");
+        eprintln!("first run, session and all: {:?}", loaded.elapsed());
+
+        let started = std::time::Instant::now();
+        let runs = 10;
+        for _ in 0..runs {
+            detector.detect(&page).expect("detect");
+        }
+        eprintln!(
+            "{} ms a page over {runs} runs",
+            started.elapsed().as_millis() as f64 / runs as f64
+        );
+    }
+
     #[test]
     #[ignore = "needs the structure model downloaded"]
     fn reads_structure_from_a_rendered_page() {

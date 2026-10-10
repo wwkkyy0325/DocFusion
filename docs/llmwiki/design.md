@@ -450,10 +450,47 @@ inside it.
 - **A region that cannot become the kind it claims becomes a paragraph.** A
   `Table` with no rows renders as nothing, so this is a data-loss question and
   not a cosmetic one.
+- **Reading order is column-aware.** The page is cut into vertical corridors by
+  measuring how much of its *height* is covered at each x, then into bands by
+  anything spanning the width; between two bands the columns are read one after
+  another. The single-column case runs the same comparison it always did, so a
+  page this cannot help is not a page it can hurt. Measured, this is worth more
+  than the layout model was: reading-order error 0.419 → **0.360** on the
+  corpus, and 0.523 → 0.145 on the first two-column page.
+- **Dense mosaic pages are not solved.** A newspaper has no corridor — its
+  coverage runs 65–98% of the height at every x, because whatever is not in a
+  column at one height is in one at another. Reading those needs **article
+  segmentation**, which is a different problem from column detection and is not
+  attempted.
 
 Off by default, absent on most installations, and costing one 124 MB digest and
 one session load per process when present — about a second, against the seconds
 the recogniser spends on the same page.
+
+### 8.1c Execution providers — the GPU is available and mostly does not help
+
+A `directml` feature exists, is off by default, and the measurement is why.
+
+- **DirectML, not CUDA.** DirectML ships with Windows, is vendor-neutral across
+  NVIDIA, AMD and Intel, and needs nothing installed. CUDA needs cuDNN alongside
+  the toolkit, which is the "install something first" this project does not ask
+  of anybody. The vendor-neutral interface being slower than the vendor one is
+  not the point when the other one cannot be used at all.
+- **Offered, not chosen.** Whether a machine has a device is answered by handing
+  ONNX Runtime one and seeing what comes back, rather than by inspecting the
+  hardware — the same rule as probing a backend instead of detecting a GPU.
+  A machine without one falls back to the processor; a silent fallback is why
+  this is not the default, since nothing downstream can tell which ran.
+- **The models run 5–6× faster and a page runs 9% faster.** A page is mostly PNG
+  decoding, contour finding, line joining and process start — none of which a
+  graphics card touches. See the changelog for the table.
+- **On a single page it is a net loss**, because a DirectML session costs about
+  two seconds to build the first time.
+
+**If it is ever made the default, the provider joins the engine's name.** The
+output was byte-identical in every measurement here, but the detector's
+probability map differs in the fifth decimal and a threshold is where that can
+flip. The name is the cache key, so it has to be.
 
 ### 8.2 The vision backend is the user's endpoint, not ours
 
@@ -504,6 +541,37 @@ Models turn over every few months; a document can be updated in a paragraph.
 > property dual verification wants most), OvisOCR2 (0.8B), dots.ocr (1.7B).
 > `docfusion bench` exists so this can be settled on the user's own documents
 > rather than on a leaderboard.
+
+**One candidate has since been measured, and the measurement is a "no" for
+now.** PaddleOCR-VL, run in-process on ONNX Runtime through the reference
+implementation: **DirectML cannot execute it at all** — all three graphs load and
+none runs, failing on the dynamic `Reshape` nodes a KV-cached transformer is
+made of — and on the processor the int8 export **degenerated into a token loop
+on the table in three runs out of three**, at 247–273 s a page against the local
+engine's 1.6.
+
+**The page was the easy case, and that limits what it settles.** A ruled table
+of printed text is what this project already reads correctly; the VLM's reason
+to exist is the hard page, and no hard page was available to test. The result
+rules out this model at this quantization, not the class. See the changelog.
+
+**What it does establish about the shape of the answer:** a 0.9B VLM on this
+hardware is on the order of minutes per page, not seconds, so it can only ever
+be a path taken for pages the cheap engine is unsure of — never the default.
+And it must not be run through DirectML at all.
+
+> **Decision: a local VLM is not pursued.** Taken after the measurement above.
+> The tool reads pages with the recognition engine and the layout model, and
+> where those are not enough the user points it at an endpoint they choose —
+> which remains one URL and a key, and remains the only way a model joins in.
+> The 1.19 GB, the week of a hand-written KV-cached decode loop, and the two
+> reported failure modes were weighed against a measured 155× slowdown and a
+> table that came out wrong three times in four, and the answer was no.
+>
+> **This is a decision about the local path, not about models.** Nothing here
+> says a vision model is a bad idea; the whole dual-verification design rests
+> on one being there. It says that shipping one inside this binary is not worth
+> what it costs today.
 
 ### 8.3 Cloud is the same client
 

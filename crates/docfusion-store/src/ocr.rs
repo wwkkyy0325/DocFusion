@@ -32,7 +32,15 @@ use rapidocr_core::types::{OcrLine, OcrOutput};
 use crate::structure;
 
 const ENGINE_ID: &str = "rapidocr";
-const ENGINE_VERSION: &str = "1.0.0";
+
+/// Raised from 1.0.0 when the page's reading order stopped being top-to-bottom.
+///
+/// The version is half the engine's identity and the identity is the cache key,
+/// so a page read before that change is not the page this build would produce
+/// and has to be read again. Raised for the whole engine rather than only for
+/// the layout-aware one, which re-reads more than it has to and cannot serve a
+/// page it should not.
+const ENGINE_VERSION: &str = "1.1.0";
 
 /// What this engine calls itself when the structure model is here as well.
 ///
@@ -190,7 +198,8 @@ impl RapidOcrBackend {
     }
 
     fn build(&self) -> Result<RapidOcr, BackendError> {
-        let config = match &self.source {
+        #[cfg_attr(not(feature = "directml"), allow(unused_mut))]
+        let mut config = match &self.source {
             Source::Config(config) => (**config).clone(),
             Source::Bundled => {
                 let directory = ensure_models_on_disk()?;
@@ -201,6 +210,22 @@ impl RapidOcrBackend {
                 rapidocr_core::model::ModelCache::new(directory).config_for(model_set)
             }
         };
+
+        // Offered rather than chosen, and falling back rather than failing: a
+        // machine with no DirectML device is the ordinary case, and refusing to
+        // read a page because the graphics card could not be borrowed would be
+        // the worst possible answer to it.
+        #[cfg(feature = "directml")]
+        {
+            config.inference.execution_provider =
+                rapidocr_core::config::ExecutionProvider::DirectMl;
+
+            if let Ok(ocr) = RapidOcr::new(config.clone()) {
+                return Ok(ocr);
+            }
+
+            config.inference.execution_provider = rapidocr_core::config::ExecutionProvider::Cpu;
+        }
 
         // One page is one unit of work, and widening a single inference does
         // not help: the recogniser runs once per detected line on a crop too
