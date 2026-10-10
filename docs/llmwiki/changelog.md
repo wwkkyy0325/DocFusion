@@ -4,6 +4,36 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — A space in a Chinese line that is not there
+
+**What:** Joining two lines put a space between them, and a break in a Chinese
+line is where the column ran out. Measured: headings **27 of 64 to 32 of 64**,
+mean loss 0.298 to **0.292**. 082 goes from 3 of 10 to 7 of 10.
+
+**Why it was worth a number of its own:** on that page, five of ten headings
+were missed for this and nothing else — the words were right and the space
+between them was not, and no amount of reading better would have found them.
+`洛阳市抗旱从种子抓起` was being written `洛阳市抗旱 从种子抓起`.
+
+**The rule was already in the project.** A PDF hands its text over in pieces
+and the pieces need the same decision, so `needs_space` and `is_cjk` existed —
+privately, in the PDF reader. They are now in `text` and used by both. A space
+belongs between two Latin words and not between two Chinese ones, and this was
+the second time the question came up; the answer is kept rather than decided
+again.
+
+**And the same fault in prose, which the corpus cannot see.** A paragraph keeps
+the line breaks the page had, and Markdown turns a newline inside a paragraph
+into a space when it is rendered — so a Chinese paragraph reaches the window
+with a space at every place the column ran out. Rendered and looked at rather
+than reasoned about: the HTML is one `<p>` with the newline still in it. A
+break between two Latin words is left alone, because there it *is* a space. The
+corpus does not move at all — 0.292, 32 of 64, 10 of 10 — because the scorer
+builds its text from text nodes and a soft break is not one. This one is here
+because the words in the window were wrong, not because a number moved.
+
+---
+
 ## 2026-10-10 — One heading region, one heading or two
 
 **What:** A layout region holding two lines of text is split into two headings
