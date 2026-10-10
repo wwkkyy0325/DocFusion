@@ -97,15 +97,16 @@ const TEXT = {
     endpoint_needed: "A model needs an endpoint to be reached through.",
 
     local_label: "Models on this machine",
+    local_name: "The local reading set",
     local_hint:
-      "A part of this app, not of the endpoint above: no address, no key, nothing sent anywhere. The table model is what reads a table as a table rather than as a run of loose numbers.",
-    local_ready: "Both are here. Pages are read into headings, tables and text.",
-    local_missing: (mb) =>
-      `Not downloaded — about ${mb} MB. Until then a table comes out as plain text.`,
+      "Runs here, not at the endpoint above: no address, no key, nothing sent anywhere. It reads the words on a page, finds the regions of it, and reads the cells of a table as cells rather than as a run of loose numbers. Without it a page that is a picture cannot be read at all.",
+    local_installed: "Installed",
+    local_need: (mb) => `Needs ${mb} MB`,
     local_get: "Download",
     local_stop: "Stop",
     local_fetching: "Downloading…",
-    local_progress: (file, percent) => `Downloading ${file}… ${percent}%`,
+    local_progress: (received, total, percent) =>
+      `${received} MB / ${total} MB · ${percent}%`,
     local_failed: "The download failed:",
     local_stopped: "Stopped. What arrived is kept, and the rest resumes where it left off.",
 
@@ -134,6 +135,8 @@ const TEXT = {
       missing: "That document is no longer in the knowledge base.",
       settings: "The settings file could not be used.",
       "nothing-to-read": "It was read, and there was nothing in it.",
+      download:
+        "The models this app reads pages with are not here, or could not be downloaded. Open Settings — Models on this machine, and download them.",
       unknown: "Something went wrong.",
     },
   },
@@ -219,15 +222,16 @@ const TEXT = {
     endpoint_needed: "填了模型就要填端点，否则连不上。",
 
     local_label: "本机模型",
+    local_name: "本机识别模型",
     local_hint:
-      "这两个模型跑在本机，属于这个应用而不是上面的端点：不需要地址，不需要密钥，也不会把页面发到任何地方。其中表格模型决定一张表读成表格，还是一堆散落的数字。",
-    local_ready: "两个都装好了。页面会按标题、表格和文字读出来。",
-    local_missing: (mb) =>
-      `还没下载，约 ${mb} MB。在装好之前，表格只会读成纯文字。`,
+      "跑在这台机器上，不是上面的端点：没有地址，没有密钥，也不会把页面发到任何地方。它读出页面上的字，找出页面的版面，再把表格的格子当格子读，而不是当一堆散落的数字。少了它，一整页都是图片的文字就读不出来。",
+    local_installed: "已安装",
+    local_need: (mb) => `需要下载 ${mb} MB`,
     local_get: "下载",
     local_stop: "停止",
     local_fetching: "正在下载…",
-    local_progress: (file, percent) => `正在下载 ${file}… ${percent}%`,
+    local_progress: (received, total, percent) =>
+      `${received} MB / ${total} MB · ${percent}%`,
     local_failed: "下载失败：",
     local_stopped: "已停止。已经下到的部分会留着，下次从断的地方接着下。",
 
@@ -256,6 +260,8 @@ const TEXT = {
       missing: "这个文档已经不在知识库里了。",
       settings: "设置文件用不了。",
       "nothing-to-read": "读出来了，但里面是空的。",
+      download:
+        "本机模型还没装好，或者没下载成功。到「设置 — 本机模型」把它下载下来。",
       unknown: "出错了。",
     },
   },
@@ -402,6 +408,7 @@ function applyLang() {
     ["fetch-models", words.fetch_models],
     ["set-about", words.settings_about],
     ["lbl-local", words.local_label],
+    ["local-name", words.local_name],
     ["local-hint", words.local_hint],
     ["get-local", words.local_get],
     ["stop-local", words.local_stop],
@@ -916,39 +923,64 @@ function drawEnabled() {
   el("model-fields").dataset.off = on ? "no" : "yes";
 }
 
-/// The two models that run in this process, and what is missing.
+/// The set that runs in this process, and how much of it is here.
 ///
 /// Read from the view rather than kept here, like everything else, and the
 /// other side throws its own copy away when a fetch finishes — so this is what
 /// turns a finished download from "still offered" into "installed".
 function drawLocal(local) {
   const here = local ?? {};
+  const total = here.total_bytes ?? 0;
 
-  // Either one missing is enough to say so. The layout model is the larger
-  // download and the one that finds the table at all, the table model is what
-  // reads the cells of it, and a table found but not read is no better on the
-  // page than one never found.
-  const missing = !here.structure || !here.tables;
+  el("local-size").textContent = `${megabytes(total)} MB`;
 
-  el("get-local").hidden = Boolean(here.fetching) || !missing;
-  el("stop-local").hidden = !here.fetching;
+  // One of three faces, and the button belongs to two of them. The bar belongs
+  // to the fetch and to nothing else: a bar that is always there and always
+  // full is a bar nobody reads.
+  const running = Boolean(here.fetching);
+  const installed = Boolean(here.ready) && !running;
 
-  if (!missing) return void (el("local-state").textContent = t().local_ready);
-  if (here.fetching) return void (el("local-state").textContent = t().local_fetching);
+  el("local-card").dataset.state = installed ? "ready" : running ? "busy" : "absent";
+  el("local-bar").hidden = !running;
+  el("get-local").hidden = running || installed;
+  el("stop-local").hidden = !running;
 
-  el("local-state").textContent = t().local_missing(megabytes(here.needed_bytes ?? 0));
+  if (installed) return void (el("local-state").textContent = t().local_installed);
+  if (!running) {
+    return void (el("local-state").textContent = t().local_need(
+      megabytes(here.needed_bytes ?? 0),
+    ));
+  }
+
+  // What is already here, rather than zero. The fetch resumes rather than
+  // restarts, so a bar that began at nothing would be telling somebody their
+  // half-downloaded set was gone.
+  el("local-fill").style.width = `${percent({
+    received: total - (here.needed_bytes ?? 0),
+    total,
+  })}%`;
+
+  el("local-state").textContent = t().local_fetching;
 }
 
 /// A fetch saying how far it has got.
 ///
-/// The percentage goes on the same line the fetch ends on, so there is one
-/// sentence about the state rather than two that can disagree.
+/// The count goes on the same line the fetch ends on, so there is one sentence
+/// about the state rather than two that can disagree.
 function drawLocalProgress(progress) {
   if (!progress?.total) return;
 
-  const percent = Math.round((progress.received / progress.total) * 100);
-  el("local-state").textContent = t().local_progress(fileLabel(progress.file), percent);
+  el("local-fill").style.width = `${percent(progress)}%`;
+  el("local-state").textContent = t().local_progress(
+    megabytes(progress.received),
+    megabytes(progress.total),
+    percent(progress),
+  );
 }
+
+/// How far along a fetch is, as a whole number of percent.
+const percent = ({ received = 0, total = 0 } = {}) =>
+  total > 0 ? Math.round((received / total) * 100) : 0;
 
 /// Whole megabytes, rounded up.
 ///

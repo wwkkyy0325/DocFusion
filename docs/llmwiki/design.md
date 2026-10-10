@@ -409,39 +409,52 @@ that always says "broken" is not one either.
 **This engine reports geometry and confidence**, unlike a general vision model,
 which is what qualifies it to be the verifier in §6.1.
 
-**The weights are embedded in the binary.** They are fetched and digest-verified
-at build time and `include_bytes!`d, then written to a per-user location on the
-first page that needs them. That makes "works with no setup" true in the strong
-sense — offline from install, nothing to configure, nothing to download at run
-time — and it is affordable precisely because the set measured small.
+**The weights are downloaded, not embedded.** They were compiled in by
+`build.rs` until the set was made one thing; they are now four of the six files
+in `docfusion_store::models`' one catalogue and arrive with the other two on
+request — from the window's settings tab, or `docfusion doctor --fetch`. That
+gave up the strong form of "works with no setup": a fresh installation reads no
+image and no scanned PDF until 138 MB has arrived, and the command line is no
+different.
+
+What it bought is one set in one place. The embedded weights were a second
+directory models lived in, a second set of digests to keep in step with
+upstream, a `build.rs` that needed the network to compile, and a settings tab
+that could describe only half of what it was talking about. The trade was put to
+the project's owner and taken: one set, maintained once.
 
 Two details that only matter because they were measured rather than assumed:
 
 - **Extraction is lazy.** Loading the weights takes seconds; `list`, `show` and
   `schema` never read a page and so must not pay for a pipeline they do not use.
-- **The pins live in two places** — the build script and `rapidocr-core` —
-  because a build script cannot depend on the crate it is embedding for. A test
-  compares them, so an upstream update fails loudly instead of silently
-  embedding weights the crate no longer expects.
+  The same laziness is what keeps a fresh install usable for the formats that
+  need no models — nothing asks whether they are on disk until a page needs
+  reading.
+- **The pins live in two places** — the catalogue and `rapidocr-core` — because
+  neither can ask the other at compile time. A test compares them, so an
+  upstream update fails loudly instead of silently downloading weights the crate
+  no longer expects.
 
-### 8.1b Structure on the page — PP-DocLayout_plus-L, fetched and not embedded
+### 8.1b Structure on the page — PP-DocLayout_plus-L, and the rest of the set
 
 The recogniser finds boxes and reads them. It does not know what a table is,
 which is why the local engine scored 0 of 64 headings and 0 of 9 tables. The
-second model closes that, and it is the one thing this tool needs that is not
-inside it.
+second model closes that.
 
-- **124 MB, downloaded on request** — from the window's settings tab, or
-  `docfusion doctor --fetch`. The line is *can* against *nice*: 6.9 MB of
-  recognition weights are embedded because they are the promise (a scan is
-  readable with no setup, offline), and moving that promise behind a download
-  would cost all of it to save 6.9 MB. This model is an improvement, and every
-  page reads without it.
-- **A model that is not here is silent about it.** The engine drops it and calls
-  itself `rapidocr`, which is the whole of what the front matter says. That is
-  how a run through the window produced plain text with no table for a week
-  while the corpus measurements, taken under a home that had the models, said 7
-  of 9. The window now says which of the two are here; nothing else changed.
+- **One set of six files, 138 MB, downloaded on request** — from the window's
+  settings tab, or `docfusion doctor --fetch`. Four are the recogniser's, which
+  nothing reads a page without; two are improvements. They arrive together
+  because one set is easier to describe, to verify and to test than two, not
+  because they are alike.
+- **A model that is not here is named.** `RapidOcrBackend::build` refuses with
+  the files that are missing, and the window draws that as a download with a
+  button beside it rather than as an engine that failed. That distinction is
+  carried as a type — `ExtractError::Unavailable` against `ExtractError::Failed`
+  — because a window that matched on the wording of an error would be broken by
+  the next edit to it. Before this, a missing model was silent: the engine
+  dropped it and called itself `rapidocr`, which is how a run through the window
+  produced plain text with no table for a week while the corpus measurements,
+  taken under a home that had the models, said 7 of 9.
 - **Twenty classes, seven kinds.** The whole of the judgement about a page is
   one table in `structure.rs`. See the changelog for what is deliberately in it
   and what is deliberately not.
@@ -590,7 +603,7 @@ to make and starts being a configuration value.
 
 | Configured | What happens |
 |---|---|
-| Nothing | OCR only. Every deterministic format still works, and scans are read by the local OCR engine — so the tool is useful with no setup at all. |
+| Nothing | Every deterministic format still works, and scans are read by the local OCR engine once its models are here. |
 | An endpoint | The vision backend joins, and dual verification becomes possible in the shape §6.1 describes. |
 
 **Setup is a document, not a feature.** A guide for the user — or, more to the
@@ -1133,10 +1146,15 @@ backend.
 
 ### 11.2 Settings
 
-A third tab, three fields, one button: endpoint, model, key. It exists so that
-pointing the tool at a model does not mean opening a TOML file — which is what
-it meant until now, and is why the endpoint was configured once and never
-changed.
+A third tab: four fields, a switch, a test button, and a card for the models
+that run on this machine. It exists so that pointing the tool at a model does
+not mean opening a TOML file — which is what it meant until now, and is why the
+endpoint was configured once and never changed.
+
+The tab holds exactly two subjects, and the separation is drawn in the markup:
+**a model at the other end of a network**, with an address and a key, and **the
+set of files on this disk**, which has neither. The switch belongs to the first
+and does not grey out the second.
 
 **It writes the same file the command line reads** (§10.2). A settings page with
 its own store would be two answers to one question, and the one that loses is
@@ -1170,7 +1188,7 @@ this*, not *delete it*; deleting a key is what clearing the endpoint is for.
 **Turning the model off is clearing the endpoint.** `endpoint` and `model` are
 set together or not at all, since one endpoint may serve several models and
 guessing would silently read documents with whatever it happened to be serving.
-Clearing both puts the tool back on the bundled engine, and the key that stays
+Clearing both puts the tool back on the local engine, and the key that stays
 behind in the file does nothing.
 
 **Saved and working are different questions, and both are answered.** Saving is
@@ -1304,6 +1322,33 @@ it (measured — DeepSeek ignores an invented one), and a strict provider reject
 an unrecognised argument outright. Turning the switch on sends no field at all
 rather than a different one, which is the only version of "off" a provider that
 has never heard of it can accept.
+
+**The local models are one card, not a list.** Six files, 138 MB, and what they
+do is one thing: read a page into headings, tables and text. A list underneath
+would be six things to add up before answering the only question somebody came
+with, which is whether to press the button — so the card carries the name, one
+sentence about what it is for, the total, and a state line.
+
+The state line is one of `needed · Download`, a progress bar with
+`38 MB / 138 MB · 26% · Stop`, `Installed`, or the reason it failed with the
+button back. The bar appears only while a fetch is running; a bar that is always
+there and always full is a bar nobody reads. Its first frame is filled to what
+is already on disk rather than to nothing, because the fetch resumes rather than
+restarts and a bar beginning at zero would say the half-downloaded set was gone.
+
+**Progress is the set's, not the file's.** Six files each running from zero to
+a hundred would look like six downloads and would make the bar fall back five
+times. The backend adds up what is behind the file being fetched and reports one
+number that only goes up. Verse, whose downloader this one is modelled on,
+reports per file and computes the total in the app layer for the same reason.
+
+**A model that is not here is a download, not a bug.** `Cause::Download` covers
+both halves — the fetch was never asked for, and the fetch was asked for and
+failed — because from where the reader is standing they are one thing, and the
+sentence points at this tab. The same cause comes out of a document that would
+not read because the weights are missing: `ExtractError::Unavailable`, which the
+recognition engine raises and the vision backend does not, so "go and download
+it" is never said about an address that did not answer.
 
 ### 11.3 Language
 

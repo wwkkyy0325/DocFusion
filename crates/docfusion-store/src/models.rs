@@ -1,16 +1,29 @@
-//! The model that finds structure on a page, and fetching it.
+//! The models this tool reads a page with, and fetching them.
 //!
-//! This is the one thing the tool needs that is not inside it. `build.rs`
-//! embeds the recognition weights — 6.9 MB — because they are a promise: a scan
-//! is readable with no setup and with no network. What this module fetches is
-//! 124 MB of layout detector, which is an improvement rather than a capability:
-//! the tool reads every page it ever read without it, and finds no headings,
-//! tables, headers or footers, which is what the recognition engine is.
+//! **One set.** Six files, 144 MB, listed below and nowhere else, and none of
+//! them inside the binary. That last part is the trade this module made: the
+//! recognition weights used to be compiled in by `build.rs`, which made a fresh
+//! installation read a scan with no network at all — at the price of a second
+//! directory models live in, a second set of digests to keep in step with
+//! upstream, and a settings tab that could only describe half of what it was
+//! talking about. An installation is now either complete or it has nothing, and
+//! the file that says what "complete" means is this one.
+//!
+//! What was given up is worth stating plainly, because four comments in this
+//! tree used to promise it: a fresh install reads no image and no scanned PDF
+//! until 144 MB has arrived, and the command line is no different from the
+//! window in that respect.
+//!
+//! The two halves of the set are not equal. The recognition weights are 7 MB
+//! and are not optional — without them a page of text that is a picture cannot
+//! be read at all. The layout detector is 124 MB and is an improvement rather
+//! than a capability: the tool reads every page it ever read without it, and
+//! finds no headings, tables, headers or footers. They arrive together because
+//! one set is easier to describe, to verify and to test than two — not because
+//! they are alike.
 //!
 //! **Nothing here runs on its own.** A download happens because somebody asked
-//! for one. There is no fetch at startup and no refresh in the background, so
-//! an installation that never needs structure detection never pays 124 MB for
-//! it — and one that does pays once.
+//! for one. There is no fetch at startup and no refresh in the background.
 //!
 //! The shape of this follows the same decisions as the model downloader in the
 //! Verse project: a state a caller can watch, resume rather than restart,
@@ -29,10 +42,15 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-/// The model, and everywhere it can be had.
+/// One model file, and everywhere it can be had.
 pub struct Spec {
     /// Stable identifier, for anything that has to name it.
     pub id: &'static str,
+    /// Where it goes under the root, as a path rather than a name.
+    ///
+    /// Four of the six sit in a directory of their own, because `rapidocr`
+    /// looks for the recogniser's weights in one directory named after the
+    /// model set and there is no way to tell it otherwise.
     pub file: &'static str,
     /// The size it must be. Used to refuse a download there is no room for,
     /// before anything is written.
@@ -45,6 +63,81 @@ pub struct Spec {
     /// — a mirror having a bad hour should not be the end of it.
     pub mirrors: &'static [&'static str],
 }
+
+/// The four the recogniser reads a page with: where the lines are, which way up
+/// they are, what they say, and the characters they may say it with.
+///
+/// They were embedded in the binary until this change and are now fetched like
+/// everything else, which is why their digests are pinned twice — here and in
+/// `rapidocr-core` — and held together by a test. The crate cannot import this
+/// module and this module cannot ask the crate at compile time, so the two
+/// lists are compared at test time instead; an upstream update then fails loudly
+/// rather than leaving a downloader fetching weights the pipeline no longer
+/// expects. The filenames, URLs and digests below are the crate's, copied.
+///
+/// They land in a directory named for the model set, because that is where the
+/// crate looks for them. One mirror each, where the two large models below get
+/// two apiece: these are 7 MB in total, so a mirror having a bad hour costs a
+/// retry and not a wait, and inventing a second URL for them would be inventing
+/// a URL.
+///
+/// Apache 2.0, like the rest of PaddleOCR.
+pub const DETECTION: Spec = Spec {
+    id: "pp-ocrv6-det-tiny",
+    file: "ppocrv6-tiny/PP-OCRv6_det_tiny.onnx",
+    bytes: 1_829_618,
+    sha256: "f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5",
+    mirrors: &[
+        "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.0/onnx/PP-OCRv6/det/PP-OCRv6_det_tiny.onnx",
+    ],
+};
+
+/// What the lines the detector found actually say.
+///
+/// Tiny rather than small or medium. Both were measured on the corpus and
+/// neither was kept: small read nine cases better and four worse, medium read
+/// four of nine worse than tiny and took twice as long. See the changelog entry
+/// for the run, because "we could not measure a difference worth 139 MB" is a
+/// decision somebody will otherwise make again.
+pub const RECOGNITION: Spec = Spec {
+    id: "pp-ocrv6-rec-tiny",
+    file: "ppocrv6-tiny/PP-OCRv6_rec_tiny.onnx",
+    bytes: 4_489_813,
+    sha256: "e16e242de5937ad92609223f19bc2aff3727ee40b095f996907c24749bad251b",
+    mirrors: &[
+        "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_tiny.onnx",
+    ],
+};
+
+/// Which way up a line is, before anything tries to read it.
+///
+/// Shared across every model set upstream ships, and required by all of them:
+/// the pipeline classifies direction before it recognises. So this one is not a
+/// choice and has no alternatives to weigh.
+pub const CLASSIFIER: Spec = Spec {
+    id: "ppocr-mobile-cls",
+    file: "ppocrv6-tiny/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    bytes: 585_532,
+    sha256: "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c",
+    mirrors: &[
+        "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.0/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    ],
+};
+
+/// The characters the recogniser may choose from, one per line.
+///
+/// Twenty-seven kilobytes, and without it the recogniser answers with indices
+/// into a list nobody has. Pinned to `master` rather than a tag because this is
+/// where upstream keeps the tiny dictionary — there is no release of it.
+pub const DICTIONARY: Spec = Spec {
+    id: "ppocrv6-tiny-dict",
+    file: "ppocrv6-tiny/ppocrv6_tiny_dict.txt",
+    bytes: 27_156,
+    sha256: "c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd",
+    mirrors: &[
+        "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/paddle/PP-OCRv6/rec/PP-OCRv6_rec_tiny/ppocrv6_tiny_dict.txt",
+    ],
+};
 
 /// PaddleOCR's layout detector, large.
 ///
@@ -89,6 +182,39 @@ pub const TABLE: Spec = Spec {
         "https://huggingface.co/PaddlePaddle/SLANet_plus_onnx/resolve/main/inference.onnx",
     ],
 };
+
+/// The set: everything this tool reads a page with, in the order it arrives.
+///
+/// This is the list. Nothing else in the tree decides which models there are —
+/// a download walks it, `doctor` counts it, and the window draws it as one
+/// thing, because one set is the point of the change this list came from.
+///
+/// Ordered smallest first, which is the order to fetch in rather than the order
+/// to think about them in. A mirror that is going to fail should fail on the
+/// 27 KB file rather than after 124 MB has been spent on its neighbour.
+///
+/// The four recognition files must be here for a page of text that is a picture
+/// to be read at all. `STRUCTURE` and `TABLE` are improvements on that, and the
+/// engine is built without them when they are absent — see `ocr::local`.
+pub const SET: &[&Spec] = &[
+    &DICTIONARY,
+    &CLASSIFIER,
+    &DETECTION,
+    &RECOGNITION,
+    &TABLE,
+    &STRUCTURE,
+];
+
+/// The four that have to be here for a scan to be read at all.
+pub const RECOGNITION_SET: &[&Spec] = &[&DICTIONARY, &CLASSIFIER, &DETECTION, &RECOGNITION];
+
+/// The directory those four sit in.
+///
+/// Two things have to agree on this and neither can be computed from the other:
+/// the paths above, which is where the downloader writes, and the name
+/// `rapidocr` is asked for the model set by, which is where the pipeline reads.
+/// A test holds them together.
+pub const RECOGNITION_DIR: &str = "ppocrv6-tiny";
 
 /// How long a mirror has to answer before the next one is tried.
 ///
@@ -175,12 +301,22 @@ pub enum Outcome {
     Cancelled,
 }
 
-/// Where models that are not inside the binary live.
+/// Where every model in the set goes.
 ///
-/// The same directory `build.rs` caches the embedded weights in, so that "where
-/// does DocFusion put models" has one answer rather than two.
+/// One directory, and the only answer to "where does DocFusion put models"
+/// there is. It used to be two — this one for the layout and table models, and
+/// `DOCFUSION_MODEL_CACHE` for the weights `build.rs` unpacked — which is the
+/// kind of thing that is true until somebody moves a file.
+///
+/// `DOCFUSION_MODEL_CACHE` still wins when it is set, and now it means the whole
+/// set rather than the half `build.rs` happened to fetch. Anybody who set it
+/// gets one directory answering to it instead of two answering to different
+/// things.
 pub fn default_root() -> PathBuf {
-    crate::dirs::user_dir().join("models")
+    match std::env::var("DOCFUSION_MODEL_CACHE") {
+        Ok(explicit) if !explicit.is_empty() => PathBuf::from(explicit),
+        _ => crate::dirs::user_dir().join("models"),
+    }
 }
 
 /// Where the model lives once it is here.
@@ -211,6 +347,78 @@ pub fn present(root: &Path) -> bool {
 /// Whether the table structure model is here.
 pub fn table_present(root: &Path) -> bool {
     present_spec(&TABLE, root)
+}
+
+/// Whether every one of `specs` is here, which is the whole question and never
+/// a fraction of it.
+///
+/// Costs the digest of everything named, so a caller that asks on a schedule
+/// wants [`Cached`] and one that asks once wants this.
+pub fn present_all(specs: &[&Spec], root: &Path) -> bool {
+    specs.iter().all(|spec| present_spec(spec, root))
+}
+
+/// Which of `specs` are not here.
+///
+/// The specs rather than their names, because the two callers want different
+/// things from the same answer: one names them in a sentence somebody reads
+/// when a page will not read, and the other hands them to [`still_to_fetch`],
+/// which is only correct about files that are missing.
+pub fn absent<'a>(specs: &[&'a Spec], root: &Path) -> Vec<&'a Spec> {
+    specs
+        .iter()
+        .copied()
+        .filter(|spec| !present_spec(spec, root))
+        .collect()
+}
+
+/// Which of the set is missing, given the three answers a caller already has.
+///
+/// The three booleans are the remembered ones — `structure::available`,
+/// `table::available`, `ocr::available` — rather than fresh digests, because
+/// this is asked on every redraw and answering it honestly would read 144 MB a
+/// frame. Which of them covers what is the one place that mapping is written
+/// down.
+pub fn absent_from(recognition: bool, structure: bool, tables: bool) -> Vec<&'static Spec> {
+    RECOGNITION_SET
+        .iter()
+        .copied()
+        .filter(|_| !recognition)
+        .chain(std::iter::once(&TABLE).filter(|_| !tables))
+        .chain(std::iter::once(&STRUCTURE).filter(|_| !structure))
+        .collect()
+}
+
+/// How much of these — already known to be missing — would still have to
+/// arrive.
+///
+/// Answered from the file's length rather than from its digest, because this
+/// feeds a sentence about megabytes and the digest of the layout model is
+/// 124 MB of hashing. A file that is already the full length but failed its
+/// digest counts as wholly still to come, because it is: the whole of it is
+/// replaced rather than resumed, which is why the caller passing a file it
+/// knows is present would get a wrong answer.
+pub fn still_to_fetch(specs: &[&Spec], root: &Path) -> u64 {
+    specs
+        .iter()
+        .map(|spec| {
+            let have = fs::metadata(path_of(spec, root))
+                .map(|meta| meta.len())
+                .unwrap_or(0);
+
+            if have >= spec.bytes {
+                spec.bytes
+            } else {
+                spec.bytes - have
+            }
+        })
+        .sum()
+}
+
+/// What the whole set weighs, which is what a person deciding whether to press
+/// the button is asking.
+pub fn set_bytes() -> u64 {
+    SET.iter().map(|spec| spec.bytes).sum()
 }
 
 /// A yes-or-no question about the disk, answered once and remembered until it
@@ -286,8 +494,12 @@ pub fn ensure_of(
         return Ok(Outcome::Ready(path));
     }
 
-    fs::create_dir_all(root).map_err(|source| Error::Directory {
-        path: root.to_path_buf(),
+    // The file's own directory rather than the root: one of the six sits a
+    // level down, and `create_dir_all` on the root would leave nowhere to put
+    // it and a failure that names the wrong directory.
+    let here = path.parent().unwrap_or(root);
+    fs::create_dir_all(here).map_err(|source| Error::Directory {
+        path: here.to_path_buf(),
         source,
     })?;
 
@@ -853,5 +1065,176 @@ mod tests {
             matches!(states.last(), Some(State::Failed { .. })),
             "the failure never reached the callback: {states:?}"
         );
+    }
+
+    /// The same but for a model that lives a level down, which four of the six
+    /// do because `rapidocr` looks for them in a directory of its own.
+    ///
+    /// Worth its own case rather than a line in the test above: the directory
+    /// has to be created, and the version of this that created the *root*
+    /// instead would pass every other test in this module and fail on the first
+    /// real download.
+    #[test]
+    fn a_model_in_a_directory_of_its_own_lands_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = body();
+        let asked: Asked = Default::default();
+        let address = serving(bytes.clone(), true, asked);
+
+        let mut spec = spec_for(&bytes, vec![leaked(address)]);
+        spec.file = "ppocrv6-tiny/test.onnx";
+
+        let (outcome, _) = run(&spec, dir.path(), &AtomicBool::new(false));
+        let landed = dir.path().join("ppocrv6-tiny").join("test.onnx");
+
+        assert!(matches!(outcome, Ok(Outcome::Ready(_))), "{outcome:?}");
+        assert_eq!(fs::read(&landed).unwrap(), bytes);
+        assert!(present_spec(&spec, dir.path()));
+    }
+
+    /// The set is the whole answer to "what does this tool read a page with".
+    ///
+    /// Held against the constants rather than against a number typed here, so
+    /// that adding a model fails until somebody has looked at what it does to
+    /// the total the window puts on the button.
+    #[test]
+    fn the_set_is_the_models_and_nothing_else() {
+        assert_eq!(
+            SET.len(),
+            RECOGNITION_SET.len() + 2,
+            "the set is the four a page cannot be read without, plus layout and tables"
+        );
+
+        for spec in RECOGNITION_SET {
+            assert!(
+                SET.iter().any(|other| other.id == spec.id),
+                "{} is in no set",
+                spec.file
+            );
+        }
+
+        // No file twice, which would download it twice and put two digest
+        // checks on the same path.
+        let mut ids: Vec<&str> = SET.iter().map(|spec| spec.id).collect();
+        ids.sort_unstable();
+        let count = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "two models share an id");
+
+        assert_eq!(
+            set_bytes(),
+            SET.iter().map(|spec| spec.bytes).sum::<u64>()
+        );
+
+        // The one number the window shows before anything has been fetched.
+        // Spelled out rather than compared to itself: a changed total means a
+        // changed download, and that is a thing to have to look at.
+        assert_eq!(set_bytes(), 144_450_586);
+    }
+
+    /// Every one of the four is found by the crate where the catalogue puts it.
+    ///
+    /// The path and the model-set name are two facts that cannot be computed
+    /// from each other — one is written by hand in the table above and the other
+    /// is what the pipeline is asked for by name — so this is the only place
+    /// they meet.
+    #[test]
+    fn the_recognition_files_are_where_the_pipeline_looks() {
+        let root = Path::new("/models");
+        let model_set = rapidocr_core::model::model_set_by_name(RECOGNITION_DIR).expect("model set");
+        let cache = rapidocr_core::model::ModelCache::new(root.join(RECOGNITION_DIR));
+
+        for asset in model_set.assets() {
+            let ours = RECOGNITION_SET
+                .iter()
+                .find(|spec| spec.file.ends_with(asset.filename))
+                .unwrap_or_else(|| panic!("{} is not in the catalogue", asset.filename));
+
+            assert_eq!(
+                path_of(ours, root),
+                cache.asset_path(asset),
+                "{} is downloaded somewhere the pipeline does not look",
+                asset.filename
+            );
+        }
+    }
+
+    /// A missing file is named, not counted.
+    #[test]
+    fn what_is_not_here_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = spec_for(&body(), vec!["http://127.0.0.1:1"]);
+        fs::write(dir.path().join("test.onnx"), body()).unwrap();
+
+        let mut away = spec_for(&body(), vec!["http://127.0.0.1:1"]);
+        away.file = "away.onnx";
+
+        assert!(absent(&[&here], dir.path()).is_empty());
+
+        let missing = absent(&[&here, &away], dir.path());
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].file, "away.onnx");
+
+        assert!(present_all(&[&here], dir.path()));
+        assert!(!present_all(&[&here, &away], dir.path()));
+
+        // And the bytes still to come are the whole of the one that is missing,
+        // because a file that is not there at all has nothing to resume from.
+        assert_eq!(still_to_fetch(&missing, dir.path()), away.bytes);
+    }
+
+    /// A download that was stopped is resumed rather than restarted, so the
+    /// window would be wrong to promise the whole file again.
+    #[test]
+    fn a_partial_download_is_only_what_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(path_of(&TABLE, dir.path()), [0u8; 4096]).unwrap();
+
+        assert_eq!(still_to_fetch(&[&TABLE], dir.path()), TABLE.bytes - 4096);
+    }
+
+    /// The length check would otherwise read this as a finished download and
+    /// say there is nothing to fetch. The fetch does not agree: it checks the
+    /// digest, throws this away and starts again.
+    #[test]
+    fn a_wrong_file_of_the_right_length_is_still_all_to_come() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = path_of(&TABLE, dir.path());
+
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(TABLE.bytes)
+            .unwrap();
+
+        assert_eq!(still_to_fetch(&[&TABLE], dir.path()), TABLE.bytes);
+    }
+
+    /// The three remembered answers, turned back into a list of files.
+    ///
+    /// Asked every redraw, so it is arithmetic over booleans rather than
+    /// digests — which is worth a test precisely because it cannot notice a
+    /// file appearing or disappearing on its own.
+    #[test]
+    fn what_is_missing_follows_from_the_three_answers() {
+        let all = absent_from(true, true, true);
+        assert_eq!(all.len(), 0, "nothing should be missing when all three are");
+
+        // Everything, which is a fresh installation and the case the window
+        // draws a size for.
+        let none = absent_from(false, false, false);
+        assert_eq!(none.len(), SET.len());
+        assert_eq!(
+            none.iter().map(|spec| spec.bytes).sum::<u64>(),
+            set_bytes()
+        );
+
+        // One half without the other: the four read a page, the other two read
+        // its shape, and either can be here alone.
+        let no_structure = absent_from(true, false, true);
+        assert_eq!(no_structure.len(), 1);
+        assert_eq!(no_structure[0].id, STRUCTURE.id);
+
+        let no_recognition = absent_from(false, true, true);
+        assert_eq!(no_recognition.len(), RECOGNITION_SET.len());
     }
 }

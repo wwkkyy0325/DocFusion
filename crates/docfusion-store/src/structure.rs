@@ -1,6 +1,6 @@
 //! Finding the structure on a page, and putting the recognised words inside it.
 //!
-//! The bundled recogniser reads every page and cannot say what any of it is: it
+//! The local recogniser reads every page and cannot say what any of it is: it
 //! returns text, on a line at a time, and a page of headings and a page of
 //! prose come out identical. On the corpus this was measured on it found **0 of
 //! 64 headings and 0 of 9 tables** — not a bug in it, since a text detector and
@@ -28,7 +28,7 @@ use ort::session::Session;
 use ort::value::TensorRef;
 use rapidocr_core::types::{OcrLine, Quad};
 
-use crate::layout;
+use crate::models;
 use crate::table;
 
 /// The side the page is squashed to before the model sees it.
@@ -386,7 +386,7 @@ impl Detector {
 /// is taken from the backend that read it, so nothing changes under a read in
 /// progress — the next document simply gets the other name.
 pub fn available() -> bool {
-    AVAILABLE.get(|| layout::present(&layout::default_root()))
+    AVAILABLE.get(|| models::present(&models::default_root()))
 }
 
 /// Forgets what was found, so the next question looks at the disk again.
@@ -399,11 +399,11 @@ pub fn forget() {
 
 /// The answer to [`available`], once it has been asked and until it is
 /// forgotten.
-static AVAILABLE: layout::Cached = layout::Cached::new();
+static AVAILABLE: models::Cached = models::Cached::new();
 
 /// Where the model would be, whether or not it is.
 pub fn model_path() -> PathBuf {
-    layout::path_in(&layout::default_root())
+    models::path_in(&models::default_root())
 }
 
 /// Reads the model's output.

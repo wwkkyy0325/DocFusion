@@ -205,6 +205,18 @@ pub enum ExtractError {
     #[error("the {engine} engine failed: {message}")]
     Failed { engine: EngineId, message: String },
 
+    /// The engine never got to try: something it needs is not on this machine.
+    ///
+    /// Apart from [`ExtractError::Failed`] because the answer is different. A
+    /// failed engine is a page the tool could not read, which is a thing to
+    /// look into; an engine whose weights have not been downloaded is a button
+    /// somebody has not pressed, and telling them the engine failed sends them
+    /// looking for a bug instead. The distinction is carried as a type rather
+    /// than as a sentence, because a window that matched on the wording of an
+    /// error would be broken by the next edit to it.
+    #[error("the {engine} engine cannot run: {message}")]
+    Unavailable { engine: EngineId, message: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
@@ -222,6 +234,14 @@ impl ExtractError {
 
     pub fn failed(engine: impl Into<EngineId>, message: impl Into<String>) -> Self {
         Self::Failed {
+            engine: engine.into(),
+            message: message.into(),
+        }
+    }
+
+    /// The same for a backend that could not be started at all.
+    pub fn unavailable(engine: impl Into<EngineId>, message: impl Into<String>) -> Self {
+        Self::Unavailable {
             engine: engine.into(),
             message: message.into(),
         }

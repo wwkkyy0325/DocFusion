@@ -22,10 +22,10 @@ use docfusion_core::render;
 use docfusion_core::verify::{VerifyMode, VerifyPolicy};
 use docfusion_store::config;
 use docfusion_store::engines;
-use docfusion_store::layout;
+use docfusion_store::models;
 use docfusion_store::memory;
 use docfusion_store::pipeline::{Mode, Pipeline, PipelineError};
-use docfusion_store::{structure, table};
+use docfusion_store::{ocr, structure, table};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -129,31 +129,29 @@ impl App {
         view
     }
 
-    /// Which of the two models this app reads a page with are on disk.
+    /// How much of the set this app reads a page with is on disk.
     ///
-    /// The two answers come from the same remembered check the engine makes
+    /// The three answers come from the same remembered checks the engine makes
     /// before it decides what to call itself, rather than from a fresh digest
-    /// of 124 MB on every view — which is also why fetching has to forget that
-    /// check, since otherwise the window would offer to download something it
-    /// had just been given.
+    /// of 138 MB on every view — which is also why fetching has to forget them,
+    /// since otherwise the window would offer to download something it had just
+    /// been given.
     fn local(&self) -> Local {
-        let root = layout::default_root();
-        let structure = structure::available();
-        let tables = table::available();
+        let absent = models::absent_from(
+            ocr::available(),
+            structure::available(),
+            table::available(),
+        );
 
         Local {
-            structure,
-            tables,
+            ready: absent.is_empty(),
             fetching: self
                 .fetching
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_some(),
-            needed_bytes: [(&layout::STRUCTURE, structure), (&layout::TABLE, tables)]
-                .into_iter()
-                .filter(|(_, here)| !here)
-                .map(|(spec, _)| missing_bytes(spec, &root))
-                .sum(),
+            needed_bytes: models::still_to_fetch(&absent, &models::default_root()),
+            total_bytes: models::set_bytes(),
         }
     }
 
@@ -606,7 +604,7 @@ fn engines_of(markdown: &str) -> Vec<String> {
 /// endpoint's word for which model to use would silently read documents with
 /// whatever it happened to be serving. The command line refuses the pair
 /// outright; the window cannot be shown a refusal before it has drawn anything,
-/// so it reads with the bundled engine and says what is missing.
+/// so it reads with the local engine and says what is missing.
 fn endpoint_of(config: &config::Config) -> Option<docfusion_store::endpoint::EndpointConfig> {
     // Absent means on: a file written before the switch existed keeps reading
     // documents the way it always did.
@@ -668,28 +666,14 @@ fn extract_cause(error: &ExtractError) -> Cause {
         // not something the person reading this can act on differently — a
         // page that would not read is a page that would not read.
         ExtractError::Failed { .. } => Cause::EngineFailed,
+        // An engine that never ran because its weights are not here. The same
+        // cause the fetch itself reports, because it is the same thing from the
+        // reader's side — a download they have not done — and the sentence for
+        // it names the settings tab.
+        ExtractError::Unavailable { .. } => Cause::Download,
         ExtractError::Unsupported { .. } => Cause::Unsupported,
         ExtractError::Io(_) => Cause::Unreadable,
         ExtractError::Image(_) => Cause::Unreadable,
-    }
-}
-
-/// How much of a model that is not here would still have to arrive.
-///
-/// Answered from the file's length rather than from its digest, because this
-/// feeds a sentence about megabytes and the digest of the layout model is
-/// 124 MB of hashing. The caller only asks about a model it already knows is
-/// missing, so a file of the full length here is one that failed its digest and
-/// is replaced rather than resumed: the whole of it is still to come.
-fn missing_bytes(spec: &layout::Spec, root: &Path) -> u64 {
-    let have = std::fs::metadata(layout::path_of(spec, root))
-        .map(|meta| meta.len())
-        .unwrap_or(0);
-
-    if have >= spec.bytes {
-        spec.bytes
-    } else {
-        spec.bytes - have
     }
 }
 
@@ -849,18 +833,17 @@ async fn save_model(
 
 /// How a fetch is going, for the window to draw.
 ///
-/// Names the file as well as counting the bytes, because there are two of them
-/// and the first is seventeen times the second: a bar with no name on it would
-/// look stuck between them, and the name is also the answer to "what is it
-/// downloading".
+/// The bytes of the whole set, not of the file being fetched. Six files each
+/// running from zero to a hundred would look like six downloads and would make
+/// the bar fall back five times; the question the card answers is how much of
+/// the set is here, and that is a number that only goes up.
 #[derive(Debug, Clone, Serialize)]
 struct Progress {
-    file: String,
     received: u64,
     total: u64,
 }
 
-/// Fetches the two models this app reads a page with.
+/// Fetches the set of models this app reads a page with.
 ///
 /// Off the main thread, because a quarter of a gigabyte over a network is
 /// minutes and the window has to stay drawn while it arrives. Progress goes out
@@ -878,25 +861,36 @@ async fn fetch_local_models(app: AppHandle) -> Result<View, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<App>();
         let flag = state.begin_fetch()?;
-        let root = layout::default_root();
+        let root = models::default_root();
+        let total = models::set_bytes();
         let mut trouble = None;
 
-        for spec in [&layout::STRUCTURE, &layout::TABLE] {
-            let outcome = layout::ensure_of(
+        // What is already here counts towards the bar from the first frame, so
+        // that a fetch that has nothing to do does not sit at zero while it
+        // checks six digests.
+        let mut landed: u64 = 0;
+
+        for spec in models::SET {
+            if models::present_spec(spec, &root) {
+                landed += spec.bytes;
+                continue;
+            }
+
+            let base = landed;
+            let outcome = models::ensure_of(
                 spec,
                 &root,
                 &mut |progress| {
-                    let (received, total) = match progress {
-                        layout::State::Fetching { received, total, .. } => (*received, *total),
-                        layout::State::Verifying => (spec.bytes, spec.bytes),
+                    let received = match progress {
+                        models::State::Fetching { received, .. } => *received,
+                        models::State::Verifying => spec.bytes,
                         _ => return,
                     };
 
                     let _ = handle.emit(
                         "local-models",
                         Progress {
-                            file: spec.file.to_owned(),
-                            received,
+                            received: base.saturating_add(received).min(total),
                             total,
                         },
                     );
@@ -905,8 +899,8 @@ async fn fetch_local_models(app: AppHandle) -> Result<View, String> {
             );
 
             match outcome {
-                Ok(layout::Outcome::Ready(_)) => {}
-                Ok(layout::Outcome::Cancelled) => break,
+                Ok(models::Outcome::Ready(_)) => landed += spec.bytes,
+                Ok(models::Outcome::Cancelled) => break,
                 Err(error) => {
                     trouble = Some(error.to_string());
                     break;
@@ -917,10 +911,9 @@ async fn fetch_local_models(app: AppHandle) -> Result<View, String> {
         state.end_fetch();
 
         // The answer to "is it here now" was taken before there was anything to
-        // find. A process that downloads the model is the process that has to
-        // notice it arrived.
-        structure::forget();
-        table::forget();
+        // find. A process that downloads the models is the process that has to
+        // notice they arrived.
+        docfusion_store::forget_models();
 
         let mut view = state.view();
         if let Some(detail) = trouble {
@@ -985,47 +978,6 @@ mod tests {
     use docfusion_core::image::ImageError;
     use docfusion_core::ir::EngineId;
     use docfusion_store::manifest::StoreError;
-
-    /// A model that is not here is all still to come, which is the sentence
-    /// the settings tab puts in front of somebody about to spend the time.
-    #[test]
-    fn a_model_that_is_not_here_is_wanted_whole() {
-        let dir = tempfile::tempdir().unwrap();
-
-        assert_eq!(
-            missing_bytes(&layout::STRUCTURE, dir.path()),
-            layout::STRUCTURE.bytes
-        );
-    }
-
-    /// A download that was stopped is resumed rather than restarted, so the
-    /// window would be wrong to promise the whole file again.
-    #[test]
-    fn a_partial_download_is_only_what_is_left() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(layout::path_of(&layout::TABLE, dir.path()), [0u8; 4096]).unwrap();
-
-        assert_eq!(
-            missing_bytes(&layout::TABLE, dir.path()),
-            layout::TABLE.bytes - 4096
-        );
-    }
-
-    /// The length check would otherwise read this as a finished download and
-    /// say there is nothing to fetch. The fetch does not agree: it checks the
-    /// digest, throws this away and starts again.
-    #[test]
-    fn a_wrong_file_of_the_right_length_is_still_all_to_come() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = layout::path_of(&layout::TABLE, dir.path());
-
-        std::fs::File::create(&path)
-            .unwrap()
-            .set_len(layout::TABLE.bytes)
-            .unwrap();
-
-        assert_eq!(missing_bytes(&layout::TABLE, dir.path()), layout::TABLE.bytes);
-    }
 
     /// Whether the stylesheet gives `tag` a rule of its own under the pane.
     ///
@@ -1157,6 +1109,228 @@ code
         assert!(engines_of("# Just a heading\n").is_empty());
     }
 
+    /// Every element the script looks up is in the markup.
+    ///
+    /// `el()` throws when the id is not there, and the throw lands wherever in
+    /// the module it happens to be — so a mistyped id does not break one panel,
+    /// it breaks everything the module does after that line. Two of these are
+    /// made by the script itself, at the moment it draws them.
+    #[test]
+    fn every_element_the_script_looks_up_is_in_the_markup() {
+        let html = include_str!("../ui/index.html");
+        let js = include_str!("../ui/app.js");
+
+        let made_by_the_script = ["findings", "elapsed"];
+        let mut looked = 0;
+
+        for id in js
+            .match_indices("el(\"")
+            .filter_map(|(at, _)| js[at + 4..].split('"').next())
+        {
+            if made_by_the_script.contains(&id) {
+                continue;
+            }
+
+            looked += 1;
+            assert!(
+                html.contains(&format!("id=\"{id}\"")),
+                "the script looks up `{id}` and the markup has no such element"
+            );
+        }
+
+        assert!(looked > 20, "only {looked} ids were checked");
+    }
+
+    /// Every sentence the script asks for has been written, in both languages.
+    ///
+    /// The failure this catches is silent on screen: a key that is not there is
+    /// `undefined`, and `undefined` interpolated into a template is drawn as
+    /// the word. A rename on one side of the boundary is the whole of the risk,
+    /// and nothing else here can see across it.
+    ///
+    /// Two ways of asking, both counted. `t().name` is the inline use, and
+    /// `words.name` is the table that puts a sentence into the markup — which
+    /// is the one a rename lands on, since it is where most of them are named.
+    #[test]
+    fn every_sentence_the_script_asks_for_is_written_twice() {
+        let js = include_str!("../ui/app.js");
+
+        let english = blocks(js, "en: {");
+        let chinese = blocks(js, "zh: {");
+
+        assert_eq!(english.len(), 1, "there should be one block per language");
+        assert_eq!(chinese.len(), 1, "there should be one block per language");
+
+        let en = keys_in(english[0]);
+        let zh = keys_in(chinese[0]);
+        let mut asked = 0;
+
+        for prefix in ["t().", "words."] {
+            for (at, _) in js.match_indices(prefix) {
+                let rest = &js[at + prefix.len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+
+                if name.is_empty() {
+                    continue;
+                }
+
+                asked += 1;
+                assert!(en.contains(&name), "`{name}` is asked for and not written");
+                assert!(zh.contains(&name), "`{name}` is written once, not twice");
+            }
+        }
+
+        // A floor rather than a count: what it catches is the parse above
+        // quietly finding nothing, which would make everything after it pass.
+        assert!(asked > 80, "only {asked} sentences were checked");
+    }
+
+    /// The keys of an object literal, as the frontend writes them.
+    fn keys_in(block: &str) -> Vec<String> {
+        let mut found = Vec::new();
+
+        for line in block.lines() {
+            let line = line.trim_start();
+
+            // Two spellings, because JavaScript has two: a key that is an
+            // identifier is written bare and one with a dash in it is quoted.
+            let named = match line.strip_prefix('"') {
+                Some(rest) => match rest.split_once('"') {
+                    Some((name, after)) if after.starts_with(':') => Some(name),
+                    _ => None,
+                },
+                None => match line.split_once(':') {
+                    Some((name, _))
+                        if !name.is_empty()
+                            && name
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+                    {
+                        Some(name)
+                    }
+                    _ => None,
+                },
+            };
+
+            if let Some(name) = named {
+                found.push(name.to_owned());
+            }
+        }
+
+        found
+    }
+
+    /// Every kind of failure has a sentence, in both languages.
+    ///
+    /// The gap this exists to catch was real and was here: `Download` was added
+    /// to `Cause` for the local models, reached the backend and the failure
+    /// panel, and never reached the strings — so a download that failed was
+    /// drawn as "Something went wrong.", which is the one thing it was not.
+    ///
+    /// The list of causes is matched exhaustively below, so that adding one
+    /// fails to compile rather than failing silently.
+    #[test]
+    fn every_cause_is_written_in_both_languages() {
+        fn spoken_for(cause: Cause) {
+            match cause {
+                Cause::Unsupported
+                | Cause::EngineFailed
+                | Cause::Unreadable
+                | Cause::Unwritable
+                | Cause::Index
+                | Cause::Missing
+                | Cause::Settings
+                | Cause::NothingToRead
+                | Cause::Download => {}
+            }
+        }
+
+        let js = include_str!("../ui/app.js");
+        let causes = blocks(js, "causes: {");
+
+        assert_eq!(causes.len(), 2, "there should be one block per language");
+
+        for cause in [
+            Cause::Unsupported,
+            Cause::EngineFailed,
+            Cause::Unreadable,
+            Cause::Unwritable,
+            Cause::Index,
+            Cause::Missing,
+            Cause::Settings,
+            Cause::NothingToRead,
+            Cause::Download,
+        ] {
+            spoken_for(cause);
+
+            let written = serde_json::to_string(&cause).expect("a cause serialises");
+            let name = written.trim_matches('"');
+
+            // Two spellings, because JavaScript has two: a key that happens to
+            // be an identifier is written bare and one with a dash in it is
+            // quoted. Most of these have a dash in them, which is why the
+            // quoted form is the one that looks like the rule.
+            let written = [format!("\"{name}\":"), format!("{name}:")];
+
+            for (at, block) in causes.iter().enumerate() {
+                assert!(
+                    written.iter().any(|form| block.contains(form.as_str())),
+                    "cause `{name}` is missing from the {} set of sentences",
+                    if at == 0 { "first" } else { "second" }
+                );
+            }
+        }
+    }
+
+    /// Every `opener … }` in the frontend that opens a balanced block.
+    ///
+    /// Brace-matched rather than searched to the next `}`, because these hold
+    /// nested objects — the causes are inside the language blocks — and a
+    /// search for the next closing brace would end one at the first inner one.
+    ///
+    /// The opener has to begin a word, which it does not by default: `en: {`
+    /// is somewhere inside `screen: { kind: … }`, and the first version of this
+    /// counted that as a second English block.
+    fn blocks<'a>(js: &'a str, opener: &str) -> Vec<&'a str> {
+        let mut found = Vec::new();
+        let mut from = 0;
+
+        while let Some(at) = js[from..].find(opener) {
+            let start = from + at;
+            from = start + 1;
+
+            let before = js[..start].chars().next_back();
+            if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+
+            let mut depth = 0;
+            let mut end = js.len();
+
+            for (offset, character) in js[start..].char_indices() {
+                match character {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = start + offset;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            found.push(&js[start..end]);
+            from = end;
+        }
+
+        found
+    }
+
     /// The window chooses its sentence from the kind, so this mapping is what
     /// decides whether a failure comes out saying anything true. Every way the
     /// library has of failing is here, which is also what stops a new one from
@@ -1176,6 +1350,13 @@ code
                     message: "the endpoint refused the connection".to_owned(),
                 }),
                 Cause::EngineFailed,
+            ),
+            (
+                PipelineError::Extract(ExtractError::unavailable(
+                    engine(),
+                    "the models are not on disk: ppocrv6-tiny/PP-OCRv6_det_tiny.onnx".to_owned(),
+                )),
+                Cause::Download,
             ),
             (
                 PipelineError::Extract(ExtractError::Io(std::io::Error::other("gone"))),

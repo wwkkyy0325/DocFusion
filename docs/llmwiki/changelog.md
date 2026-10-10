@@ -4,6 +4,68 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — One local set, and a card that shows it
+
+**What:** The local models became one set of six files and one download of
+**138 MB**, defined once in `docfusion_store::models`, and the settings tab
+grew a card that says what the set is, what it does, what it weighs and where
+the download has got to. `layout.rs` became `models.rs` because it stopped
+being about the layout model the moment it held the recogniser's weights too.
+
+**What was given up, deliberately.** The four recognition weights — 6.9 MB —
+used to be fetched by `build.rs` and compiled into the binary, which made "a
+scan is readable with no setup, offline, from install" true in the strong
+sense. They are now downloads like everything else, so a fresh installation
+reads no image and no scanned PDF until the set has arrived, and the command
+line is no different from the window. Put to the project's owner with the cost
+written out, and taken: one set to maintain beats a small always-there half.
+
+**What it bought.** Three places to change when a model moves became one; two
+answers to "where do models live" became one (`DOCFUSION_MODEL_CACHE` and the
+per-user directory disagreed by a `models/` segment and nobody had noticed,
+because with the variable unset they were the same only for one of the three
+files); a `build.rs` that needed the network to compile stopped existing; and
+the settings tab stopped being able to describe only the half of its subject
+that happened to be downloadable.
+
+**The card, and why it is one card.** A row per file would be six things to add
+up before answering the only question somebody brings to it. Progress is
+reported for the **whole set** rather than per file — six files each running
+from zero to a hundred would look like six downloads and make the bar fall back
+five times — and the first frame is filled to what is already on disk, because
+the fetch resumes. The shape is Verse's, whose downloader `models.rs` already
+borrowed; the one thing not copied is per-file progress, for that reason.
+
+**A missing model is a download, not a bug.** `RapidOcrBackend::build` refuses
+with the names of the files that are not there, and that now travels as a type
+— `ExtractError::Unavailable` — rather than as a sentence, so the window draws
+it as `Cause::Download` with a sentence pointing at the settings tab. The
+vision backend raises `BackendError::Unavailable` too and means something else
+by it, so the distinction is drawn at the call site that knows which backend it
+is holding; the first version collapsed the two and every test in `scan.rs`
+still passed, which is why there is now one that does not.
+
+**Found while doing it:** `Cause::Download` had never reached the frontend's
+strings at all, so a failed download was drawn as "Something went wrong."
+There are three tests for that class of gap now, because the compiler cannot see
+across the boundary into the frontend and a person did not: an exhaustive match
+over `Cause`, a check that every sentence asked for is written in both
+languages, and a check that every element looked up is in the markup. Each was
+proved to bite by breaking the thing it watches, and the first version of the
+second one was **vacuous** — it only counted `t().x`, and most sentences here
+are named through `words.x` in the table that fills the markup, which is
+exactly where a rename lands.
+
+**Measured:** 504 tests pass, `cargo clippy --workspace --all-targets` is
+clean. The fetch path was exercised by hand against the real home: with the
+dictionary deleted, `doctor` reported one file of the set missing and `--fetch`
+put it back in the subdirectory the pipeline looks in; with an empty home it
+reported the whole set, 138 MB, `capability text-only`. Not downloaded, and
+correctly no longer claimed: `ppocrv6-small` and `ppocrv6-medium`, tried and
+rejected earlier, were cleared out of the user's model directory.
+
+---
+
 ## 2026-10-10 — A space in a Chinese line that is not there
 
 **What:** Joining two lines put a space between them, and a break in a Chinese

@@ -126,7 +126,7 @@ impl ScanExtractor {
             .ocr
             .as_ref()
             .ok_or_else(|| ExtractError::failed(ENGINE_ID, "no backend is configured"))?;
-        ocr.recognize(request).map_err(failed)
+        ocr.recognize(request).map_err(ocr_failed)
     }
 
     /// The engine that checks the primary's work, when there is a different one
@@ -229,6 +229,27 @@ fn failed(error: crate::backend::BackendError) -> ExtractError {
     ExtractError::failed(ENGINE_ID, error.to_string())
 }
 
+/// The same for the recognition engine, whose "unavailable" means something
+/// narrower than the vision model's.
+///
+/// `BackendError::Unavailable` covers "not configured, not installed, or not
+/// reachable" — one value for three conditions, which is right for the backends
+/// and wrong for the reader. A vision model that is not reachable is an address
+/// that did not answer; a recognition engine that is not installed is a
+/// download nobody has done, and the window answers those two differently: one
+/// is a thing to look at, the other has a button beside it. Since the two call
+/// sites are the two places that know which backend they are holding, the
+/// distinction is drawn here rather than guessed at from the wording of a
+/// message somewhere downstream.
+fn ocr_failed(error: crate::backend::BackendError) -> ExtractError {
+    match error {
+        crate::backend::BackendError::Unavailable(message) => {
+            ExtractError::unavailable(ENGINE_ID, message)
+        }
+        other => ExtractError::failed(ENGINE_ID, other.to_string()),
+    }
+}
+
 impl Extractor for ScanExtractor {
     fn id(&self) -> EngineId {
         EngineId::from(ENGINE_ID)
@@ -314,7 +335,7 @@ impl Extractor for ScanExtractor {
                     image: &image,
                     page: *index as u32,
                 })
-                .map_err(failed)
+                .map_err(ocr_failed)
         })?;
 
         let mut checked: Vec<Option<Vec<Block>>> = (0..source.len()).map(|_| None).collect();
@@ -421,6 +442,9 @@ mod tests {
 
     struct StubOcr {
         text: &'static str,
+        /// Whether this stands in for an engine whose weights are not on disk,
+        /// which is a different thing from a vision model that will not answer.
+        missing: bool,
         calls: Calls,
     }
 
@@ -442,6 +466,11 @@ mod tests {
 
         fn recognize(&self, _request: &PageRequest<'_>) -> Result<Vec<Block>, BackendError> {
             self.calls.record();
+            if self.missing {
+                return Err(BackendError::Unavailable(
+                    "the models this tool reads a page with are not on disk".into(),
+                ));
+            }
             Ok(vec![block(self.text, "stub-ocr")])
         }
     }
@@ -489,9 +518,19 @@ mod tests {
         let calls = Calls::default();
         let backend: Box<dyn OcrBackend> = Box::new(StubOcr {
             text,
+            missing: false,
             calls: calls.clone(),
         });
         (backend, calls)
+    }
+
+    /// The same, standing in for an engine whose weights were never fetched.
+    fn ocr_without_its_models() -> Box<dyn OcrBackend> {
+        Box::new(StubOcr {
+            text: "read by ocr",
+            missing: true,
+            calls: Calls::default(),
+        })
     }
 
     fn vision(unavailable: bool) -> Box<dyn VisionBackend> {
@@ -805,6 +844,37 @@ mod tests {
         assert!(
             !error.to_string().contains("no OCR or vision backend is configured"),
             "and the message must not contradict itself: {error}"
+        );
+    }
+
+    /// A recognition engine with no weights is its own kind of failure, and the
+    /// one an endpoint that will not answer is *not*.
+    ///
+    /// Both backends report `BackendError::Unavailable` and mean different
+    /// things by it, and the window answers them with different sentences: a
+    /// download that has not been done, with a button beside it, against an
+    /// address that did not answer. Written down because the first version of
+    /// this collapsed the two and every test in the file still passed — and
+    /// what a reader would have been told is to go and download something they
+    /// already had.
+    #[test]
+    fn missing_weights_are_not_an_endpoint_that_will_not_answer() {
+        let extractor = ScanExtractor::new(Some(ocr_without_its_models()), None);
+        let error = extract(&extractor, &image(), "scan.png").expect_err("should fail");
+
+        assert!(
+            matches!(error, ExtractError::Unavailable { .. }),
+            "an engine with no weights is its own answer: {error}"
+        );
+
+        // And the other one, which is the case that catches a mapping written
+        // for the wrong backend.
+        let extractor = ScanExtractor::new(Some(ocr()), Some(vision(true)));
+        let error = extract(&extractor, &image(), "scan.png").expect_err("should fail");
+
+        assert!(
+            matches!(error, ExtractError::Failed { .. }),
+            "an unreachable endpoint is not a missing download: {error}"
         );
     }
 

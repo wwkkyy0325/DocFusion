@@ -58,12 +58,13 @@ pub fn standard(
         Box::new(PptxParser),
         Box::new(TextPassthrough),
         // The local recognition engine always joins, and costs nothing until a
-        // page actually needs reading. It is what makes a scan readable with no
-        // setup: the weights are in the binary, so there is nothing to configure
-        // and nothing to download.
+        // page actually needs reading — which is also where it finds out whether
+        // its models are on disk. It is still registered when they are not,
+        // because being told "the models are not downloaded" is a better answer
+        // than being told that nothing can read this kind of file.
         Box::new(
             ScanExtractor::new(
-                Some(Box::new(RapidOcrBackend::bundled().with_pipelines(readers))),
+                Some(Box::new(RapidOcrBackend::local().with_pipelines(readers))),
                 vision,
             )
             .with_policy(policy)
@@ -81,7 +82,7 @@ mod tests {
         docfusion_core::extract::Router::new(standard(None, VerifyPolicy::default(), readers))
     }
 
-    /// The promise that makes the tool useful with no setup at all.
+    /// The formats that need nothing fetched to be read.
     #[test]
     fn every_deterministic_format_has_an_engine() {
         let router = router(1);
@@ -97,10 +98,15 @@ mod tests {
         }
     }
 
-    /// And a scan is readable with nothing configured, which is the other half
-    /// of that promise.
+    /// And a scan is claimed even when the models are not here.
+    ///
+    /// Which is deliberate and not the same claim the test above makes. The
+    /// recognition engine is registered whatever the disk says, because whether
+    /// it can run is a question about four files and the answer is worth
+    /// reading: "the models are not downloaded, here is the command" is a
+    /// better thing to be told than "nothing can read this kind of file".
     #[test]
-    fn an_image_is_readable_with_nothing_configured() {
+    fn a_scan_is_claimed_even_with_no_models() {
         let head = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
         assert!(router(1).can_handle(&InputProbe::new(head, None, 8)));

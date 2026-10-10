@@ -837,14 +837,16 @@ mod tests {
         InputProbe::new(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A], None, 8)
     }
 
-    /// The promise that makes the tool useful with no setup at all.
+    /// A scan is claimed with nothing configured, whether or not the models are
+    /// downloaded: the engine is registered either way, and being told the
+    /// models are missing beats being told nothing can read the file.
     #[test]
-    fn an_image_is_readable_with_nothing_configured() {
+    fn a_scan_is_claimed_with_nothing_configured() {
         let router = router(&configured(&[]), VerifyPolicy::default()).unwrap();
 
         assert!(
             router.can_handle(&png_probe()),
-            "the bundled OCR engine should be there without configuration"
+            "the local OCR engine should be registered without configuration"
         );
     }
 

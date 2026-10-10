@@ -24,7 +24,7 @@ use docfusion_core::backend::BackendError;
 use ort::session::Session;
 use ort::value::TensorRef;
 
-use crate::layout;
+use crate::models;
 
 /// The side a table is squashed into before the model sees it.
 ///
@@ -238,12 +238,12 @@ impl Reader {
 /// what the local engine calls itself, and the name is the cache key. And
 /// forgotten for the same reason, by [`forget`].
 pub fn available() -> bool {
-    AVAILABLE.get(|| layout::table_present(&layout::default_root()))
+    AVAILABLE.get(|| models::table_present(&models::default_root()))
 }
 
 /// Forgets what was found, so the next question looks at the disk again.
 ///
-/// Called after a fetch that wrote the model. See [`layout::Cached`] for why
+/// Called after a fetch that wrote the model. See [`models::Cached`] for why
 /// this is not a `OnceLock`.
 pub fn forget() {
     AVAILABLE.forget()
@@ -251,11 +251,11 @@ pub fn forget() {
 
 /// The answer to [`available`], once it has been asked and until it is
 /// forgotten.
-static AVAILABLE: layout::Cached = layout::Cached::new();
+static AVAILABLE: models::Cached = models::Cached::new();
 
 /// Where the model would be, whether or not it is.
 pub fn model_path() -> PathBuf {
-    layout::path_of(&layout::TABLE, &layout::default_root())
+    models::path_of(&models::TABLE, &models::default_root())
 }
 
 /// The table as the model wants it: bottom-up channels, longest side 488,

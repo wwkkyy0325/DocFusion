@@ -15,11 +15,29 @@ pub mod dirs;
 pub mod engines;
 pub mod endpoint;
 pub mod hash;
-pub mod layout;
 pub mod manifest;
 pub mod memory;
+pub mod models;
 pub mod ocr;
 pub mod pipeline;
 pub mod reconcile;
 pub mod structure;
 pub mod table;
+
+/// Throws away every remembered answer about which models are on disk.
+///
+/// The three modules that ask — [`ocr`], [`structure`] and [`table`] — each
+/// remember their answer, because the question costs a digest of everything it
+/// covers and it is asked before every document. The thing that changes the
+/// answer is one thing: a download. So this is one call rather than three, and
+/// it lives above all three rather than inside any of them, so that a fourth
+/// model cannot be added without somebody noticing this list.
+///
+/// Forgetting one and not the others is the failure worth naming: a window
+/// still offering to fetch what it has just been given, or a page read as plain
+/// text because the layout model it now has was asked about a moment too early.
+pub fn forget_models() {
+    ocr::forget();
+    structure::forget();
+    table::forget();
+}

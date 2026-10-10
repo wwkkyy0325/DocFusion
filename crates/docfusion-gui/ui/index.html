@@ -188,21 +188,34 @@
           </div>
           </div><!-- /#model-fields -->
 
-          <!-- The other half of "which model reads this": the two that run in
+          <!-- The other half of "which model reads this": the set that runs in
                this process. Outside the switch above, and not greyed out by
                it — that switch is about a model at the other end of a network,
                and these are files on this disk with no address and no key.
-               They are also what decides whether a table comes out as a table
-               or as a run of loose numbers, which is not something anybody
-               would guess from a settings page about an endpoint. -->
+
+               One card, because it is one set. What a page becomes — headings,
+               tables and text rather than a run of lines — is decided by all of
+               it at once, so a list underneath would be six things a person has
+               to add up before they can answer the only question they came
+               with, which is whether to press the button. -->
           <div class="field">
             <label id="lbl-local">Models on this machine</label>
-            <p id="local-state" class="hint"></p>
-            <p class="hint">
-              <span id="local-hint"></span>
-              <button id="get-local" type="button" class="link">Download</button>
-              <button id="stop-local" type="button" class="link" hidden>Stop</button>
-            </p>
+
+            <div id="local-card" class="model">
+              <div class="model-head">
+                <span id="local-name" class="model-name"></span>
+                <span id="local-size" class="model-size"></span>
+              </div>
+              <p id="local-hint" class="model-about"></p>
+
+              <div class="bar" id="local-bar" hidden><span id="local-fill"></span></div>
+
+              <div class="model-row">
+                <span id="local-state" class="model-state"></span>
+                <button id="get-local" type="button" class="small">Download</button>
+                <button id="stop-local" type="button" class="small" hidden>Stop</button>
+              </div>
+            </div>
           </div>
 
           <div class="actions">

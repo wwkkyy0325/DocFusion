@@ -692,6 +692,99 @@ button.link:hover { background: none; filter: brightness(1.15); }
   transition: opacity 120ms ease-out;
 }
 
+/* ── the local model card ───────────────────────────────────────────────── */
+
+/* What the local set is, what it does, what it weighs and where it has got to,
+   in one bordered box rather than in a sentence with a link at the end of it.
+
+   Boxed because it is not part of the form above: the endpoint, the model and
+   the key are a configuration somebody types, and this is a download somebody
+   decides on. The rule at the top says which side of that line it is on. */
+.model {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 12px 13px 13px;
+  background: var(--wash);
+}
+
+/* Installed is the end of the story and is drawn quietly; a set that is not
+   here yet keeps the paper colour, so the one card on this page that wants
+   something is also the one that looks like it does. */
+.model[data-state="absent"] { background: var(--paper); }
+
+.model-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.model-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.model-size {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.model-about {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+/* Its own line, above the one carrying the percentage, so that the bar's height
+   does not change when it appears — a row that grows by four pixels as a
+   download starts is a page that moves under the pointer. */
+.bar {
+  height: 4px;
+  margin-top: 11px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.bar > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 140ms linear;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+}
+
+.model-state {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Pushed to the right, where the thing to press on a card is. Both buttons
+   carry it so that stopping a download does not move the button under the
+   pointer that started it. */
+.model-row button { margin-left: auto; }
+
+.model-row button.small {
+  flex: none;
+  padding: 4px 11px;
+  font-size: 12px;
+}
+
+/* Installed says so in the colour of a thing that is done. */
+.model[data-state="ready"] .model-state { color: var(--ok); }
+
 #settings .actions {
   display: flex;
   align-items: center;

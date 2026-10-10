@@ -1,8 +1,15 @@
 //! Local OCR, running in the process through ONNX Runtime.
 //!
-//! This is the engine that works with no setup at all, and the one that
-//! verifies everything else: it is local, free, and fast enough to run on every
-//! page, which are the properties a verifier has to have.
+//! This is the engine that reads a page without an endpoint, a key or anything
+//! sent anywhere, and the one that verifies everything else: it is local, free,
+//! and fast enough to run on every page, which are the properties a verifier
+//! has to have.
+//!
+//! It is *not* an engine that works with no setup. Its weights used to be
+//! compiled into the binary and are now four files in the set `crate::models`
+//! fetches, so on an installation that has not fetched them this refuses to
+//! build, by name, and every command that reads a page says so. The trade is
+//! written down in that module rather than here.
 //!
 //! The pipeline — text detection, optional angle classification, recognition —
 //! comes from `rapidocr-core`. Writing DBNet post-processing, contour finding
@@ -18,16 +25,15 @@
 //! recognised words inside the regions it found, which is where headings and
 //! tables come from. Without it every page reads exactly as it did before.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, TryLockError};
 
 use docfusion_core::backend::{BackendError, Caps, OcrBackend, PageRequest};
 use docfusion_core::ir::{Block, BlockKind, EngineId, Rect};
 use rapidocr_core::RapidOcr;
-use rapidocr_core::config::RapidOcrConfig;
 use rapidocr_core::types::{OcrLine, OcrOutput};
 
+use crate::models;
 use crate::structure;
 use crate::table;
 
@@ -66,7 +72,6 @@ pub struct RapidOcrBackend {
     /// Rotates which pipeline a caller tries first, so that pages arriving at
     /// once spread out instead of all queueing on the same one.
     next: AtomicUsize,
-    source: Source,
     /// The table structure reader, when its weights are here.
     ///
     /// Only ever consulted about a region the layout model called a table, so
@@ -76,7 +81,7 @@ pub struct RapidOcrBackend {
     ///
     /// This is what turns a page of lines into a page of headings, tables and
     /// paragraphs. Absent by default and absent on most installations, because
-    /// it is 124 MB that somebody has to ask for — see `crate::layout`.
+    /// it is 124 MB that somebody has to ask for — see `crate::models`.
     structure: Option<structure::Detector>,
 }
 
@@ -94,21 +99,19 @@ fn pipeline_count() -> usize {
     crate::memory::page_concurrency()
 }
 
-enum Source {
-    /// Weights embedded in the binary. See `build.rs`.
-    Bundled,
-    /// Weights found by a caller that knows where they are.
-    Config(Box<RapidOcrConfig>),
-}
-
 impl RapidOcrBackend {
-    /// Reads pages using the weights embedded in the binary.
+    /// Reads pages using the models on this disk.
     ///
-    /// This is the path that makes the tool work with no setup: nothing is
-    /// downloaded, nothing is configured, and it is offline from the moment it
-    /// is installed.
-    pub fn bundled() -> Self {
-        let mut backend = Self::with_source(Source::Bundled);
+    /// The only way to build one. There used to be two — this, and a set of
+    /// weights compiled into the binary — and the second is why "works with no
+    /// setup at all" was true here and is not any more. See `crate::models` for
+    /// what that bought and what it cost.
+    ///
+    /// Infallible, though it may be unusable: whether the four files are here is
+    /// not known until a page needs reading, and a command that never reads one
+    /// should not pay for the question. `build` is where it is asked.
+    pub fn local() -> Self {
+        let mut backend = Self::new();
 
         if structure::available() {
             backend.structure = Some(structure::Detector::new(structure::model_path()));
@@ -119,11 +122,6 @@ impl RapidOcrBackend {
         }
 
         backend
-    }
-
-    /// Reads pages using weights the caller located itself.
-    pub fn from_config(config: RapidOcrConfig) -> Self {
-        Self::with_source(Source::Config(Box::new(config)))
     }
 
     /// Sets how many pages may be read at once.
@@ -142,12 +140,11 @@ impl RapidOcrBackend {
         self
     }
 
-    fn with_source(source: Source) -> Self {
+    fn new() -> Self {
         let count = pipeline_count();
         Self {
             runners: (0..count).map(|_| Mutex::new(None)).collect(),
             next: AtomicUsize::new(0),
-            source,
             structure: None,
             tables: None,
         }
@@ -200,18 +197,36 @@ impl RapidOcrBackend {
     }
 
     fn build(&self) -> Result<RapidOcr, BackendError> {
-        #[cfg_attr(not(feature = "directml"), allow(unused_mut))]
-        let mut config = match &self.source {
-            Source::Config(config) => (**config).clone(),
-            Source::Bundled => {
-                let directory = ensure_models_on_disk()?;
-                let model_set = rapidocr_core::model::model_set_by_name(MODEL_SET).ok_or_else(
-                    || BackendError::Unavailable(format!("no model set named {MODEL_SET}")),
-                )?;
+        let root = models::default_root();
 
-                rapidocr_core::model::ModelCache::new(directory).config_for(model_set)
-            }
-        };
+        // Asked here rather than in `local`, and only the four that a page of
+        // text cannot be read without. A pipeline is built the first time a page
+        // needs one, so a command that reads no page never asks and never pays
+        // for the digest of 7 MB it is not going to use.
+        let missing: Vec<&str> = models::absent(models::RECOGNITION_SET, &root)
+            .iter()
+            .map(|spec| spec.file)
+            .collect();
+
+        if !missing.is_empty() {
+            return Err(BackendError::Unavailable(format!(
+                "the models this tool reads a page with are not on disk: {}. \
+                 `docfusion doctor --fetch` fetches them, and so does the window's settings.",
+                missing.join(", ")
+            )));
+        }
+
+        let model_set = rapidocr_core::model::model_set_by_name(models::RECOGNITION_DIR)
+            .ok_or_else(|| {
+                BackendError::Unavailable(format!(
+                    "no model set named {}",
+                    models::RECOGNITION_DIR
+                ))
+            })?;
+
+        #[cfg_attr(not(feature = "directml"), allow(unused_mut))]
+        let mut config = rapidocr_core::model::ModelCache::new(root.join(models::RECOGNITION_DIR))
+            .config_for(model_set);
 
         // Offered rather than chosen, and falling back rather than failing: a
         // machine with no DirectML device is the ordinary case, and refusing to
@@ -242,90 +257,29 @@ impl RapidOcrBackend {
     }
 }
 
-/// The model set the embedded weights belong to.
-const MODEL_SET: &str = "ppocrv6-tiny";
-
-/// What `build.rs` actually downloaded, so that a test can hold it against what
-/// the pipeline expects.
-#[cfg(test)]
-mod model_pins {
-    include!(concat!(env!("OUT_DIR"), "/model_pins.rs"));
-}
-
-/// The weights, embedded at build time. See `build.rs`.
-mod weights {
-    pub const DET: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/ocr-models/PP-OCRv6_det_tiny.onnx"
-    ));
-    pub const REC: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/ocr-models/PP-OCRv6_rec_tiny.onnx"
-    ));
-    pub const CLS: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/ocr-models/ch_ppocr_mobile_v2.0_cls_mobile.onnx"
-    ));
-    pub const DICT: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/ocr-models/ppocrv6_tiny_dict.txt"
-    ));
-
-    pub const ALL: &[(&str, &[u8])] = &[
-        ("PP-OCRv6_det_tiny.onnx", DET),
-        ("PP-OCRv6_rec_tiny.onnx", REC),
-        ("ch_ppocr_mobile_v2.0_cls_mobile.onnx", CLS),
-        ("ppocrv6_tiny_dict.txt", DICT),
-    ];
-}
-
-/// Writes the embedded weights out, once, and returns where they went.
+/// Whether a page of text that is a picture can be read at all.
 ///
-/// ONNX Runtime loads from a path, so bytes in the binary have to become files
-/// somewhere. Each is skipped when a file of the right size is already there,
-/// which makes this cheap on every run after the first.
-fn ensure_models_on_disk() -> Result<PathBuf, BackendError> {
-    let directory = model_cache_dir().join(MODEL_SET);
-
-    std::fs::create_dir_all(&directory).map_err(|error| {
-        BackendError::Unavailable(format!(
-            "could not create {}: {error}",
-            directory.display()
-        ))
-    })?;
-
-    for (filename, bytes) in weights::ALL {
-        let path = directory.join(filename);
-
-        if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == bytes.len() as u64) {
-            continue;
-        }
-
-        // Written through a temporary file so that a run interrupted half way
-        // does not leave a short file that looks complete to the size check.
-        let temporary = directory.join(format!("{filename}.part"));
-        std::fs::write(&temporary, bytes).map_err(|error| {
-            BackendError::Unavailable(format!("could not write {}: {error}", temporary.display()))
-        })?;
-        std::fs::rename(&temporary, &path).map_err(|error| {
-            BackendError::Unavailable(format!("could not place {}: {error}", path.display()))
-        })?;
-    }
-
-    Ok(directory)
-}
-
-/// Where extracted weights live.
+/// The same kind of answer as `structure::available`, and remembered the same
+/// way and for the same reason: it costs the digest of 7 MB, it is asked before
+/// every document and on every redraw of the window, and it changes only when
+/// somebody has downloaded something.
 ///
-/// Under the tool's own per-user directory unless something says otherwise.
-/// The override exists because the weights are the one thing here large enough
-/// that somebody may want them on a different disk.
-fn model_cache_dir() -> PathBuf {
-    match std::env::var("DOCFUSION_MODEL_CACHE") {
-        Ok(explicit) => PathBuf::from(explicit),
-        Err(_) => crate::dirs::user_dir(),
-    }
+/// Not to be confused with the check `build` makes. That one names the files
+/// that are missing, which is a question about what to do next; this one is a
+/// yes or a no.
+pub fn available() -> bool {
+    AVAILABLE.get(|| models::present_all(models::RECOGNITION_SET, &models::default_root()))
 }
+
+/// Throws the remembered answer away, so the next question looks at the disk.
+///
+/// What a download calls, and what makes the button that started it mean
+/// something before the next launch.
+pub fn forget() {
+    AVAILABLE.forget();
+}
+
+static AVAILABLE: models::Cached = models::Cached::new();
 
 impl OcrBackend for RapidOcrBackend {
     fn id(&self) -> EngineId {
@@ -667,16 +621,23 @@ mod tests {
         assert_eq!(blocks[0].engine.as_str(), ENGINE_ID);
     }
 
-    /// The embedded weights have to be the ones the pipeline is looking for.
+    /// What this downloads has to be what the pipeline is looking for.
     ///
-    /// They are pinned in two places — here and in `rapidocr-core` — because a
-    /// build script cannot depend on the crate it is embedding for. Without
-    /// this test an upstream update would leave the crate expecting weights
-    /// that are no longer the ones embedded, and the symptom would be a model
-    /// that reads nothing rather than a build that fails.
+    /// Pinned in two places — the catalogue in `crate::models` and
+    /// `rapidocr-core` — because neither can ask the other at compile time: the
+    /// crate does not know about this tree and the catalogue is a table of
+    /// literals. Before this was a test it was a build script, and the property
+    /// it protects is the same one: an upstream update must fail here rather
+    /// than leave the downloader fetching weights the pipeline will not load.
+    ///
+    /// The paths matter as much as the digests. The crate looks for its four in
+    /// one directory and finds them by filename, so a catalogue that put them
+    /// somewhere else would download the right bytes to a place nothing reads.
     #[test]
-    fn the_embedded_weights_are_the_ones_the_pipeline_pins() {
-        let model_set = rapidocr_core::model::model_set_by_name(MODEL_SET).expect("model set");
+    fn the_weights_we_fetch_are_the_ones_the_pipeline_pins() {
+        let model_set = rapidocr_core::model::model_set_by_name(crate::models::RECOGNITION_DIR)
+            .expect("the catalogue names a model set the crate has");
+
         let expected: Vec<(&str, &str)> = model_set
             .assets()
             .iter()
@@ -684,17 +645,24 @@ mod tests {
             .collect();
 
         assert_eq!(
-            super::model_pins::PINS.len(),
+            crate::models::RECOGNITION_SET.len(),
             expected.len(),
-            "a weight the pipeline needs is not embedded"
+            "the catalogue and the pipeline disagree about how many files there are"
         );
 
-        for &(filename, digest) in super::model_pins::PINS {
+        for spec in crate::models::RECOGNITION_SET {
+            let filename = spec
+                .file
+                .rsplit('/')
+                .next()
+                .expect("a file name after the last separator");
+
             assert!(
                 expected
                     .iter()
-                    .any(|(name, hash)| *name == filename && *hash == digest),
-                "{filename} is not the weight the pipeline pins"
+                    .any(|(name, digest)| *name == filename && *digest == spec.sha256),
+                "{} is not the weight the pipeline pins, or not its digest",
+                spec.file
             );
         }
     }
@@ -702,19 +670,21 @@ mod tests {
     /// Reads a page through the real models.
     ///
     /// Ignored by default because it loads several megabytes of weights and
-    /// takes seconds. It needs no setup beyond that: the weights come from the
-    /// binary, which is the point of embedding them.
+    /// takes seconds, and because it now needs something a checkout does not
+    /// have: the set downloaded. `docfusion doctor --fetch` first, or the run
+    /// fails on a sentence naming the four files rather than on anything
+    /// interesting.
     ///
     /// It renders a PDF whose text the test states rather than shipping a test
     /// image, so the expected answer is in the test rather than inside a binary
     /// nobody can read.
     #[test]
-    #[ignore = "loads the embedded weights and takes seconds"]
+    #[ignore = "needs the model set downloaded, and takes seconds"]
     fn reads_text_from_a_rendered_page() {
         use docfusion_core::extract::PageSource;
         use docfusion_core::extract::fixtures;
 
-        let backend = RapidOcrBackend::bundled();
+        let backend = RapidOcrBackend::local();
 
         // Large type, so that what is under test is the pipeline rather than
         // the resolution a page happens to be rendered at.

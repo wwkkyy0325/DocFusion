@@ -58,32 +58,38 @@ pub struct Model {
     pub enabled: bool,
 }
 
-/// What the engine inside this app can read a page with, beyond the words on
-/// it.
+/// The one set of models this app reads a page with, and how much of it is
+/// here.
 ///
-/// Two models, and they are told apart because they arrive apart and do
-/// different jobs: the layout model finds the regions of a page — headings,
-/// tables, columns — and the table model reads the cells of one. Whether a
-/// table comes out as a table or as a run of loose numbers is decided here, so
-/// the window has to be able to say which of the two is missing.
+/// One set rather than a list, which is the shape this type took when the
+/// window stopped drawing two models and started drawing one card: what it has
+/// to know is whether the set is complete, how far along a fetch is, and what
+/// the whole thing weighs. Which files make it up is the backend's business —
+/// see `docfusion_store::models`.
 ///
 /// Not part of [`Model`], which is about a model at the other end of a network
-/// and the key that reaches it. These two are files on this disk, and no
-/// setting switches them off.
+/// and the key that reaches it. These are files on this disk, nothing here goes
+/// to an endpoint, and no setting switches them off.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Local {
-    /// Whether the model that finds the regions of a page is here.
-    pub structure: bool,
-    /// Whether the model that reads the cells of a table is here.
-    pub tables: bool,
+    /// Whether every file of the set is here, so that a page reads as headings,
+    /// tables and text rather than as a run of lines.
+    pub ready: bool,
     /// Whether a fetch is running now.
     pub fetching: bool,
     /// How many bytes a fetch would still have to transfer.
     ///
-    /// What is left rather than the whole file, because a fetch is resumed
+    /// What is left rather than the whole set, because a fetch is resumed
     /// rather than restarted: after a cancelled one the window would otherwise
     /// promise to download megabytes it already has.
     pub needed_bytes: u64,
+    /// What the whole set weighs, which is what the card says before anything
+    /// has been asked for.
+    ///
+    /// A fact about this build rather than about this machine, and it is here
+    /// rather than written into the frontend so that the number on the card and
+    /// the number of bytes that arrive cannot drift apart.
+    pub total_bytes: u64,
 }
 
 /// Something that went wrong, split the way the window has to say it.
@@ -134,7 +140,12 @@ pub enum Cause {
     Settings,
     /// It was read, and there was nothing in it.
     NothingToRead,
-    /// A model this app reads pages with could not be fetched.
+    /// A model this app reads pages with is not here, or could not be fetched.
+    ///
+    /// One cause for the two halves, because from where the reader is standing
+    /// they are one thing: something has not been downloaded, and there is a
+    /// button for it in the settings tab. Whether the fetch was never asked for
+    /// or was asked for and failed changes the sentence not at all.
     Download,
 }
 
