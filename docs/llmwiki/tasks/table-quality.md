@@ -47,6 +47,9 @@ Three gaps are left after the stride fix took the corpus to 8 of 9 tables.
        moves the line boxes the rest of the pipeline reads. Medium is worse than
        the embedded one on loss and content at twice the time. **The recogniser
        is not the ceiling.**
-3. [ ] Tables in a PDF that has a text layer — verify: a printed table PDF comes
+3. [x] Tables in a PDF that has a text layer — verify: a printed table PDF comes
        out with a Markdown table, the words taken from the PDF rather than
-       recognised, and the corpus numbers unchanged.
+       recognised, and the corpus numbers unchanged. **Done.** A generated
+       printed table reads as `engines: [pdfium+tables]` with all five columns,
+       and the corpus is unchanged at 0.413 loss and 10 of 10 tables, which is
+       the point: this adds a capability the corpus cannot see, not a score.

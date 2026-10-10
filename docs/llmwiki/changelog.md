@@ -4,6 +4,57 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-10 — Tables in a PDF that has a text layer
+
+**What:** A PDF whose pages carry a text layer now comes out with its tables as
+tables. Before this it could not: the table model runs inside the recognition
+backend, and a PDF with text never reaches it, so the cells of every table were
+pressed into paragraphs. Reproduced on a generated printed table, five columns,
+which came out as `Region  Q1  Q2  Q3  Q4` and four lines of numbers.
+
+**Why it was not noticed:** the corpus is twenty-four images and not one PDF, so
+the numbers never saw it. This is a capability the measurement cannot see, and
+it was found by a person opening a document rather than by a bench run.
+
+**Key decisions:**
+
+- **The words are the file's, and only the boxes are the model's.** A PDF that
+  carries a text layer says exactly what is on the page; running a recogniser
+  over it would be inventing a worse copy of what the file already holds. So the
+  page is rendered, the detector finds the tables, the table model says where
+  the cells are, and the text goes into them from the file.
+- **One placement rule, not two.** Where a word goes in a cell is one question
+  with one answer, and answering it twice is how the two answers come to differ.
+  The new reader lives beside the recognition one and calls the same `laid_out`
+  and the same cell-filling: it hands the geometry the file's own lines in the
+  shape it expects, and everything below that is untouched.
+- **Per run, not per line, and that is the whole of what makes it work.** A PDF
+  reports a table row as one line running its whole width. Handed that as a
+  single box, the placement rule puts the entire row in the cell holding most of
+  it — which is the first, since a row of five cells gives every cell a fifth.
+  Measured exactly that way before it was fixed. A *run* is a stretch of text the
+  file draws together and is the finest thing that can go in a cell.
+- **Rendering happens outside PDFium's lock.** `PdfTextLayer` holds the process
+  wide PDFium lock while it reads text, and rendering takes the same one: the
+  first version deadlocked, on the first document, for the full ten minutes it
+  was given. Reading is one pass under the lock, and everything that has to
+  render happens after it.
+- **The page's name and the extractor's name are different names.** Making the
+  id `pdfium+tables` when a model is present broke `--engine pdfium` and made the
+  page unresolvable — `stamp_of` looks a page's engine up by matching the
+  extractor's id, and a page filed under a name no extractor answers to is a
+  document that cannot be written at all. The recognition path already had this
+  right: `scan` is the id and `rapidocr+layout+tables` is what the page says. The
+  composition goes in `provenance.engines` and in the stamp, which is the cache
+  key; the id stays what a person can name.
+
+**Not done:** headings on a text-layer page still come from font size alone, and
+the reading order of a PDF is still the file's own drawing order rather than the
+column-aware order the recognition path works out. Both are visible next to each
+other now that a PDF page can carry a table block.
+
+---
+
 ## 2026-10-10 — A bigger recogniser, measured and not taken
 
 **What:** Nothing shipped. The two larger model sets in the family the embedded

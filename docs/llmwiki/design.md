@@ -485,6 +485,26 @@ inside it.
   column at one height is in one at another. Reading those needs **article
   segmentation**, which is a different problem from column detection and is not
   attempted.
+- **A PDF with a text layer gets tables too, and the words are the file's.**
+  These two models used to run only inside the recognition backend, and a PDF
+  whose pages carry text never reaches it — so every table in such a file came
+  out as its cells pressed into paragraphs, which the corpus could not see
+  because all twenty-four of its cases are images. The page is now rendered, the
+  detector finds the tables, the table model says where the cells are, and the
+  text goes in from the file: recognising it again would be inventing a worse
+  copy of what the file holds. The lines are handed over **per run and not per
+  line**, which is the whole of what makes it work — a PDF reports a table row
+  as one line across the whole width, and one box for a row of five cells lands
+  in the first of them. Where a word goes in a cell is one question with one
+  answer, so the new path calls the same placement code the recognition path
+  does rather than answering it again.
+- **The page's name and the extractor's name are two names.** `provenance.primary`
+  is what `Router::stamp_of` resolves a page's stamp through, so it must be an id
+  some extractor answers to; what the front matter shows is
+  `provenance.engines`, and that is where the composition goes — `scan` and
+  `rapidocr+layout+tables` for one, `pdfium` and `pdfium+tables` for the other.
+  The stamp, which is the cache key, carries the composition as well, because the
+  same bytes read with a table model and without are different documents.
 
 Off by default, absent on most installations, and costing one 124 MB digest and
 one session load per process when present — about a second, against the seconds
