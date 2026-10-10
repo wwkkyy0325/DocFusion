@@ -1027,6 +1027,117 @@ mod tests {
         assert_eq!(missing_bytes(&layout::TABLE, dir.path()), layout::TABLE.bytes);
     }
 
+    /// Whether the stylesheet gives `tag` a rule of its own under the pane.
+    ///
+    /// The name has to **end** where a selector name ends, and looking for the
+    /// name alone does not: renaming a rule to `blockquote-removed` leaves
+    /// `.document blockquote` in the text, and a check that only looks for that
+    /// passes with the rule gone — which is how this was found to be wrong.
+    fn styled(css: &str, tag: &str) -> bool {
+        let prefix = format!(".document {tag}");
+        let mut from = 0;
+
+        while let Some(at) = css[from..].find(&prefix) {
+            let end = from + at + prefix.len();
+            from = end;
+
+            let after = css[end..].chars().next();
+            if matches!(after, Some(' ') | Some(',') | Some('[') | Some('{') | Some(':')) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Every element a rendered document can hold has a rule in the stylesheet.
+    ///
+    /// The document pane shows whatever `render::html` produces and nothing
+    /// else, so the set of elements that can appear in it is fixed — but a pane
+    /// styled for the headings and paragraphs somebody happened to think of
+    /// leaves the rest to the browser, and the browser's defaults are drawn for
+    /// a page of prose: list markers outside the column, an indent four times
+    /// this one, a quote with a margin and no mark, headings at twice the
+    /// document's spacing.
+    ///
+    /// Enumerated rather than sampled. The document below uses every one of
+    /// them, the tags are taken from what the renderer actually wrote, and each
+    /// is looked up. The three that are excused are the ones whose browser
+    /// default is the wanted one — a bold run, an italic run and a struck one
+    /// are the same in any document.
+    #[test]
+    fn every_element_a_document_can_hold_is_styled() {
+        let markdown = "# One
+
+## Two
+
+### Three
+
+#### Four
+
+##### Five
+
+###### Six
+
+A paragraph with **strong**, *emphasis*, ~~struck~~, `code`,
+a [link](https://example.com) and ![an image](x.png).
+
+- one
+- two
+  - nested
+
+1. first
+2. second
+
+> quoted
+
+---
+
+```rust
+code
+```
+
+| a | b |
+| --- | --- |
+| c | d |
+
+- [ ] a task
+";
+
+        let rendered = docfusion_core::render::html(markdown);
+        let css = include_str!("../ui/style.css");
+
+        // Excused, and each for a reason rather than because it failed. The
+        // first three are runs inside a line whose browser default is the
+        // wanted one. The rest are wrappers: a table's row groups and rows hold
+        // nothing of their own, and what is drawn is the cells inside them,
+        // which have rules.
+        let excused = ["strong", "em", "del", "br", "thead", "tbody", "tr"];
+        let mut looked = 0;
+
+        for (at, _) in rendered.match_indices('<') {
+            let rest = &rendered[at + 1..];
+            let tag: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+
+            if tag.is_empty() || excused.contains(&tag.as_str()) {
+                continue;
+            }
+
+            looked += 1;
+            assert!(
+                styled(css, &tag),
+                "the document pane writes <{tag}> and the stylesheet has no rule for it"
+            );
+        }
+
+        // The document has to have used them, or this passes by looking at
+        // nothing.
+        assert!(looked > 12, "only {looked} tags were checked");
+    }
+
     #[test]
     fn the_engines_are_read_back_from_the_front_matter() {
         let markdown = "---\ntitle: Report\nengines: [pdfium, rapidocr]\n---\n# Report\n";

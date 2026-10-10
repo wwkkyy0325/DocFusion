@@ -31,6 +31,50 @@
 
 * { box-sizing: border-box; }
 
+/* ── the bars the webview draws ─────────────────────────────────────────── */
+
+/* `color-scheme` gets a scrollbar's *colours* right and nothing else. On Windows
+   what is left is the default bar: twelve pixels of grey with arrows at both
+   ends, drawn for a file manager rather than for a page, and it sits beside this
+   app's flat corners and hairlines looking like something that was left in by
+   accident.
+
+   Three panes scroll and so does a wide table, so there is more than one of
+   them on screen at once, and they should all be the same bar. The colours are
+   the two the rest of the window is built from, which means the bar follows the
+   theme without knowing there is one.
+
+   `::-webkit-scrollbar` and not `scrollbar-width`: setting the latter to
+   anything but `auto` makes Chromium ignore these rules entirely, and both of
+   the webviews this runs in — WebView2 and WebKit — understand these. */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Inset by a transparent border, so the thumb is thinner than the bar and does
+   not touch the content it scrolls past. */
+::-webkit-scrollbar-thumb {
+  background-color: var(--line);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted);
+}
+
+/* Where a horizontal and a vertical bar meet. Left transparent it is a pale
+   square in the corner of a dark pane. */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* `hidden` is a user-agent default — `display: none` — and a user-agent default
    loses to any author rule for the same property. Every element that is ever
    hidden here also has a `display` of its own, so without this line the
@@ -226,18 +270,74 @@ main {
 
 @keyframes turn { to { transform: rotate(360deg); } }
 
-.document { padding: 22px 30px 40px; max-width: 78ch; margin: 0 auto; }
+.document {
+  padding: 22px 30px 40px;
+  max-width: 78ch;
+  margin: 0 auto;
+  /* A URL out of a filing, or a run of digits with no break in it, is wider
+     than the column and has nowhere to wrap. Without this it pushes the pane
+     sideways and the whole document gains a scrollbar for one line of it. */
+  overflow-wrap: anywhere;
+}
 
 .document h1 { font-size: 1.6em; margin: 0.6em 0 0.4em; }
 .document h2 { font-size: 1.3em; margin: 1.4em 0 0.4em; }
 .document h3 { font-size: 1.1em; margin: 1.3em 0 0.3em; }
+/* The pipeline can write six levels and the documents seen so far use three.
+   Given no rule, the last three fall back to the browser's own margins, which
+   are twice these, and a page that uses them arrives with gaps that belong to
+   no document. */
+.document h4, .document h5, .document h6 { font-size: 1em; margin: 1.1em 0 0.3em; }
 .document p { margin: 0.7em 0; }
 .document img { max-width: 100%; }
+
+/* Lists, quotes and rules, which the pipeline writes and the browser would
+   otherwise lay out by its own defaults: a marker outside the column, an
+   indent four times this one, and a quote with a margin and no mark. */
+.document ul, .document ol { margin: 0.7em 0; padding-left: 1.5em; }
+.document li { margin: 0.25em 0; }
+/* Nested lists are indentation rather than space, so the gap between a parent
+   and its children is not the gap between two lists. */
+.document li > ul, .document li > ol { margin: 0.25em 0; }
+
+.document blockquote {
+  margin: 0.9em 0;
+  padding: 0.1em 0 0.1em 13px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+
+.document hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1.6em 0;
+}
+
+/* A Markdown document passed through by the text engine keeps its task list
+   boxes, and comrak renders those as real checkboxes. They arrive with the
+   browser's own spacing, which sits them against the words rather than beside
+   them. */
+.document input[type="checkbox"] {
+  margin: 0 0.45em 0 0;
+  vertical-align: baseline;
+  accent-color: var(--accent);
+}
 
 .document table {
   border-collapse: collapse;
   margin: 1em 0;
   font-size: 0.94em;
+  /* A table scrolls itself instead of the pane, so that a wide one is read by
+     moving it rather than by moving the document around it.
+
+     `display: block` is what allows that — an element with a table's own
+     display ignores `overflow` — and the rows inside it are still laid out as
+     a table, so the cells keep their columns. Measured on an eleven-column
+     filing: without this the whole pane gains a horizontal bar and the
+     paragraph beside the table has to be scrolled to be read. */
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
 }
 
 .document th, .document td {
