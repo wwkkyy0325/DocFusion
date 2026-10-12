@@ -64,7 +64,24 @@ jobs:
           Compress-Archive -Path "$name/*" -DestinationPath "$name.zip"
           "zip built: $name.zip" >> $env:GITHUB_STEP_SUMMARY
 
-      - uses: softprops/action-gh-release@v2
+      # Kept even when nothing is published, so that a manual run still hands
+      # back the two artifacts it built. Without this, exercising the pipeline
+      # from `workflow_dispatch` would prove it compiles and then throw the
+      # result away.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docfusion-windows
+          path: |
+            docfusion-*-windows-x86_64.zip
+            target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      # Only a tag publishes. A manual run builds and hands over the artifacts
+      # above; without this guard it would also create a release named after
+      # whatever branch it was dispatched from, which is a release nobody asked
+      # for and one that has to be deleted by hand.
+      - if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             docfusion-*-windows-x86_64.zip
