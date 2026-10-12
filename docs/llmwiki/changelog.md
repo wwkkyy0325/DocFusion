@@ -150,6 +150,15 @@ drift, and this will happen again with the next Rust release. A pinned
 `rust-toolchain.toml` would make the two agree and make a lint arrive when
 somebody chooses to bump it — at the cost of remembering to bump it.
 
+**The release job was exercised rather than trusted.** It could originally only
+be run by cutting a tag, which is the worst possible way to discover it is
+broken — so a manual dispatch now uploads the two artifacts it built, and the
+publish step is guarded by `github.ref_type == 'tag'`. Run that way, it went
+green end to end: the CLI zip and the NSIS installer both built, upload-artifact
+took them, the publish step skipped, and **no release appeared**. Dispatching
+from a branch without that guard would have created one named after the branch,
+to be deleted by hand.
+
 ---
 
 ## 2026-10-13 — Three documents that had stopped describing this program
