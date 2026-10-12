@@ -4,6 +4,51 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — Published, with a readme and a licence
+
+**What:** The repository is public at `github.com/wwkkyy0325/DocFusion`, on
+`master`, with 85 files and the full history.
+
+**MIT**, which `[workspace.package]` already declared, so nothing had to change
+to agree with it. It covers this repository's code and nothing else — which it
+turns out is a distinction that matters here, and the readme says so out loud.
+
+**What the readme is for.** This project has an unusually detailed internal
+record (`design.md`, `changelog.md`, one doc per task) written for whoever works
+on it next. None of that is a front door. The readme is, and it is deliberately
+longer than most: what the tool does, what it refuses to do, the command line
+and its agent contract, the knowledge base layout, how a document gets read, the
+engines and where their weights come from, and the benchmark table.
+
+**And the things the readme has to say that are not flattering.** Three limits on
+the benchmark are stated rather than left to be discovered: the reference is our
+own converter's output rather than the dataset's, formulas are contaminated by
+the dataset's spaced LaTeX, and every page is born-digital, which makes all of it
+optimistic about real scans. A benchmark section that only reports the good
+number is the kind of claim this project was built to avoid.
+
+**`THIRD-PARTY.md` exists because not everything here is ours and not everything
+is MIT.** PDFium is BSD-3-Clause with Apache-2.0 components and is *linked into
+the binary*; the PaddleOCR weights are Apache-2.0 and are downloaded rather than
+redistributed; `comrak` is BSD-2-Clause, which the design doc's table gets wrong
+(it says MIT/Apache, and the same table gives PDFium the wrong licence too). The
+crate licences in that file were read from the registry's own manifests rather
+than recalled.
+
+**The dataset is the part to be careful about.** The evaluation corpus is 24
+pages from OmniDocBench v1.5, which is released **for research use only, not for
+commercial use** — so a permissive licence on the code does not extend to it, and
+a commercial user of these code paths has to re-measure on their own corpus. The
+corpus was already outside the repository, which turns out to have been the right
+call for a reason nobody had in mind when it was made: nothing from the dataset
+is redistributed, and the readme carries the citation.
+
+**Checked before pushing:** no `config.toml`, no `.env`, and no key-shaped string
+anywhere in the tree. The only `sk-` strings in the repository are the placeholders
+in four tests.
+
+---
+
 ## 2026-10-13 — The source pane, looked at on a real document
 
 **What:** Two things the first version got wrong, and one of them was measurable.
