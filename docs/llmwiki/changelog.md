@@ -118,6 +118,38 @@ embed is BSD-3-Clause. Same error as §12's table, same day, one section apart.
 603 tests, clippy clean, `cargo build --workspace --exclude docfusion-gui` run
 here before being asked of CI.
 
+**And then CI failed, for a reason worth keeping.** `cargo clippy --workspace
+--all-targets -- -D warnings` passed on this machine and failed on the runner —
+because the runner's clippy is **newer** than this machine's. `-D warnings` makes
+every new lint an error, so a lint that did not exist when the code was written
+takes the build down with it.
+
+It took three runs to see it all, and the reason is worth stating: **a failing
+lint stops the crate it is in, and clippy never reaches the next one.** The first
+run reported one site in `docfusion-core`, the second six in `docfusion-store`,
+and each pass only ever showed the lints ahead of its own failure. The third
+attempt fixed all seven `chunks_exact` sites at once rather than letting CI
+reveal them one per run — which it would have, cheerfully, for as many runs as
+there were sites.
+
+`as_chunks::<N>().0` is what the lint asks for: the length moves into the type
+instead of being checked at run time, and the array that falls out is what the
+call sites wanted anyway. It has been stable since **1.88**, which is this
+workspace's floor, so the two agree by coincidence rather than by construction —
+worth knowing if the floor ever moves.
+
+**One error in the same commit was mine and not a lint.** `rust-version` was
+added to `[workspace.package]` and inherited by **none** of the four crates: a
+workspace value reaches a crate only where that crate writes
+`field.workspace = true`. So the floor was declared in one place and enforced in
+none, and the commit message claiming otherwise was wrong until a later commit
+made it true.
+
+**Open, and raised by this:** both local and CI track floating `stable`, so they
+drift, and this will happen again with the next Rust release. A pinned
+`rust-toolchain.toml` would make the two agree and make a lint arrive when
+somebody chooses to bump it — at the cost of remembering to bump it.
+
 ---
 
 ## 2026-10-13 — Three documents that had stopped describing this program
