@@ -139,8 +139,13 @@ The design document is `docs/llmwiki/design.md`; the setup guide is
 
 ## Quick start
 
-Requires a Rust toolchain (**1.88+** — edition 2024 alone would run on 1.85, but
-PDFium and ONNX Runtime's bindings each ask for 1.88).
+Requires a Rust toolchain. **The version is pinned in `rust-toolchain.toml`**, so
+`rustup` installs it for you on the first `cargo` command and there is nothing to
+choose — 1.88 is the floor the dependencies ask for, but the pin is what CI
+builds and checks with, because a compiler nobody wrote the code against is not
+a useful thing to be tested by. (Behind a mirror that serves channels but not
+versions, that install fails with a 404; the file says how to fetch it from
+upstream once.)
 
 ```bash
 git clone https://github.com/wwkkyy0325/DocFusion.git

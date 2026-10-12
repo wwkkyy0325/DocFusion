@@ -1,0 +1,31 @@
+# The toolchain this project is built and checked with, pinned.
+#
+# **Why pinned rather than `stable`.** Both this machine and CI used to track
+# floating `stable`, which means they were running different compilers without
+# anybody deciding that — and the first CI run proved it. The runner's clippy was
+# two releases ahead of the local one, a lint neither author had heard of became
+# an error under `-D warnings`, and the build went down for a reason that had
+# nothing to do with the change. Pinning makes the two agree, and makes a new
+# lint arrive when somebody chooses to bump this file rather than on a Tuesday.
+#
+# **Bumping it is the whole procedure:** change the version, run the suite, push.
+# CI reads this file rather than carrying its own copy of the number, so there is
+# nothing else to remember.
+#
+# `clippy` is the only component CI needs. `rustfmt` is deliberately absent,
+# because formatting is not a gate here — see `.github/workflows/ci.yml`.
+#
+# **If the toolchain will not install, the mirror is why.** A rustup mirror that
+# only carries channel manifests — `channel-rust-stable.toml` and friends — serves
+# `stable` happily and returns 404 for every *versioned* manifest, so `stable`
+# installs and `1.99.0` does not. The one-time fix, when `static.rust-lang.org`
+# is reachable, is to fetch this toolchain from upstream rather than the mirror:
+#
+#     RUSTUP_DIST_SERVER=https://static.rust-lang.org \
+#       rustup toolchain install 1.99.0 --component clippy --profile minimal
+#
+# After that the pin resolves from the local toolchain and no network is
+# involved. CI is unaffected either way: GitHub's runners use upstream.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy"]

@@ -116,7 +116,7 @@ DocFusion 是一个本地优先的文档摄取流水线，用 Rust 写成。它�
 
 ## 快速开始
 
-需要一个 Rust 工具链（**1.88+** —— 光看 edition 2024 的话 1.85 就够，但 PDFium 和 ONNX Runtime 的绑定各自都要求 1.88）。
+需要一个 Rust 工具链。**版本钉在 `rust-toolchain.toml` 里**，所以 `rustup` 会在你第一次跑 `cargo` 时自己装上，不需要你选 —— 依赖要求的下限是 1.88，但真正用来构建和检查的是钉住的那个版本，因为让一个你写代码时并不针对的编译器来检验它，没什么意义。（如果身处只镜像 channel、不镜像具体版本的镜像站，这次安装会 404；文件里写了怎么从上游取一次。）
 
 ```bash
 git clone https://github.com/wwkkyy0325/DocFusion.git

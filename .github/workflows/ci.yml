@@ -23,8 +23,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The version lives in `rust-toolchain.toml` and nowhere else. This action
+      # does not read that file — it takes a branch name or an explicit version —
+      # so the file is read here and the value handed over. Two copies of a
+      # toolchain version are two copies that drift, and the drift is silent
+      # until the day it is not, which is the whole reason for the pin.
+      - name: read the pinned toolchain
+        id: pinned
+        shell: bash
+        run: |
+          version=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.pinned.outputs.version }}
           components: clippy
 
       # Worth more here than in a typical Rust project: a cold build downloads
@@ -62,7 +75,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Same pin as the job above, read from the same file. `clippy` is not
+      # asked for here because this job only builds.
+      - name: read the pinned toolchain
+        id: pinned
+        shell: bash
+        run: |
+          version=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.pinned.outputs.version }}
 
       - uses: Swatinem/rust-cache@v2
 

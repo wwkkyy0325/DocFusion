@@ -4,6 +4,45 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — The toolchain is pinned, so the two agree by construction
+
+**What:** `rust-toolchain.toml`, and CI reads it rather than carrying its own
+copy of the number.
+
+**The problem this closes is the one the first CI run exposed.** Both this
+machine and the runner tracked floating `stable`, so they were running different
+compilers without anybody deciding that, and a lint two releases old gave a
+failure that had nothing to do with the change. A pin makes them agree, and makes
+the next new lint arrive when somebody bumps the file rather than on a Tuesday.
+
+**`dtolnay/rust-toolchain` does not read `rust-toolchain.toml`.** It takes a
+branch name — `@stable`, `@1.99.0` — or an explicit `toolchain:` input, and
+[its own issue tracker says the omission is deliberate](https://github.com/dtolnay/rust-toolchain/issues/159).
+So the workflows read the version out of the file with `sed` and hand it to the
+action. The alternative was the version written in four places, which is four
+places to forget.
+
+**And the pin did not install, which took longer to understand than to fix.** A
+rustup mirror is not obliged to carry *versioned* toolchains: this machine's
+`RUSTUP_DIST_SERVER` serves `channel-rust-stable.toml` and returns **404 for
+every `channel-rust-<version>.toml`** — so `stable` installs perfectly and
+`1.99.0` cannot be found at all, on any version, including the one already
+running. `static.rust-lang.org` answers fine, so the fix is one command with the
+dist server overridden, and it is written into `rust-toolchain.toml` where
+somebody hitting it will actually look. Worth knowing for anybody in the same
+situation: **the mirror was not broken, it was just not the right source for a
+pinned version.**
+
+**Verified by the thing it was for.** Under the pin, `rustc 1.99.0` and `clippy
+0.1.99` — byte for byte what the runner has — and the workspace passes clippy
+`-D warnings` and all 603 tests. That is the first time a green result here has
+meant a green result there.
+
+*(The version was chosen as current stable, which is also what the runner
+already had, so CI downloads nothing. The one-time cost was on this machine.)*
+
+---
+
 ## 2026-10-13 — A check on every push, and something to install
 
 **What:** CI, an NSIS installer, a portable CLI zip, and an uninstaller that
