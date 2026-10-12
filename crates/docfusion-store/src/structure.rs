@@ -223,7 +223,7 @@ impl Region {
 pub(crate) fn to_rgb(image: &PageImage) -> image::RgbImage {
     let mut rgb = image::RgbImage::new(image.width, image.height);
 
-    for (pixel, channels) in rgb.pixels_mut().zip(image.pixels.chunks_exact(4)) {
+    for (pixel, channels) in rgb.pixels_mut().zip(image.pixels.as_chunks::<4>().0) {
         *pixel = image::Rgb([channels[0], channels[1], channels[2]]);
     }
 
@@ -272,7 +272,7 @@ impl Detector {
         // Measured against the same page, this gives 0.985.
         let raw = square.as_raw();
         let mut pixels = vec![0.0f32; 3 * pixels_count];
-        for (index, pixel) in raw.chunks_exact(3).enumerate() {
+        for (index, pixel) in raw.as_chunks::<3>().0.iter().enumerate() {
             for (channel, byte) in pixel.iter().enumerate() {
                 pixels[channel * pixels_count + index] = f32::from(*byte) / 255.0;
             }
@@ -413,7 +413,9 @@ pub fn model_path() -> PathBuf {
 /// the 800×800 square, because the model was told how to map them back.
 fn decode(found: &[f32]) -> Vec<Region> {
     found
-        .chunks_exact(6)
+        .as_chunks::<6>()
+        .0
+        .iter()
         .filter_map(|row| {
             if row[1] < FLOOR {
                 return None;
@@ -2643,7 +2645,9 @@ mod tests {
             page.width,
             page.height,
             page.pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
                 .collect(),
         )

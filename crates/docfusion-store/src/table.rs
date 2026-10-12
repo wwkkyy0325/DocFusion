@@ -311,7 +311,9 @@ fn squashed(picture: &image::RgbImage) -> (Vec<f32>, (f32, f32)) {
 /// The most likely token at each step, stopped where the model says to stop.
 fn read_tokens(logits: &[f32]) -> Vec<u32> {
     logits
-        .chunks_exact(CLASSES)
+        .as_chunks::<CLASSES>()
+        .0
+        .iter()
         .map(|step| {
             let mut best = 0;
             for (index, score) in step.iter().enumerate() {
@@ -353,14 +355,16 @@ fn read_boxes(
     let (across, down) = (width / resized.0, height / resized.1);
 
     located
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|corners| {
             let mut left = f32::INFINITY;
             let mut top = f32::INFINITY;
             let mut right = f32::NEG_INFINITY;
             let mut bottom = f32::NEG_INFINITY;
 
-            for corner in corners.chunks_exact(2) {
+            for corner in corners.as_chunks::<2>().0 {
                 // Four corners, and the square they are in is not the picture.
                 let x = corner[0] * SIDE as f32 * across;
                 let y = corner[1] * SIDE as f32 * down;
