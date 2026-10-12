@@ -772,9 +772,20 @@ folded into the other.
 
 #### A baseline, not a verdict
 
-The first corpus is 24 pages sampled from OmniDocBench v1.5 — the base subset
+The first corpus is 24 pages sampled from **OmniDocBench v1.6** — the base subset
 only, since the `equation_hard`, `layout_hard` and `table_hard` subsets are
 adversarial by construction and say little about ordinary documents.
+
+**The version in this sentence was wrong for four days, and the data never was.**
+It read "v1.5", which is the label the dataset puts on its *base subset*
+(`subset == "v1.5"`, which is what the corpus builder filters on) rather than a
+release number. The file the builder downloaded — from the dataset's `master`
+revision — is the v1.6 release: 1,651 pages, of which 296 are the three hard
+subsets that only exist from v1.6 on. A corpus that contains pages a version
+cannot have is not from that version, which is how the mistake was caught. The
+distinction is worth keeping straight for anybody reproducing this: the subset
+name is stable across releases, so filtering on it keeps a corpus comparable
+while the release underneath it moves.
 
 Three limits are known and are **not** corrected for, because correcting them
 would hide them:

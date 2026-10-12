@@ -214,7 +214,9 @@ swapping it is a one-line change behind the trait.
 >
 > What was left to measure was the only question actually open, and it turned
 > out to be the interesting one: **on real documents, which engine reads
-> better?** 24 pages from OmniDocBench v1.5, both engines, numbers in §8.5.
+> better?** 24 pages from OmniDocBench v1.6, both engines, numbers in §8.5.
+>
+> *(v1.5 is the base subset's name, not the release — corrected 2026-10-13.)*
 >
 > The answer is that they are close on characters and not close on structure —
 > and that they fail on *different pages*, which is the empirical case for the

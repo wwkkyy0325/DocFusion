@@ -57,7 +57,7 @@ cargo license --all-features
 ## The benchmark dataset
 
 The evaluation numbers in the README come from a corpus derived from
-**OmniDocBench v1.5**, which is released **for research purposes only, not for
+**OmniDocBench v1.6**, which is released **for research purposes only, not for
 commercial use**. Nothing from that dataset is redistributed in this repository —
 no page images, no annotations, no reference files — and the corpus is kept
 outside it and referenced by path. See

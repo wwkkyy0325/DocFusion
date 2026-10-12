@@ -4,6 +4,43 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — The dataset was never out of date; the sentence about it was
+
+**What:** Three things, one of them a mistake that had been copied into public
+documents for four days.
+
+**The corpus is v1.6, and always was.** Every document here called it
+"OmniDocBench v1.5" — `design.md` §8.5, the readme, `THIRD-PARTY.md`, and the
+task doc. It is not v1.5. The dataset labels its *base subset* `v1.5`, and
+`build_corpus.py` filters on exactly that, so a subset name had been written down
+as a release number and then repeated.
+
+**What settled it was a page count.** The file the builder downloaded, from the
+dataset's `master` revision, holds 1,651 pages: 1,355 base plus `equation_hard`
+100, `layout_hard` 99, `table_hard` 97. The three hard subsets were **added in
+v1.6**, and the release note is explicit — "*Added a 296-page hard subset… the
+full 1,651-page release is in `OmniDocBench.json`*". A file containing pages that
+a version does not have cannot be that version. So there was never anything to
+fix in the data, and rebuilding the corpus would have changed every published
+number to produce the same corpus.
+
+**This is the failure mode this project is built against**, and it is worth
+naming: nothing was misread, nothing was miscalculated, no test could have
+caught it. A label was attached once and repeated, and repetition is what made it
+look verified. The check that broke it took one command and had been available
+the whole time.
+
+**`README.zh-CN.md`.** A full translation, with a language link at the top of
+both files. It is the same content rather than a summary, because a shortened
+translation is a second source of truth about what the tool does, and this
+project has enough of a problem with second sources of truth already today.
+
+**And `master` is now `main`** — branch renamed, pushed, and the old ref deleted.
+GitHub will not delete the branch that is currently the default, so the default
+had to be moved first, which is an API call rather than a push.
+
+---
+
 ## 2026-10-13 — Published, with a readme and a licence
 
 **What:** The repository is public at `github.com/wwkkyy0325/DocFusion`, on
@@ -36,7 +73,7 @@ crate licences in that file were read from the registry's own manifests rather
 than recalled.
 
 **The dataset is the part to be careful about.** The evaluation corpus is 24
-pages from OmniDocBench v1.5, which is released **for research use only, not for
+pages from OmniDocBench v1.6, which is released **for research use only, not for
 commercial use** — so a permissive licence on the code does not extend to it, and
 a commercial user of these code paths has to re-measure on their own corpus. The
 corpus was already outside the repository, which turns out to have been the right
@@ -1648,6 +1685,9 @@ exam papers, reports and notes. It was reported missing twice in this session
 because it was looked for inside the project and one level of the parent. It is
 referenced by path, as §8.5 intends, and the path is worth writing down.
 
+*v1.5 corrected to v1.6 on 2026-10-13 — v1.5 is the base subset's name, not the
+release. See the entry at the top of this file.*
+
 ---
 
 ## 2026-10-09 — PaddleOCR-VL, run rather than read about
@@ -2860,6 +2900,9 @@ made every run a dry run would be a trap rather than a convenience.
 **What:** 24 pages sampled from OmniDocBench v1.5, converted into a `bench`
 corpus, and run against the local recognition engine. `Score` gained a second
 error rate. The baselines are in design §8.5.
+
+*The release named here is v1.6, corrected on 2026-10-13 — v1.5 is the base
+subset's name. See the entry at the top of this file.*
 
 **The metric was wrong, and the corpus is what showed it.** A three-column
 newspaper page: the engine produced **97.7% of the reference's characters** and

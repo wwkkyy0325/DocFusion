@@ -1,5 +1,7 @@
 # DocFusion
 
+**English** | [简体中文](README.zh-CN.md)
+
 **Turn PDFs, images and Office documents into structured Markdown — locally, exactly once, into a file tree you already know how to use.**
 
 DocFusion is a local-first document ingestion pipeline written in Rust. It reads
@@ -463,10 +465,13 @@ survive that. The local engine runs at full resolution and does not care.
 ### The corpus
 
 The first corpus is **24 pages sampled from the base subset of
-[OmniDocBench v1.5](https://github.com/opendatalab/OmniDocBench)**. The
-`equation_hard`, `layout_hard` and `table_hard` subsets were deliberately left
-out: they are adversarial by construction and say little about ordinary
-documents.
+[OmniDocBench v1.6](https://github.com/opendatalab/OmniDocBench)** — the current
+release, downloaded from the dataset's `master` revision. v1.6 keeps the base
+subset labelled `v1.5` in the data, which is a **subset name rather than a
+version number**, and the corpus builder filters on exactly that; the full
+release is 1,651 pages. The `equation_hard`, `layout_hard` and `table_hard`
+subsets were deliberately left out: they are adversarial by construction and say
+little about ordinary documents.
 
 Three limits are known and are **not** corrected for, because correcting them
 would hide them:

@@ -46,7 +46,9 @@ readable by somebody who did not write it.
 ## The thing this turned up
 
 **A permissive licence on the code does not extend to the benchmark.** The
-evaluation corpus is 24 pages from OmniDocBench v1.5, which is released for
+evaluation corpus is 24 pages from OmniDocBench **v1.6** — the number in the first
+draft of this file was v1.5, and it was wrong; see the changelog entry for
+2026-10-13. The dataset is released for
 research use only and not for commercial use. The corpus has always lived outside
 this repository, for the original reason that real documents are often private —
 which turns out to have been the right call for a reason nobody had in mind when
