@@ -404,11 +404,11 @@ single place that defines what "complete" means, digests checked before anything
 is trusted, resumable downloads and mirrors tried in order. Nothing is fetched
 unless somebody asks for it.
 
-The two halves are not equal, and the split is deliberate: the **recognition
-weights are 7 MB and are not optional** — without them a page of text that is a
-picture cannot be read at all. The **layout model is 124 MB and is an
-improvement rather than a capability**: every page this tool ever read, it read
-without it.
+The parts are not equal, and the split is deliberate. The **recognition set is
+6.9 MB and is not optional** — without it, a page of text that is a picture
+cannot be read at all. The **table model is 7.8 MB** and the **layout model is
+124 MB**, and both are improvements rather than capabilities: every page this
+tool ever read, it read without them.
 
 Everything runs locally. Nothing is uploaded anywhere unless a vision endpoint
 has been configured, and then only pages that need one.

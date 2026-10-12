@@ -4,6 +4,50 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — Three documents that had stopped describing this program
+
+**What:** The three stalenesses found while writing the readme, fixed, plus three
+more that turned up in the same table.
+
+**`setup.md` §1 said the weights ship inside the binary.** They have not since
+`models-on-demand`, and §2's walkthrough then told a reader to `add` a PNG — the
+one thing that cannot work until they are fetched. The section is rewritten
+around what is actually true: deterministic formats need nothing at all, and the
+six files are 144 MB in three parts, one of which is required. §6's sample
+`doctor` output was from the same era and had lost three lines the command now
+prints; it is the current format, with the `text-only` tier that a machine
+without the recognition weights now gets.
+
+*(`doctor` counts mebibytes. The set is 144 MB and prints as 138 MB, which is
+not a discrepancy worth a bug report and is worth one sentence in the guide.)*
+
+**`design.md` §12's technology table was wrong in four places**, and fixing the
+PDFium licence is what made the others visible:
+
+- PDFium: "MIT/Apache" — the crates are MIT OR Apache-2.0, but the DLL they embed
+  is **BSD-3-Clause**, and it is linked into what gets distributed.
+- `comrak`: no licence was stated, and it is **BSD-2-Clause**.
+- DOCX: listed `docx-rs`, which has never been in any manifest. It is
+  hand-rolled over zip + `quick-xml`, like PPTX beside it.
+- **The `tokio` row is deleted.** Nothing here depends on it and nothing names
+  it; it is in `Cargo.lock` because Tauri's `reqwest` pulls it in. The row
+  directly above it says the pipeline is synchronous so that an async runtime is
+  not carried, and both had been true to different people for months.
+
+**`design.md` §13 listed vector search under P4**, which §2 rules out from the
+other side: embeddings are a non-goal *ever* rather than a phase deferred. Two
+rows that cannot both be true, and the phase table is a plan while §2 is a
+decision, so the plan is what moved.
+
+**Two claims were checked and were fine, and the checking is the point.** A flag
+and a message both looked dead — `--fetch` appeared to be read nowhere, and
+`doctor` printed "the recognition engine bundled in the binary" — and both were
+artifacts of running `target/release/docfusion.exe`, which is **32 commits old**.
+`cli.fetch` is read in `doctor.rs`, and the sentence no longer exists in the
+source at all. Neither was written down, so neither had to be retracted.
+
+---
+
 ## 2026-10-13 — The dataset was never out of date; the sentence about it was
 
 **What:** Three things, one of them a mistake that had been copied into public

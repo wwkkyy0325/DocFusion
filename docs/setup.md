@@ -6,12 +6,7 @@ the machine this was written on, so you know where to be careful.
 
 ---
 
-## 1. Nothing is required to start
-
-The recognition engine and its weights — 6.9 MB of them — are inside the binary.
-There is nothing to install, nothing to download, and no model to choose. PDFs
-with a text layer, images, and Office documents all work the moment the binary
-exists.
+## 1. What is required to start, and what is not
 
 Build it:
 
@@ -21,7 +16,45 @@ cargo build --release
 
 The binary is `target/release/docfusion.exe`.
 
+**A document that already carries its text needs nothing else.** PDFs with a text
+layer, and DOCX, XLSX, PPTX, TXT and Markdown, are read by code inside the binary
+— no model, no network, no configuration, nothing to download.
+
+**A scan or an image needs weights, and they are not inside the binary.** They
+were, once. Fetching them on demand bought a single place that says what
+"complete" means, digests checked before anything is trusted, and mirrors tried
+in order — at the price of a fresh installation that reads no image until the
+weights arrive. Six files, 144 MB in total, in three parts. (`doctor` counts in
+mebibytes, so it prints the same set as **138 MB**; the two numbers are one set.)
+
+| | size | needed? |
+|---|---|---|
+| the recognition set — detector, recogniser, angle classifier, dictionary | 6.9 MB | **yes.** Without it a page of text that is a picture cannot be read at all |
+| the table structure model (`SLANet_plus`) | 7.8 MB | no. Without it a table stops being read as a grid |
+| the page layout model (`PP-DocLayout_plus-L`) | 124 MB | no. Without it no headings, tables, headers or footers are found on a scan |
+
+Fetch them with the command line:
+
+```bash
+docfusion doctor --fetch
+```
+
+or with the **Download** button on the window's settings page, which shows the
+same set file by file as it arrives. Both write to the same place, and neither
+runs on its own: nothing is fetched at startup and nothing refreshes in the
+background. `DOCFUSION_MODEL_CACHE` overrides where they go; by default that is
+`%LOCALAPPDATA%\DocFusion\models`.
+
+A download that is interrupted resumes rather than restarts, and every file is
+checked against a pinned SHA-256 before anything is trusted. The digests are in
+`crates/docfusion-store/src/models.rs`, which is the only place the set is
+defined.
+
 ## 2. Prove it works, before configuring anything
+
+This page is a PNG, so it is a page of text that is a picture: **fetch the
+recognition set from §1 first**, or it is the one thing that will not be read.
+Nothing else has to be configured.
 
 ```bash
 docfusion --root kb add page.png
@@ -157,9 +190,11 @@ Healthy, with an endpoint:
 ```
 knowledge base  kb
 engines         pdfium, docx, xlsx, pptx, text-passthrough, scan
+memory          31.2 GB, so 16 pages at once
 endpoint        https://api.deepseek.com
   serves        deepseek-flash, deepseek-v4-pro
   selected      deepseek-flash  (listed)
+models          present, 138 MB — the words on a page, and the shape of it
 capability      vision
 ```
 
@@ -168,8 +203,14 @@ problem:
 
 ```
 endpoint        none configured
+models          present, 138 MB — the words on a page, and the shape of it
 capability      ocr-only
 ```
+
+**`capability` has three values, not two**, because there are three things a
+machine can be. `ocr-only` is a claim about a download now rather than about
+what the program ships: with no recognition weights on disk, the answer is
+`text-only`, and it says so rather than promising to read a scan it cannot.
 
 Exit code is `0` when nothing is wrong and `1` when a configured endpoint could
 not be reached. A missing `/v1/models` listing is not an error: nothing requires

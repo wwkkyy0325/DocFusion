@@ -1801,9 +1801,9 @@ indistinguishable from a good reading until the two are next to each other.
 | Concern | Choice | Notes |
 |---|---|---|
 | Workspace | Cargo workspace, 4 crates | CLI must not compile Tauri |
-| Markdown render | `comrak` | GFM + tables; output HTML for both CLI and GUI |
-| PDF text layer | `pdfium-render` + `pdfium-bundled` | Chromium engine, MIT/Apache, CJK-safe; DLL embedded, extracted to cache on first use (7.4 MB) |
-| DOCX / XLSX | `docx-rs` / `calamine` | Pure Rust |
+| Markdown render | `comrak` | GFM + tables; output HTML for both CLI and GUI. **BSD-2-Clause**, not the MIT this row used to imply. |
+| PDF text layer | `pdfium-bundled`, which re-exports `pdfium-render` | Chromium engine, CJK-safe; DLL embedded, extracted to cache on first use (7.4 MB). **The crates are MIT OR Apache-2.0; the PDFium binary they embed is BSD-3-Clause** (The PDFium Authors) with Apache-2.0 components — a distinction that matters because the DLL is linked into what gets distributed. See `THIRD-PARTY.md`. |
+| DOCX / XLSX | hand-rolled (zip + `quick-xml`) / `calamine` | Pure Rust. DOCX was going to be `docx-rs` and is not: this row claimed a dependency the manifest has never had. |
 | PPTX | hand-rolled (zip + XML) | No mature Rust crate |
 | Local OCR | RapidOCR models + ONNX Runtime | No PaddlePaddle |
 | Vision backend | The user's OpenAI-compatible endpoint | `llama-server`, Ollama, LM Studio, vLLM or a cloud API — one client covers all of them. Not ours to run. |
@@ -1814,7 +1814,15 @@ indistinguishable from a good reading until the two are next to each other.
 | CLI | `clap` | Derive API, generated help |
 | Field trigger | `regex` | The critical-field patterns. Four hand-rolled matchers would be more code, less capable, and harder to extend; the comparison itself folds width and case by hand, because a regex per character would be absurd. |
 | GUI | Tauri v2 + static frontend | No Node build chain. The `ui/` folder is loaded as it is; Markdown becomes HTML in Rust, so there is nothing for a bundler to do. |
-| Async | `tokio` | Needed for concurrent backend calls |
+
+**Deleted: the `tokio` row.** It said "needed for concurrent backend calls" and
+nothing here has ever needed it. No crate in this workspace depends on `tokio`,
+nothing in the tree names it, and the row above it says the pipeline is
+synchronous precisely so that an async runtime is not carried. `tokio` is in
+`Cargo.lock` because Tauri's own `reqwest` pulls it in, which is a fact about a
+dependency's dependencies rather than a choice made here. A technology table
+that lists a technology the program does not use is a table that has stopped
+being read.
 
 ---
 
@@ -1828,7 +1836,15 @@ Each phase is independently usable — no phase requires the next to be useful.
 | **P1 Dual verification** | **Bench harness + golden corpus first**, then `VlmBackend`, Ollama backend, RapidOCR backend, alignment, conflicts, model selection | Scans handled; disagreements visible; default local VLM chosen from measurement |
 | **P2 GUI** | Tauri shell, rendering, copy-as-plain-text, conflict panel | Users can review conflicts |
 | **P3 Retrieval** | SQLite FTS5 + Chinese tokenization, search UI | An archive you can find things in |
-| **P4 Optional** | Vector search, MCP server, environment detection UI, daemon/queue | — |
+| **P4 Optional** | MCP server, `serve`, daemon/queue | — |
+
+**Vector search is not on this list and never was meant to be on it.** It was
+written here once and §2 rules it out from the other direction: embeddings and
+rerankers are a non-goal *ever*, not a phase that was deferred. The two rows
+cannot both be true, and §2 is the one that is — this phase table is a plan, and
+that section is a decision. "Environment detection UI" went the same way, and
+earlier: §7 replaced inspection with one probe, and then found the `Capability`
+enum was not needed either, because nothing branches on it.
 
 Environment detection and capability tiers land with P1, since they determine
 which engines are available.
