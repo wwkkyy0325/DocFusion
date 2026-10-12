@@ -13,7 +13,7 @@ directml = ["ort/directml", "rapidocr-core/directml"]
 [dependencies]
 base64 = "0.23.1"
 blake3 = "1.8.7"
-docfusion-core = { version = "0.1.0", path = "../docfusion-core" }
+docfusion-core = { version = "0.1.1", path = "../docfusion-core" }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tiff", "webp"] }
 # The same ONNX Runtime `rapidocr-core` runs the recogniser on, and the same
 # version, so that one copy of the native library is linked rather than two.

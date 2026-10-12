@@ -4,6 +4,34 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — 0.1.1, which is 0.1.0 with the four things it got wrong
+
+**What:** A release, because the four fixes above only exist on `main` until one
+is cut, and the whole point of testing from a release is testing the thing
+somebody will download.
+
+**The version is bumped in six places and the tag is checked against one of
+them.** `tauri.conf.json` is what the release guard reads, and it is what names
+the installer; `[workspace.package]` is what `docfusion --version` prints; and
+the five `version = "0.1.1", path = ...` requirements in the crate manifests.
+Bumping only the first would have shipped an installer called 0.1.1 containing a
+command that answers `docfusion 0.1.0`, which is the sort of thing that is not
+worth being wrong about. All four were checked to agree before the tag:
+
+```
+docfusion 0.1.1
+tauri.conf.json : 0.1.1
+Cargo.lock      : docfusion-core 0.1.1
+```
+
+**Not a breaking change and not a feature, so the patch digit moves.** What is in
+it: the records list drawn the right way up, "no endpoint configured" no longer
+reported as "the endpoint did not answer", the settings fields no longer showing
+an example that reads as a value, and timestamps shown in the reader's own time
+rather than as UTC with the letters left on.
+
+---
+
 ## 2026-10-13 — The example in the box, and the timestamp in the row
 
 **What:** Two things the settings page and the records list showed wrongly, both

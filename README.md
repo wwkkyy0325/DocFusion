@@ -114,7 +114,7 @@ caught:
 
 ## Status
 
-**v0.1.0 — working, and honest about its edges.** All four crates build, the
+**v0.1.1 — working, and honest about its edges.** All four crates build, the
 suite is green, and the CLI and the window share one core.
 
 | Area | State |

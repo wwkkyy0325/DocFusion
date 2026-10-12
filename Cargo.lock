@@ -1230,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "docfusion-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "docfusion-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "calamine",
  "comrak",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "docfusion-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "docfusion-core",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "docfusion-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "blake3",
