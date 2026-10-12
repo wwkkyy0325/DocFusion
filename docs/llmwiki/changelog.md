@@ -4,6 +4,88 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — The source pane, looked at on a real document
+
+**What:** Two things the first version got wrong, and one of them was measurable.
+
+**The halves were not apart.** `.split.editing .document` had the `overflow`
+that makes the reading half scroll itself, and the source view's right-hand half
+is not in that mode — so the pane scrolled as one piece while the pages column
+scrolled inside it, and the two were not the same shape as the editor's. It is
+`.split .document` now, and the pages column draws the same hairline between the
+halves that the editor's editor does.
+
+**And a page cost more than it had to.** Measured on a real 696 KB PDF, one page
+at 110 dpi:
+
+| | before | after |
+|---|---|---|
+| render | 63 ms | 63 ms |
+| encode | PNG, 690 ms, 958 KB | JPEG, 381 ms, 210 KB |
+| over the bridge | 1.3 MB as base64 | 280 KB |
+| an image source | decoded, then encoded as a 2 MB PNG | **its own bytes, no work at all** |
+
+The image case was the worst of it and the most obviously wrong: an image *is*
+a picture of itself, and the first version decoded it and encoded it again as
+something several times larger.
+
+**The measurement also said what *not* to fix.** `RenderedPages::open` takes
+752 ms the first time and 0.18 ms after that — it is PDFium starting up, not a
+parse paid per page — so caching the open document, which looked like the
+obvious win, would have bought nothing. `PAGE_DPI` is the dial that is left, and
+it is written as one constant with the trade in its comment: the page is the
+evidence somebody is checking a character against, so shrinking it costs the
+thing the pane is for.
+
+603 tests, clippy clean.
+
+---
+
+## 2026-10-13 — The file the document was read from, beside it
+
+**What:** A second toggle in the status bar shows the source on the left and the
+reading on the right — the pages of the PDF it came from, or the image itself.
+It is what the copy the knowledge base keeps is for besides reading a document
+again: the one thing the Markdown cannot show you is what it was looking at.
+
+**Only a file with pages has anything to show, and that is most of them.** A PDF
+is rendered a page at a time and an image is its own page; an Office document is
+a zip of XML with no picture of itself anywhere, and a text file's page is its
+words, which are already on the other side of the pane. Those get a sentence
+saying so rather than an empty half — an empty half reads as a pane that failed
+to load.
+
+**Rendered as they are scrolled to.** A two-hundred-page scan is two hundred
+pictures, and rendering them to show the first one is a minute of work nobody
+asked for, so an `IntersectionObserver` draws each page a screenful before it
+arrives. The bytes behind them are held while the pane is open, because
+rendering is per page and a PDF is reopened for each of them — cheap when a page
+costs seconds to recognise, and not when the pages are being scrolled through.
+Let go when the pane closes.
+
+Pages go to the window as a data URI rather than a file or blob URL: the content
+policy allows `img-src data:` and nothing else, and the copy is a file inside the
+knowledge base rather than one of the window's own assets.
+
+**No alignment.** The Markdown does not record which page a block came from, and
+writing page markers into it would mean teaching the renderer, the search index,
+the exports and the editor to filter them out — a change to the file format for a
+view whose whole job is to be looked at. The two halves are side by side and each
+scrolls itself.
+
+**The modes are exclusive.** One pane cannot be showing the document, the words
+and the file at once, so opening the source view closes the editor — and asks
+first if there are unsaved words, because closing it would throw them away.
+
+One thing the test for this caught: `page_image` answered an out-of-range page
+request for an image with the same picture. It says so now, because a function
+that silently returns something about a page that does not exist hides a mistake
+in whoever asked.
+
+603 tests, clippy clean.
+
+---
+
 ## 2026-10-13 — The editor is the simple version
 
 **What:** The two halves no longer follow each other. No scroll sync, no caret

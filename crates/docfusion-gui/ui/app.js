@@ -61,6 +61,12 @@ const TEXT = {
     format_csv: "逗号分隔",
     format_csv_what: "纯文本，什么软件都能打开",
 
+    source_view: "原文",
+    source_done: "退出原文",
+    source_nothing: "这份的原文没有页面可以看：它不是 PDF 也不是图片。",
+    source_page: (n) => `第 ${n} 页`,
+    source_failed: "这一页显示不出来：",
+
     edit: "编辑",
     edit_done: "退出编辑",
     edit_unsaved: "未保存",
@@ -224,6 +230,15 @@ let editing = false;
 let dirty = false;
 let source = "";
 let editor = null;
+
+/// Whether the pane is showing the file the document was read from, how many
+/// pages it has, and the watcher that draws them as they are scrolled to.
+///
+/// The two modes are two ways of comparing the document with something, and one
+/// pane cannot be showing three things — so each closes the other.
+let viewing = false;
+let pages = null;
+let watching = null;
 
 /// The button that opened the menu — the footer's, or a block's.
 ///
@@ -503,7 +518,7 @@ function drawScreen(view) {
     // about; on a screen they are two, because a report on a document sitting
     // in the middle of the document reads as though somebody had written it
     // into the page.
-    const panes = [editing ? split(article) : article];
+    const panes = [look(article)];
     if (state.report?.length > 0) panes.push(findings(state.report));
 
     box.replaceChildren(...panes);
@@ -635,6 +650,9 @@ function drawStatus(state) {
   }
 
   status.append(button(TEXT.edit, "quiet", toggleEditor));
+  status.append(
+    button(viewing ? TEXT.source_done : TEXT.source_view, "quiet", toggleSource),
+  );
 
   // Export rather than Copy, and the difference is what each of them keeps: a
   // copy gives the words, and every block already offers them from where
@@ -988,6 +1006,7 @@ async function read(action, name) {
   if (!(await confirmLeaving())) return;
 
   closeEditor();
+  closeSource();
 
   // Every read ends with a document on screen, so it starts by showing the
   // panel that document goes in — including when the file was dropped while
@@ -1229,6 +1248,19 @@ async function runExport(format, where) {
 
 // ── the editor ──────────────────────────────────────────────────────────────
 
+/// The pane, in whichever of its three shapes it is in.
+///
+/// One element either way: the reading pane, the reading pane with the words
+/// beside it, or the reading pane with the file it came from beside it. The two
+/// that compare it with something are modes of the same pane rather than places
+/// of their own.
+function look(article) {
+  if (viewing) return original(article);
+  if (editing) return split(article);
+
+  return article;
+}
+
 /// Opens the editor on the document that is on screen, or closes it.
 ///
 /// Closing asks first when there is something in it that is not on disk. The
@@ -1245,6 +1277,9 @@ async function toggleEditor() {
     } catch (trouble) {
       return drawProblem(trouble);
     }
+
+    // One pane, and it cannot be showing the file and the words at once.
+    closeSource();
 
     editing = true;
     dirty = false;
@@ -1329,7 +1364,10 @@ function split(article) {
 
   editor = view;
 
-  const side = node("div", "split");
+  // Marked, so that the rules this half needs — no menus, no wash under the
+  // pointer — are the editor's and not every split's: the source view's
+  // right-hand half is the reading pane and keeps both.
+  const side = node("div", "split editing");
   side.append(article, host);
   return side;
 }
@@ -1464,6 +1502,127 @@ function confirmLeaving() {
     leaving = resolve;
     el("unsaved-question").showModal();
   });
+}
+
+/// Opens the file the document was read from, or closes it.
+///
+/// What the copy the knowledge base keeps is for, besides reading a document
+/// again: the one thing this program cannot do from the Markdown is show you
+/// what it was actually looking at.
+async function toggleSource() {
+  if (!viewing) {
+    const screen = current?.screen;
+    if (screen?.kind !== "ready") return;
+
+    // Leaving the editor would throw away words that are not on disk, and the
+    // pane can only be one thing.
+    if (editing && !(await confirmLeaving())) return;
+
+    let found;
+    try {
+      found = await invoke("source_pages", { id: screen.id });
+    } catch (trouble) {
+      return drawProblem(trouble);
+    }
+
+    closeEditor();
+
+    viewing = true;
+    pages = found;
+    drawScreen(current);
+    return drawStatus(current.screen);
+  }
+
+  closeSource();
+  drawScreen(current);
+  drawStatus(current.screen);
+}
+
+/// The document twice: the file it was read from on the left, the reading on the
+/// right.
+///
+/// **Only a file with pages has anything to show.** A PDF is rendered a page at
+/// a time and an image is its own page; an Office document is a zip of XML with
+/// no picture of itself anywhere, and a text file's page is its words, which are
+/// already on the other side. Those say so rather than showing an empty half,
+/// because an empty half reads as a pane that failed to load.
+///
+/// The pages are drawn as they are scrolled to rather than all at once: a two
+/// hundred page scan is two hundred pictures, and rendering them to show the
+/// first one is a minute of work nobody asked for.
+function original(article) {
+  const side = node("div", "split original");
+
+  if (pages?.kind !== "pages") {
+    side.append(node("p", "nothing", TEXT.source_nothing), article);
+    return side;
+  }
+
+  const column = node("div", "pages");
+
+  // The viewport as the root rather than the column, which is not in the
+  // document yet: intersecting the viewport is the same question, and it is
+  // clipped by whatever the pages are scrolled inside either way. The margin is
+  // a screenful, so a page is drawn before it is looked at rather than as it
+  // arrives.
+  const watcher = new IntersectionObserver(drawPage, { rootMargin: "600px" });
+
+  for (let number = 1; number <= pages.count; number += 1) {
+    const page = node("div", "page");
+    page.dataset.page = String(number);
+    page.append(node("span", "number", TEXT.source_page(number)));
+
+    watcher.observe(page);
+    column.append(page);
+  }
+
+  watching = watcher;
+  side.append(column, article);
+  return side;
+}
+
+/// Draws a page that has been scrolled to.
+async function drawPage(entries) {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+
+    const page = entry.target;
+    const number = Number(page.dataset.page);
+
+    // Once, and not again on every pass.
+    watching?.unobserve(page);
+
+    try {
+      const picture = document.createElement("img");
+      picture.src = await invoke("source_page", {
+        id: current?.screen?.id,
+        page: number - 1,
+      });
+      picture.alt = TEXT.source_page(number);
+
+      page.replaceChildren(picture);
+    } catch (trouble) {
+      page.replaceChildren(
+        node("span", "number", `${TEXT.source_failed} ${trouble.detail ?? trouble}`),
+      );
+    }
+  }
+}
+
+/// Takes the source view down, and lets go of the file with it.
+///
+/// The file, not the pictures: the other side holds the copy it is rendering
+/// from, and a scan somebody looked at a minute ago is not a thing to keep in
+/// memory for the rest of the session.
+function closeSource() {
+  if (!viewing) return;
+
+  viewing = false;
+  pages = null;
+  watching?.disconnect();
+  watching = null;
+
+  invoke("close_source").catch(() => {});
 }
 
 // ── tabs ────────────────────────────────────────────────────────────────────

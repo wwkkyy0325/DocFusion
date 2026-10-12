@@ -1650,6 +1650,34 @@ policy is `default-src 'self'`: a dependency that has to be fetched is one that
 cannot be, on a machine that is offline, which is where this program is meant to
 work. `ui/vendor/README.md` says how to rebuild it.
 
+**And the file it was read from, beside it.** Another toggle in the same bar:
+the pages of the source on the left, the reading on the right. It is what the
+copy the knowledge base keeps is for besides reading a document again — the one
+thing the Markdown cannot show you is what it was looking at.
+
+**Only a file with pages has anything to show.** A PDF is rendered a page at a
+time and an image is its own page. An Office document is a zip of XML with no
+picture of itself anywhere, and a text file's page is its words, which are
+already on the other side — those get a sentence saying so rather than an empty
+half, because an empty half reads as a pane that failed to load.
+
+Pages are rendered **as they are scrolled to**, through an
+`IntersectionObserver`: a two-hundred-page scan is two hundred pictures, and
+rendering them to show the first one is a minute of work nobody asked for. The
+bytes behind them are held for as long as the pane is open — because rendering
+is per page and a PDF is reopened for each, which is cheap when a page costs
+seconds to recognise and is not when they are being scrolled through — and let
+go when it closes.
+
+They are sent to the window as a **data URI**: the content policy allows
+`img-src data:` and nothing else, and the copy is a file inside the knowledge
+base rather than one of the window's own assets.
+
+**The two modes are exclusive.** One pane cannot be showing the document, the
+words and the file at once, so opening either closes the other — and opening the
+source view with unsaved words in the editor asks first, because closing it
+would throw them away.
+
 ### 11.6 Conflict review
 
 The conflict panel is the GUI's main reason to exist. The CLI can report that

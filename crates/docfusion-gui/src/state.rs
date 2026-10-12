@@ -178,6 +178,26 @@ pub enum Cause {
     Delete,
 }
 
+/// What a document's source is, for looking at.
+///
+/// Not part of [`View`], which is serialised for every command the window sends
+/// and would carry a page count for every document in the list. This is asked
+/// for when somebody opens the source pane, and for the document on screen.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Source {
+    /// Pages that can be shown: a PDF, which is rendered one at a time, or an
+    /// image, which is one page and is already one.
+    Pages { count: usize },
+    /// A file with no pages to show.
+    ///
+    /// An Office document is a zip of XML and there is no picture of it
+    /// anywhere; a text file's page is its words, which are already on the other
+    /// side of the pane. A name for it rather than an empty half, because an
+    /// empty half reads as a pane that failed to load.
+    Nothing,
+}
+
 /// Which of the four things the window can be showing.
 ///
 /// Tagged for the frontend, which switches on `kind` and never has to guess

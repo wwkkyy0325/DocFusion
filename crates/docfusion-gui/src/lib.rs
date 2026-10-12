@@ -16,6 +16,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use docfusion_core::backend::{PageRequest, VisionBackend};
+use docfusion_core::extract::PageSource;
+use docfusion_core::extract::pdf::RenderedPages;
+use docfusion_core::image::PageImage;
 use docfusion_core::ir::Shapes;
 use docfusion_core::extract::{ExtractError, Router};
 use docfusion_core::export::{self, Format};
@@ -28,11 +31,15 @@ use docfusion_store::memory;
 use docfusion_store::pipeline::{Mode, Pipeline, PipelineError};
 use docfusion_store::{ocr, structure, table};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use state::{
-    Cause, Conflict, Local, Match, Model, Opened, Reading, Record, Remote, Screen, Test, Trouble, View,
+    Cause, Conflict, Local, Match, Model, Opened, Reading, Record, Remote, Screen, Source, Test,
+    Trouble, View,
 };
 
 /// The application's shared state.
@@ -49,6 +56,15 @@ pub struct App {
     policy: VerifyPolicy,
     readers: usize,
     view: Mutex<View>,
+    /// The source a pane is looking at, while it is looking at it.
+    ///
+    /// Held because the pages are rendered one at a time and a PDF is reopened
+    /// for each of them: cheap when a page costs seconds to recognise, and not
+    /// when they are being scrolled through. Without this, a two hundred page
+    /// scan would be read and reopened two hundred times.
+    ///
+    /// One document, because there is one source pane.
+    watching: Mutex<Option<Watched>>,
     /// The fetch that is running, if one is.
     ///
     /// What is held is the flag the store takes to interrupt itself, and
@@ -113,6 +129,7 @@ impl App {
             policy,
             readers,
             view: Mutex::new(view),
+            watching: Mutex::new(None),
             fetching: Mutex::new(None),
         }
     }
@@ -313,6 +330,103 @@ impl App {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| record.id.clone()),
         )
+    }
+
+    /// The source copy of a document, and what kind of file it is.
+    ///
+    /// Read once and kept while a pane is looking at it; see [`App::watching`].
+    fn copy_of(&self, id: &str) -> Result<(Arc<Vec<u8>>, String), Trouble> {
+        {
+            let watched = self
+                .watching
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            if let Some(watched) = watched.as_ref()
+                && watched.id == id
+            {
+                return Ok((watched.bytes.clone(), watched.mime.clone()));
+            }
+        }
+
+        let pipeline = self.pipeline()?;
+
+        let record = pipeline
+            .resolve(id)
+            .map_err(|error| Trouble::new(cause_of(&error), error.to_string()))?;
+
+        // Resolved rather than read out of the record: the copy is kept if it is
+        // here and found again by content if it is not, and a record whose copy
+        // somebody deleted is a record that can still be looked at.
+        let copy = pipeline
+            .keep_source_of(&record)
+            .map_err(|error| Trouble::new(cause_of(&error), error.to_string()))?;
+
+        let bytes = std::fs::read(&copy).map_err(|error| {
+            Trouble::new(Cause::Unreadable, format!("{}: {error}", copy.display()))
+        })?;
+
+        let bytes = Arc::new(bytes);
+        *self
+            .watching
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Watched {
+            id: id.to_owned(),
+            mime: record.mime.clone(),
+            bytes: bytes.clone(),
+        });
+
+        Ok((bytes, record.mime))
+    }
+
+    /// Lets go of the source a pane was looking at.
+    fn stop_watching(&self) {
+        *self
+            .watching
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// How many pages of a document's source there are to look at.
+    fn source_pages(&self, id: &str) -> Result<Source, Trouble> {
+        let (bytes, mime) = self.copy_of(id)?;
+
+        Ok(match page_count(&bytes, &mime)? {
+            Some(count) => Source::Pages { count },
+            None => Source::Nothing,
+        })
+    }
+
+    /// One of them, as a picture.
+    ///
+    /// Two very different amounts of work behind one answer. **An image is
+    /// already a picture of itself**, so its own bytes go: decoding it and
+    /// encoding it again is a great deal of work to hand back a worse and larger
+    /// copy of what arrived. A PDF page has to be rendered, and it is rendered
+    /// as a JPEG — a page beside a column of text is a picture rather than a
+    /// document, and the same page as a PNG is several times the bytes over the
+    /// bridge and several times the encoding.
+    fn source_page(&self, id: &str, page: usize) -> Result<String, Trouble> {
+        let (bytes, mime) = self.copy_of(id)?;
+
+        if mime.starts_with("image/") {
+            if page > 0 {
+                return Err(Trouble::new(
+                    Cause::Unreadable,
+                    format!("an image is one page, and there is no page {}", page + 1),
+                ));
+            }
+
+            return Ok(format!("data:{mime};base64,{}", BASE64.encode(bytes.as_ref())));
+        }
+
+        let rendered = rendered_page(&bytes, page)?;
+
+        let jpeg = rendered
+            .to_jpeg(PAGE_QUALITY)
+            .map_err(|error| Trouble::new(Cause::Unreadable, error.to_string()))?;
+
+        Ok(format!("data:image/jpeg;base64,{}", BASE64.encode(&jpeg)))
     }
 
     fn forget_record(&self, id: &str) -> Result<(), Trouble> {
@@ -1400,6 +1514,91 @@ async fn open(app: AppHandle, id: String, name: String) -> Result<View, String> 
     .map_err(|error| error.to_string())
 }
 
+/// The source a pane is looking at, so that one page does not read the whole
+/// file again.
+struct Watched {
+    id: String,
+    mime: String,
+    bytes: Arc<Vec<u8>>,
+}
+
+/// The resolution a source page is rendered at for looking at.
+///
+/// Lower than the 200 the recognition path renders at, and deliberately: this is
+/// a page beside a column of text rather than a page being read character by
+/// character, and four times the pixels is four times the bytes over the bridge
+/// for a picture nobody is zooming into.
+const PAGE_DPI: f32 = 110.0;
+
+/// What a rendered page is encoded at.
+///
+/// High, because the page is the evidence: this is the thing somebody looks at
+/// to decide whether a character was read correctly, and an artefact that lands
+/// on a stroke is a letter that cannot be checked. It is still several times
+/// smaller than the same page as a PNG, which is what the first version sent.
+const PAGE_QUALITY: u8 = 85;
+
+/// How many pages a file has that are worth looking at, or `None` for a file
+/// that has none.
+///
+/// `None` rather than zero, because they are different answers: no pages is a
+/// thing to explain to somebody, and none of anything is not.
+fn page_count(bytes: &[u8], mime: &str) -> Result<Option<usize>, Trouble> {
+    if mime == "application/pdf" {
+        let pages = RenderedPages::open(bytes, PAGE_DPI)
+            .map_err(|error| Trouble::new(Cause::Unreadable, error.to_string()))?;
+
+        return Ok(Some(pages.len()));
+    }
+
+    // An image is one page and is already one. Everything else this program
+    // reads has no picture of itself: an Office document is a zip of XML, and a
+    // text file's page is its words, which are on the other side of the pane.
+    Ok(mime.starts_with("image/").then_some(1))
+}
+
+/// One page of a PDF, rendered.
+///
+/// The document is reopened for every page, because that is what
+/// [`RenderedPages`] does and holding one open would mean holding PDFium's lock
+/// across calls. It costs milliseconds against a page that costs a second to
+/// recognise; it stops being free when the pages are being scrolled through,
+/// which is why the bytes behind it are read once and kept.
+fn rendered_page(bytes: &[u8], page: usize) -> Result<Arc<PageImage>, Trouble> {
+    let pages = RenderedPages::open(bytes, PAGE_DPI)
+        .map_err(|error| Trouble::new(Cause::Unreadable, error.to_string()))?;
+
+    pages
+        .page(page)
+        .map_err(|error| Trouble::new(Cause::Unreadable, error.to_string()))
+}
+
+/// What a document's source is, for looking at.
+#[tauri::command]
+fn source_pages(app: AppHandle, id: String) -> Result<Source, Trouble> {
+    app.state::<App>().source_pages(&id)
+}
+
+/// One page of it, as a picture in a data URI.
+///
+/// A data URI rather than a file or a blob URL: the content policy allows
+/// `img-src data:` and nothing else, and the copy is a file inside the knowledge
+/// base rather than one of this window's own assets.
+#[tauri::command]
+fn source_page(app: AppHandle, id: String, page: usize) -> Result<String, Trouble> {
+    app.state::<App>().source_page(&id, page)
+}
+
+/// Lets go of the source a pane was looking at.
+///
+/// A command of its own because what is held is the whole file: a scan that was
+/// open a minute ago is not a thing to keep in memory for the rest of the
+/// session.
+#[tauri::command]
+fn close_source(app: AppHandle) {
+    app.state::<App>().stop_watching();
+}
+
 /// Starts the window.
 pub fn run() {
     tauri::Builder::default()
@@ -1414,6 +1613,9 @@ pub fn run() {
             choose_file,
             source,
             preview,
+            source_pages,
+            source_page,
+            close_source,
             save_source,
             edited,
             export,
@@ -1736,6 +1938,33 @@ code
         }
 
         assert!(looked > 20, "only {looked} ids were checked");
+    }
+
+    /// **A file that has pages, and a file that does not.**
+    ///
+    /// The two answers the source pane is built on, and the second is the one
+    /// worth a test: most of what this program reads would be a pane with
+    /// nothing in it, and "no pages to show" and "one page" are different
+    /// answers that end up as different things on screen.
+    #[test]
+    fn only_a_file_with_pages_has_any_to_look_at() {
+        let page = docfusion_core::image::number_page(4321)
+            .to_png()
+            .expect("a picture of a number");
+
+        assert_eq!(page_count(&page, "image/png").unwrap(), Some(1));
+
+        // Rendering a page is the PDF's, and bytes that are not a PDF cannot be
+        // asked for one: a copy that has gone bad says so rather than saying
+        // there is nothing to look at.
+        assert!(rendered_page(&page, 0).is_err());
+
+        // An Office document is a zip of XML and a text file's page is its
+        // words: neither has a picture to put in that half.
+        assert_eq!(page_count(b"PK", "application/msword").unwrap(), None);
+        assert_eq!(page_count(b"words", "text/plain").unwrap(), None);
+
+        assert!(page_count(b"%PDF-1.4 not really a pdf", "application/pdf").is_err());
     }
 
     /// **No name is declared twice at the top of the script.**

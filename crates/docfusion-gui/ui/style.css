@@ -576,8 +576,52 @@ main {
 /* The preview has no menus, so it has none of what a reading pane has for them:
    the strip they are drawn in, and the wash under the pointer that makes them
    belong to a block. Both are furniture for a control that is not here. */
-.split .document .block { padding-right: 0; }
-.split .document .block:hover { background: none; box-shadow: none; }
+.split.editing .document .block { padding-right: 0; }
+.split.editing .document .block:hover { background: none; box-shadow: none; }
+
+/* The source half: the pages of the file the document was read from, one after
+   another. */
+.pages {
+  height: 100%;
+  overflow: auto;
+  padding: 12px;
+  background: var(--paper);
+  /* The same line between the halves that the editor draws, so that the two
+     views look like the same shape rather than one divided and one not. */
+  box-shadow: inset -1px 0 0 var(--line);
+}
+
+/* The frame a page is drawn in, and it has a height before the page arrives:
+   an element with none never comes into view, and a page that never comes into
+   view is a page that is never rendered. */
+.pages .page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 90px;
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--wash);
+  overflow: hidden;
+}
+
+.pages .page img { display: block; width: 100%; height: auto; }
+.pages .number { padding: 10px; color: var(--muted); font-size: 12px; }
+
+/* What is said instead when the file has no pages to show. */
+.split .nothing {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0 30px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+  text-align: center;
+}
 
 /* What the status bar says while the editor is open, and it is the one thing
    there that is a state rather than a control. */

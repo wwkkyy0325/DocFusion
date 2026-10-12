@@ -196,6 +196,26 @@ impl PageImage {
         Ok(png.into_inner())
     }
 
+    /// Encodes as JPEG, which is what a page is sent as when it is being looked
+    /// at rather than read.
+    ///
+    /// The same page as a PNG is several times the bytes for a difference nobody
+    /// can see at the size a page is drawn beside a column of text, and several
+    /// times the work to encode. What PNG is for is the recognition path, where
+    /// JPEG's artefacts land exactly on the strokes that decide whether a
+    /// character was recognised; see [`PageImage::to_png`].
+    pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>, ImageError> {
+        let buffer = image::RgbaImage::from_raw(self.width, self.height, self.pixels.clone())
+            .ok_or(ImageError::Empty)?;
+
+        let mut jpeg = Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
+            .encode_image(&DynamicImage::ImageRgba8(buffer))
+            .map_err(|error| ImageError::Io(error.to_string()))?;
+
+        Ok(jpeg.into_inner())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.width == 0 || self.height == 0
     }
