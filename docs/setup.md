@@ -349,7 +349,54 @@ whatever the calling program already has — `jq`, a JSON parser, a line split o
 is stored anywhere else and nothing is stored only in the index — if the index
 is lost, `docfusion reconcile` rebuilds it from the tree.
 
-## 10. Verification
+## 10. Uninstalling
+
+**This section is about the installed application**, from the `.exe` on the
+releases page. A tree built with `cargo build` has no uninstaller; deleting
+`target/` and the directories below is the equivalent.
+
+DocFusion writes in three places, and they are not equally replaceable:
+
+| | where | what it costs to lose |
+|---|---|---|
+| the program, and the models, cache and `config.toml` | `%LOCALAPPDATA%\DocFusion` | nothing — install it again, fetch 144 MB again, re-enter the API key |
+| the library | `%USERPROFILE%\Documents\DocFusion` | **the documents.** The Markdown, and the copies of what was read, which is what `reindex` needs |
+
+The first row is one directory, and that is a coincidence rather than a decision
+worth knowing about if you go looking: the installer puts the program in
+`%LOCALAPPDATA%\DocFusion`, and the program had already chosen that same folder
+for the files it owns — both names came from the product name. Upgrading does not
+disturb it, because the installer replaces the files it put there and leaves
+everything else alone, so the models and your key survive a reinstall.
+
+Uninstalling removes the program. It then **asks twice**, because the last two
+rows are not the same decision:
+
+1. **The template's own "delete the application data" checkbox** decides whether
+   the models, the cache and `config.toml` go. They are files the program can
+   fetch or rebuild, and `config.toml` holds an API key — which is a reason to
+   remove it, not a reason to hesitate.
+2. **A separate question about the library**, asked only if one is there, naming
+   its path and saying plainly that converted documents in it cannot be
+   recovered. **The default button is No.** Press Enter and your documents stay.
+
+Two things it will never do:
+
+- **Delete a file you added.** DocFusion copies nothing into the library that it
+  did not write, and the originals are wherever you left them. `docfusion delete`
+  has the same rule.
+- **Delete a library it cannot find.** The location is configurable — `--root`,
+  or `DOCFUSION_ROOT` — so a library somewhere else is *not* found and *not*
+  touched. This is deliberate: guessing where somebody keeps five hundred
+  documents, and guessing wrong, is a far worse failure than leaving files on
+  disk. If you moved your library, remove it yourself.
+
+**A silent uninstall (`/S`) keeps everything.** It skips the confirmation page
+that the checkbox lives on, so no question is answered and nothing is deleted.
+That is by construction rather than by accident, which is the only way a rule
+about deleting documents should work.
+
+## 11. Verification
 
 Two of the three original candidates for a local VLM — llama-server, Ollama and
 LM Studio — could not be exercised, because none of them is installed on the

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One run per branch and ref: a second push to the same branch makes the first
+# one's answer irrelevant, and the PDFium and ONNX Runtime downloads make a
+# wasted run expensive rather than merely wasteful.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The platform this actually ships on, checked properly.
+  test:
+    name: test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Worth more here than in a typical Rust project: a cold build downloads
+      # and links PDFium, which is neither small nor quick.
+      - uses: Swatinem/rust-cache@v2
+
+      # `cargo fmt --check` is deliberately absent. The tree has never been
+      # rustfmt'd — 234 differences across 34 files — so the gate would fail on
+      # the first run and the fix would be a whitespace commit touching
+      # everything. Clippy and the tests are what catch real defects.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Two tests are `#[ignore]`d on purpose: one reaches the network and
+      # spends money, the other needs the 144 MB model set. Everything else
+      # runs on a clean runner with no models and no API key.
+      - run: cargo test --workspace
+
+  # A canary, not a certification. It builds the three crates that are
+  # genuinely portable and skips the window, which is the part that has never
+  # been run anywhere but Windows — so this cannot claim more than it checks.
+  #
+  # Leaving the GUI out is also what keeps this cheap: no webkit2gtk, no
+  # libsoup, no Tauri system packages at all.
+  portable:
+    name: portable (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # `macos-latest` is Apple silicon, which matters: `ort` has no ONNX
+        # Runtime build for `x86_64-apple-darwin` and Microsoft publishes none
+        # either, so an Intel macOS runner fails to build — not for any reason
+        # that could be fixed here.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Nothing here speaks TLS directly, and this is still needed: `ort`'s
+      # default `tls-native` and `rapidocr-core`'s model downloader both arrive
+      # at `openssl-sys`, which wants the headers and pkg-config to build
+      # against. macOS is absent because it uses Security.framework instead.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - run: cargo build --workspace --exclude docfusion-gui

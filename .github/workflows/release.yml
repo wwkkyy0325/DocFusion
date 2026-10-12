@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # So the job can be exercised without cutting a tag. On a manual run the
+  # version check below is skipped, because there is no tag to check against.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: windows package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The version lives in two places and this is the only thing that keeps
+      # them equal. `tauri.conf.json` decides what the installer calls itself,
+      # so a tag that disagrees with it does not fail — it quietly ships
+      # `DocFusion_0.1.0_x64-setup.exe` from a `v0.2.0` release, and the person
+      # who finds out is the one who downloaded it.
+      - name: the tag and the manifest agree about the version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $version = (Get-Content crates/docfusion-gui/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          if ($version -ne $tag) {
+            throw "tag says $tag, tauri.conf.json says $version"
+          }
+          "version $version" >> $env:GITHUB_STEP_SUMMARY
+
+      - run: cargo build --release
+
+      # `cargo tauri build` compiles the window and bundles it. It is installed
+      # rather than pinned as a dependency because it is a tool, not a library
+      # this program links against.
+      - run: cargo install tauri-cli --version '^2' --locked
+
+      - run: cargo tauri build
+
+      # The CLI is the other half of the product and is not part of the Tauri
+      # bundle, so it is packaged on its own. The licence files travel with the
+      # binary rather than staying in the repository: PDFium is BSD-3-Clause and
+      # is linked into this executable, so the notice is an obligation that
+      # follows the file.
+      - name: the CLI, portable, with its notices
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.ref_type }}" -eq 'tag') { "${{ github.ref_name }}" } else { "v" + (Get-Content crates/docfusion-gui/tauri.conf.json -Raw | ConvertFrom-Json).version }
+          $name = "docfusion-$tag-windows-x86_64"
+          New-Item -ItemType Directory -Path $name | Out-Null
+          Copy-Item target/release/docfusion.exe, README.md, README.zh-CN.md, LICENSE, THIRD-PARTY.md -Destination $name
+          Compress-Archive -Path "$name/*" -DestinationPath "$name.zip"
+          "zip built: $name.zip" >> $env:GITHUB_STEP_SUMMARY
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            docfusion-*-windows-x86_64.zip
+            target/release/bundle/nsis/*.exe
+          body: |
+            Two builds: an installer for the window, and a portable zip with the
+            command line.
+
+            **The binaries are not code-signed**, so Windows SmartScreen will
+            warn on first run. Choose "More info" → "Run anyway", or build from
+            source.
+
+            **The model weights are not included** — 144 MB is fetched on first
+            use, from the settings page or `docfusion doctor --fetch`, and is
+            checked against a pinned SHA-256 before anything is trusted.
+            Documents that carry their own text need none of it.
+
+            The uninstaller offers to remove the models, the configuration and
+            the document library. The library question is asked separately and
+            defaults to **No**, because it holds documents that cannot be
+            recovered.

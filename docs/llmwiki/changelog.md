@@ -4,6 +4,122 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — A check on every push, and something to install
+
+**What:** CI, an NSIS installer, a portable CLI zip, and an uninstaller that
+means what it says. This closes risk #3, which had been on the list since P0.
+
+**CI is two jobs, and the second one is deliberately weak.** Windows runs clippy
+and the 603 tests, which is the platform that ships. Ubuntu and macOS do
+`cargo build --workspace --exclude docfusion-gui` — a canary for the portable
+three-quarters, and **not** a claim about the window, which has never been run
+anywhere but Windows. Excluding the GUI is also what makes it cheap: no
+webkit2gtk, no libsoup, no Tauri system packages. `cargo fmt --check` is
+deliberately absent; 234 differences across 34 files would make the gate fail on
+its first run.
+
+**Three things the plan got wrong, all caught by checking rather than by
+thinking.**
+
+1. **The canary needs OpenSSL headers on Linux.** "No system packages at all"
+   was wrong: `openssl-sys` is in the lock, arriving through `ort`'s default
+   `tls-native` and `rapidocr-core`'s model downloader, even though nothing here
+   speaks TLS directly. One `apt-get` line, and the reason is written beside it.
+2. **The README's minimum Rust was wrong.** It said 1.85, which is edition
+   2024's floor and not the real answer: `pdfium-bundled`, `ort` and `ort-sys`
+   each declare **1.88**. The workspace now says so too, so the failure arrives
+   as one clear line instead of as a dependency error mid-build.
+3. **Intel macOS cannot be built at all.** `ort` has no ONNX Runtime for
+   `x86_64-apple-darwin` and Microsoft publishes none either. `macos-latest` is
+   Apple silicon, so the job is fine — but that is now a comment in the workflow
+   rather than something to rediscover when somebody adds an Intel runner.
+
+**The uninstaller is the part worth reading about.** Tauri's NSIS template has a
+"delete the application data" checkbox — 中文「删除应用程序数据」 — and it removes
+`$LOCALAPPDATA\${BUNDLEID}`. `${BUNDLEID}` is `dev.docfusion.app`. This program
+keeps its files in `$LOCALAPPDATA\DocFusion`; see `dirs.rs`. **Those have never
+been the same path, so the checkbox deleted nothing, and had been deleting
+nothing for as long as the checkbox has existed — with a wording that would not
+have told anyone what was at stake even if it had worked.** It is the failure
+mode this project is built against, and this time it was hiding inside somebody
+else's template where no test of ours could reach it.
+
+`installer-hooks.nsh` reads that checkbox and does the work, plus a **second**
+question the template could not have asked: the library. Two questions because
+they are not the same decision — models and `config.toml` can be fetched again,
+and the library is the user's documents. The library prompt names the path, says
+the converted documents cannot be recovered, and **defaults to No**. And it can
+only ever remove the library it can find: `--root` puts one somewhere else, and
+guessing where somebody keeps five hundred documents is a worse failure than
+leaving files on disk.
+
+**Checked rather than assumed:** the `.nsh` was compiled with the same
+`makensis` the bundler uses, and the Chinese was proven to parse as UTF-8 —
+`-INPUTCHARSET UTF8` is how the bundler invokes it, and a preprocessor round-trip
+came back as the right characters rather than as mojibake. A dialog that deletes
+documents is not a place to find out later.
+
+**The bundle identifier moved to `io.github.wwkkyy0325.docfusion`**, which was
+the first build's own advice rather than anyone's opinion: Tauri warned that
+`dev.docfusion.app` *"ends with `.app`… conflicts with the application bundle
+extension on macOS"*. It was also the last free moment to change it — the
+identifier is the install identity and the registry key, so changing it after
+people have installed leaves two of everything on their machines. The reverse-DNS
+of a GitHub namespace is the conventional answer for a project without a domain
+of its own.
+
+**Changing it broke the publisher, which is how the publisher got set.** Tauri
+derives one when `bundle.publisher` is absent, by taking the *second* segment of
+the identifier: `dev.docfusion.app` gave `docfusion`, and
+`io.github.wwkkyy0325.docfusion` gives **`github`** — which is what Add or Remove
+Programs showed, and what the manufacturer registry keys would have been built
+from. `bundle.publisher` is now stated explicitly rather than inferred, because
+an inferred identity is one that changes when somebody else's unrelated decision
+changes.
+
+**Verified by running it, not by reading it.** Three claims the docs make were
+each checked against the installed thing:
+
+| claim | how it was checked |
+|---|---|
+| the installer installs | `//S`, then the program and the uninstall entry were both there |
+| **a silent uninstall keeps the data** | planted a dummy `config.toml` and `models/`, ran `uninstall.exe //S`: program and registry entry gone, `config.toml` present with an **identical SHA-256**, `models/` intact |
+| the checkbox takes the data | run by hand, and it left nothing — no folder, no shortcut, no autostart entry, no registry key |
+
+The second row is the one worth having: it is the difference between an
+uninstaller that removes a program and one that removes a person's work, and it
+is now a measured fact rather than an intention.
+
+*(A note for whoever tests this next: in Git Bash `/S` is rewritten into a
+Windows path before the installer ever sees it, so the installer runs
+interactively instead of silently. It has to be written `//S` — the same escaping
+as `taskkill //IM`. This cost an afternoon.)*
+
+**And the program installs into the folder its own data is in.** A `currentUser`
+NSIS install puts the program at `$LOCALAPPDATA\${PRODUCTNAME}`, and `dirs.rs`
+had already chosen `%LOCALAPPDATA%\DocFusion` for `user_dir()`. Two independent
+decisions, both derived from the product name, landing on one path — which
+matters because the uninstaller can now delete a directory that holds an
+executable, 144 MB of weights and an API key.
+
+It was checked rather than assumed, since the failure it suggests is data loss:
+**an upgrade does not disturb the folder.** The template deletes the files it
+knows by name and leaves everything else, so models and `config.toml` survive a
+reinstall. The arrangement is a smell and not a fault, it is left alone — the
+alternatives are an administrator prompt on every install, or relocating data
+that already exists — and it now appears in `design.md` §11.7 and in the setup
+guide so that the next person to find one folder holding all three does not have
+to work out which part is the accident.
+
+**A tech-support table was wrong in the same direction as the last one.** §5.2
+said PDFium's "Licence is MIT OR Apache-2.0"; the crates are, the library they
+embed is BSD-3-Clause. Same error as §12's table, same day, one section apart.
+
+603 tests, clippy clean, `cargo build --workspace --exclude docfusion-gui` run
+here before being asked of CI.
+
+---
+
 ## 2026-10-13 — Three documents that had stopped describing this program
 
 **What:** The three stalenesses found while writing the readme, fixed, plus three

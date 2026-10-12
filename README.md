@@ -2,6 +2,8 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+[![CI](https://github.com/wwkkyy0325/DocFusion/actions/workflows/ci.yml/badge.svg)](https://github.com/wwkkyy0325/DocFusion/actions/workflows/ci.yml)
+
 **Turn PDFs, images and Office documents into structured Markdown — locally, exactly once, into a file tree you already know how to use.**
 
 DocFusion is a local-first document ingestion pipeline written in Rust. It reads
@@ -137,7 +139,8 @@ The design document is `docs/llmwiki/design.md`; the setup guide is
 
 ## Quick start
 
-Requires a Rust toolchain (edition 2024, so **1.85+**).
+Requires a Rust toolchain (**1.88+** — edition 2024 alone would run on 1.85, but
+PDFium and ONNX Runtime's bindings each ask for 1.88).
 
 ```bash
 git clone https://github.com/wwkkyy0325/DocFusion.git
@@ -583,13 +586,51 @@ isolation, against a corpus of golden IR rather than through a user interface.
 ## Building and testing
 
 ```bash
-cargo build --release              # the CLI
+cargo build --release                  # the CLI
 cargo run --release -p docfusion-gui   # the window
-cargo test --workspace             # 603 tests
+cargo test --workspace                 # 603 tests
 cargo clippy --workspace --all-targets
 ```
 
-The window is Windows-first (WebView2); Linux and macOS are untested.
+The build needs a network connection the first time: `pdfium-bundled` downloads
+and links Chromium's PDF engine, and `ort` fetches ONNX Runtime. Neither needs
+anything installed on the machine.
+
+CI runs clippy and the tests on Windows, and builds the three portable crates on
+Linux and macOS. **Formatting is not gated** — the tree predates `rustfmt`
+having an opinion about it, and a whitespace commit across 34 files would bury
+more history than it cleans.
+
+### Platforms
+
+**Windows is what this is built and released for.** Linux and macOS build, and
+both native dependencies ship binaries for them, so the pipeline itself is not
+Windows-specific. What has never happened is somebody running the *window*
+anywhere but Windows — so the CI canary deliberately excludes it rather than
+putting a green tick next to something untested.
+
+Two things stand between here and a release elsewhere. macOS needs signing and
+notarization or Gatekeeper refuses the download, and Intel macOS cannot be built
+at all: ONNX Runtime publishes no binaries for `x86_64-apple-darwin`, and neither
+does Microsoft.
+
+### Releases
+
+A `v*` tag produces two things:
+
+| | |
+|---|---|
+| `docfusion-<tag>-windows-x86_64.zip` | the command line, portable, with `README.md`, `LICENSE` and `THIRD-PARTY.md` |
+| `DocFusion_<version>_x64-setup.exe` | an NSIS installer for the window, per-user, no administrator needed |
+
+The binaries are **not code-signed**, so SmartScreen warns on first run. The
+model weights are not in either artifact — 144 MB arrives on first use.
+
+**Uninstalling offers to clean up after itself**, and asks two separate
+questions because they are two different sizes of decision: one for the models
+and configuration, and one for the library of converted documents, which defaults
+to **No**. A library kept somewhere other than the default is not found and not
+touched. See [Uninstalling](docs/setup.md#10-uninstalling).
 
 ---
 

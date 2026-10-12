@@ -221,7 +221,12 @@ merely looked like a list. The round trip now scores zero loss.
 because CJK and CID font handling is the decisive requirement for this project's
 documents, and because it reports per-character bounds, font names and font
 sizes — the metadata heading detection and later region alignment depend on.
-Licence is MIT OR Apache-2.0, so it is safe for commercial use.
+The crates are MIT OR Apache-2.0; **the PDFium library they embed is
+BSD-3-Clause** (The PDFium Authors) with Apache-2.0 components. Both are safe
+for commercial use, which is the point that was being made — but the licence
+named here used to be the crates' rather than the library's, and the difference
+matters because the library is linked into what gets distributed. See
+`THIRD-PARTY.md`.
 
 `pdfium-bundled` (not `pdfium-render`) provides the embedding: its build script
 downloads the pinned Chromium build, verifies it against a SHA-256 digest, and
@@ -1794,6 +1799,69 @@ whole reading there for whoever wants it.
 — the common one, and the one the local engine makes on multi-column pages — is
 indistinguishable from a good reading until the two are next to each other.
 
+### 11.7 Distribution
+
+**NSIS, per-user, and nothing else.** `cargo tauri build` produces a
+`DocFusion_<version>_x64-setup.exe`; the command line ships beside it as a
+portable zip, because it needs no installation to be useful and an agent should
+not have to install a desktop application to run a command.
+
+Windows-only for a reason that is not a build cost: **Linux and macOS build**,
+and both native dependencies ship binaries for them, but nobody has ever run the
+window there. Shipping it would be a claim nobody checked, which is the one kind
+of claim this project is built to avoid. CI reflects that honestly — the
+portability job excludes the GUI rather than testing it. The costs of going
+further are known and neither is a build cost: macOS needs signing and
+notarization or Gatekeeper refuses the download, and Intel macOS cannot be built
+at all, because ONNX Runtime publishes no `x86_64-apple-darwin` binaries and
+neither does Microsoft.
+
+**The uninstaller was wrong in a way worth recording.** Tauri's NSIS template
+offers a "delete the application data" checkbox and then removes
+`$LOCALAPPDATA\${BUNDLEID}` — that is `dev.docfusion.app` — while this program
+keeps its files in `$LOCALAPPDATA\DocFusion`. The two have never been the same
+path, so **the checkbox deleted nothing, and would have gone on deleting nothing
+indefinitely**: no test could fail, no error could be raised, and the option
+would keep looking like it worked. `installer-hooks.nsh` reads that checkbox and
+does the work it was always meant to, plus a second question the template could
+not have asked.
+
+**Two questions rather than one, because the answers are not the same size.**
+Models, the cache and `config.toml` are files the program can fetch or rebuild,
+and `config.toml` holds an API key. The library is the user's documents. One
+checkbox covering both would put somebody's archive one misread click away, so
+the library gets its own prompt — naming the path, saying the converted documents
+cannot be recovered, and **defaulting to No**.
+
+**And it can only remove the library it can find.** The location is configurable
+(`--root`, `DOCFUSION_ROOT`), so a library elsewhere is not found and not
+touched. Leaving files behind is the failure to prefer over guessing where
+somebody keeps five hundred documents. A silent uninstall keeps everything, since
+it never reaches the page the checkbox is on — by construction rather than by
+accident, which is the only acceptable way for a rule about deleting documents to
+work.
+
+**The program and its data land in the same folder, and that is a coincidence
+rather than a design.** A `currentUser` NSIS install puts the program in
+`$LOCALAPPDATA\${PRODUCTNAME}` — `%LOCALAPPDATA%\DocFusion` — and `dirs.rs`
+chose the same directory for `user_dir()` before there was an installer to
+disagree with it. Both used the product name, so they agree.
+
+It was checked rather than assumed, because the failure it suggests is data
+loss: **an upgrade does not disturb that folder.** The template deletes files it
+knows by name and leaves everything else, so `models/` and `config.toml` survive
+reinstalling. Uninstalling without the checkbox removes the program and leaves
+the data. The arrangement is therefore a smell and not a fault, and it is written
+down here so that the next person to see one folder holding an `.exe`, 144 MB of
+weights and an API key does not have to work out which of those is the accident.
+
+The alternative — `perMachine`, so the program goes to `Program Files` — buys a
+clean split for an administrator prompt on install, which is a real cost for a
+tool somebody runs on their own machine. Moving `dirs.rs` instead would relocate
+data that already exists, which means re-fetching 144 MB and re-entering a key.
+Neither is worth it today; both are written down as the answer if the smell ever
+becomes a problem.
+
 ---
 
 ## 12. Technology choices
@@ -1858,7 +1926,7 @@ which engines are available.
 | 1 | Windows `rename` overwrite semantics | `MoveFileExW` — fixed in P0 Step 3 |
 | 2 | No vision endpoint is configured | Not an error: OCR-only is a supported mode, and the message points at the setup guide |
 | 12 | The endpoint accepts a connection and then stalls | Every request carries a timeout; one bad configuration must not freeze a batch |
-| 3 | Tauri + WebView2 packaging size and CI | Validate early, before P2 is scoped |
+| 3 | ~~Tauri + WebView2 packaging size and CI~~ | **Closed** — the installer is NSIS, which Tauri already ships, so the WebView2 bundling this was worried about is not part of it; CI is `cargo build` and nothing else, because the frontend has no build step. See §11.7. |
 | 4 | Dual verification cost blowout | On-demand triggering + `max_verify_pages` |
 | 5 | Benchmark claims unreliable across sources | `docfusion bench` against the user's own corpus |
 | 6 | Local VLM VRAM footprint | 0.9B Q4 ≈ 600 MB weights, but Ollama's real footprint must be measured |

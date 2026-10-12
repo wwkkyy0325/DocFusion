@@ -2,6 +2,8 @@
 
 [English](README.md) | **简体中文**
 
+[![CI](https://github.com/wwkkyy0325/DocFusion/actions/workflows/ci.yml/badge.svg)](https://github.com/wwkkyy0325/DocFusion/actions/workflows/ci.yml)
+
 **把 PDF、图片和 Office 文档变成结构化 Markdown —— 全在本地，只做一次，落到一个你本来就会用的文件树上。**
 
 DocFusion 是一个本地优先的文档摄取流水线，用 Rust 写成。它读进一个文档，自己判断该用哪个引擎来读，把结果写成带出处信息的 Markdown，并建立索引，保证同一件事不做第二遍。一套内核，两个出口：一个为 agent 设计的命令行，和一个用来转换、审阅单个文档的桌面窗口。
@@ -114,7 +116,7 @@ DocFusion 是一个本地优先的文档摄取流水线，用 Rust 写成。它�
 
 ## 快速开始
 
-需要一个 Rust 工具链（edition 2024，即 **1.85+**）。
+需要一个 Rust 工具链（**1.88+** —— 光看 edition 2024 的话 1.85 就够，但 PDFium 和 ONNX Runtime 的绑定各自都要求 1.88）。
 
 ```bash
 git clone https://github.com/wwkkyy0325/DocFusion.git
@@ -428,7 +430,28 @@ cargo test --workspace                 # 603 个测试
 cargo clippy --workspace --all-targets
 ```
 
-窗口以 Windows 优先（WebView2）；Linux 和 macOS 未经验证。
+首次构建需要联网：`pdfium-bundled` 会下载并链接 Chromium 的 PDF 引擎，`ort` 会取 ONNX Runtime。两者都不需要你在机器上预装任何东西。
+
+CI 在 Windows 上跑 clippy 和测试，在 Linux 和 macOS 上构建那三个可移植的 crate。**格式检查不在门禁里** —— 这棵代码树早于 `rustfmt` 对它发表意见的时候，而一个横跨 34 个文件的空白改动，埋掉的历史比它清理掉的多。
+
+### 平台
+
+**Windows 是构建和发布的目标平台。** Linux 和 macOS 能构建，两个原生依赖也都为它们提供二进制，所以流水线本身并不依赖 Windows。但从头到尾没发生过的事，是有人在 Windows 之外**运行过那个窗口** —— 所以 CI 里那个 canary 刻意排除了它，而不是在一个没人验证过的东西旁边挂一个绿色对勾。
+
+离"在别处发布"还差两件事。macOS 需要签名和公证，否则 Gatekeeper 会直接拒绝这个下载；而 Intel macOS 根本构建不了：ONNX Runtime 没有 `x86_64-apple-darwin` 的二进制，微软也没有。
+
+### 发布产物
+
+打一个 `v*` tag 会产生两样东西：
+
+| | |
+|---|---|
+| `docfusion-<tag>-windows-x86_64.zip` | 命令行，免安装，附 `README.md`、`LICENSE`、`THIRD-PARTY.md` |
+| `DocFusion_<version>_x64-setup.exe` | 窗口的 NSIS 安装器，按用户安装，不需要管理员 |
+
+这些二进制**没有代码签名**，所以首次运行时 SmartScreen 会告警。模型权重不在任何一个产物里 —— 144 MB 是第一次用到时才取的。
+
+**卸载时会问要不要一并清理**，而且是分**两个**问题问，因为它们是两种量级的决定：一个是模型和配置，另一个是那个装着已转换文档的库，后者**默认为「否」**。库如果放在默认位置以外，卸载器找不到，也不会去碰。见[卸载](docs/setup.md#10-uninstalling)。
 
 ---
 

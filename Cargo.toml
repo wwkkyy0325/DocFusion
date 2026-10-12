@@ -11,6 +11,10 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+# Not the edition's floor. Edition 2024 would run on 1.85, but `pdfium-bundled`,
+# `ort` and `ort-sys` each declare 1.88, which makes that the real answer — and
+# a number somebody can act on instead of a warning that arrives mid-build.
+rust-version = "1.88"
 
 [profile.release]
 lto = "thin"
