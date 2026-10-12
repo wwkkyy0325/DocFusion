@@ -4,6 +4,53 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — The example in the box, and the timestamp in the row
+
+**What:** Two things the settings page and the records list showed wrongly, both
+found by somebody using them.
+
+### The example looked like a value
+
+The endpoint and model fields are empty when nothing is configured, and carry
+`placeholder="https://api.deepseek.com"` and `placeholder="deepseek-flash"`. The
+ghost text is a *plausible* address, not an obviously fake one, so it read as a
+filled-in value — which is how "no endpoint is configured" came as a surprise
+after somebody had looked straight at a box that appeared to contain one. The
+error was honest and the form was ambiguous, and the form is the part that can be
+fixed.
+
+Both now say `例如 https://api.deepseek.com`. The guidance is worth keeping — an
+endpoint's shape is not something to guess — and one word is enough to stop it
+reading as an answer. The muted colour was already conventional, so the styling
+was not the problem; the text was.
+
+### The row said `2026-10-12T07:42:13Z`
+
+The `T` and the `Z` are for a parser, and a one-line row is read by a person.
+
+**The `Z` is not decoration, and that is why this is a conversion rather than
+two deletions.** The stored instant is UTC; this machine is UTC+8. Removing the
+letters would have shown a document added at **15:42** as **07:42 in the
+morning** — eight hours out, and wrong in the way that is worst, because it looks
+entirely plausible. The browser does the arithmetic, since it is the only thing
+here that knows where the reader is.
+
+`when()` was checked by running it out of the file rather than by reading it:
+`2026-10-12T07:42:13Z` → `2026-10-12 15:42` on a machine reporting `+0800`, and a
+string the browser cannot parse comes back unchanged rather than as
+`Invalid Date`.
+
+The command line is untouched and stays as it was: `list` prints no timestamp at
+all to a person, and the `updated_at` in `--json` is for a program, where ISO is
+the right answer.
+
+**And one comment had gone stale the moment the list was fixed.**
+`Record::from_stored` still said "newest last", which is what the window was
+doing when it reversed the list. Corrected, with a pointer to the test that now
+holds the rule.
+
+---
+
 ## 2026-10-13 — Two things the first installed build got wrong
 
 **What:** Both found by using the released build rather than by reading it, which

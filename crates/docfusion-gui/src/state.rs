@@ -356,7 +356,11 @@ pub struct Record {
 }
 
 impl Record {
-    /// The list the interface shows, newest last, from what the index holds.
+    /// The list the interface shows, newest first, from what the index holds.
+    ///
+    /// `newest last` is what this said until the list was drawn the right way
+    /// up: the index has always answered newest-first, and the window was
+    /// reversing it. See `the_records_list_is_drawn_in_the_order_it_arrives`.
     ///
     /// The path is carried through as text rather than as a path, because the
     /// window only ever displays it and a `PathBuf` serialises differently on

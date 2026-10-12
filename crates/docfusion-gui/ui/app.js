@@ -683,6 +683,32 @@ function showFindings() {
 /// of what the row's own clickability would have wanted. With the row itself
 /// inert, a control that appears only under the pointer is a control that
 /// cannot be found; the destructive one is quiet enough at rest not to shout.
+/// An instant, as a person reads one.
+///
+/// What the index stores is `2026-10-12T07:42:13Z`: the `T` is there for a
+/// parser and the `Z` says UTC, and both are right for a file and wrong for a
+/// row in a list.
+///
+/// **The `Z` is not decoration, so this is a conversion rather than an edit.**
+/// Dropping the two letters would have shown a document added at 15:42 in China
+/// as 07:42 in the morning — eight hours out, and wrong in a way nobody could
+/// see was wrong. The browser is the only thing here that knows where the reader
+/// is, so it does the arithmetic.
+///
+/// Seconds go, because a row that is one line long has no room for them and
+/// nobody has ever wanted to know which second a document was added in.
+///
+/// A form the browser cannot read is shown as it arrived rather than as
+/// `Invalid Date`: the row still has to say which document it is.
+function when(iso) {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+
+  const pad = (n) => String(n).padStart(2, "0");
+  const date = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+  return `${date} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
 function drawRecords(list) {
   const records = el("records");
   records.replaceChildren();
@@ -717,7 +743,7 @@ function drawRecords(list) {
         node(
           "span",
           "meta",
-          [status, record.conflicts ? TEXT.to_review(record.conflicts) : null, record.created_at]
+          [status, record.conflicts ? TEXT.to_review(record.conflicts) : null, when(record.created_at)]
             .filter(Boolean)
             .join(" · "),
         ),
