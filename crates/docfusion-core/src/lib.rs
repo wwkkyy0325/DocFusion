@@ -8,6 +8,7 @@
 
 pub mod backend;
 pub mod bench;
+pub mod export;
 pub mod extract;
 pub mod image;
 pub mod ir;

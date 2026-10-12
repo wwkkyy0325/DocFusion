@@ -16,6 +16,12 @@
   --line: light-dark(#e2e8f0, #2a3441);
   --paper: light-dark(#ffffff, #151b23);
   --wash: light-dark(#f8fafc, #1d2530);
+  /* What a block washes to while the pointer is on it, which is a shade
+     stronger than the wash above. That one is fine under a button, where the
+     pointer is already there and the colour only has to confirm; this one has
+     to be *found*, and in the light theme the wash is a hair off white and a
+     hair is not a highlight. */
+  --highlight: light-dark(#eaeff6, #232c39);
   --accent: light-dark(#1d4ed8, #7aa7ff);
   /* The colour of text written on the accent. It flips with the theme like
      everything else: white on a dark blue reads, white on a light blue does
@@ -326,8 +332,18 @@ main {
 @keyframes turn { to { transform: rotate(360deg); } }
 
 .document {
+  /* The strip each block keeps for the one button at its right edge — see
+     `.block-actions`. Named because two rules have to agree about it: the
+     padding below that makes room, and the width here that pays for it. One
+     glyph wide, so it is a good deal less than a pair of words would need. */
+  --actions: 48px;
+
   padding: 22px 30px 40px;
-  max-width: 78ch;
+  /* **Wider than the text by the width of that strip.** The blocks give it up
+     on the right, this hands it back on the outside, so a paragraph wraps where
+     it wrapped before the buttons existed. Without this the strip would come
+     out of the measure and every document in the archive would reflow. */
+  max-width: calc(78ch + var(--actions));
   margin: 0 auto;
   /* A URL out of a filing, or a run of digits with no break in it, is wider
      than the column and has nowhere to wrap. Without this it pushes the pane
@@ -417,6 +433,104 @@ main {
    for a white page. On a dark one it is very nearly invisible, so they are
    given the accent, which is a colour that knows which page it is on. */
 .document a { color: var(--accent); }
+
+/* The document's own furniture: every block is one element, so that the button
+   beside it belongs to it rather than to whatever happens to be near the
+   pointer.
+
+   The wrapper is given no vertical padding and no border, so the blocks'
+   margins collapse through it exactly as they did when the blocks were
+   siblings and the page lays out as it did before it was there. `position` is
+   what the button below hangs off, and the padding on the right is the strip it
+   is drawn in. */
+.document .block {
+  position: relative;
+  padding-right: var(--actions);
+  transition: background-color 0.12s, box-shadow 0.12s;
+}
+
+/* **The block under the pointer is washed**, which is what makes the `⋯` beside
+   it read as belonging to *this* block rather than to the one above. Without it
+   the button appears somewhere near some text and the eye has to work out
+   which.
+
+   A halo rather than padding. Padding on the block would stop its child's
+   margins collapsing through it — the property the whole layout rests on — and
+   every document in the archive would breathe out by a few pixels. A shadow is
+   drawn outside the box and moves nothing. Four pixels, which is well inside
+   the ten or so between two blocks, so the halo never reaches the next one.
+
+   Two rules rather than one selector list: the second needs `:has()`, and a
+   browser that does not know a selector drops the entire rule it appears in,
+   which would take the pointer's highlight down with it. */
+.document .block:hover {
+  background-color: var(--highlight);
+  box-shadow: 0 0 0 4px var(--highlight);
+  border-radius: 4px;
+}
+
+/* The same for a keyboard, which cannot hover. The `⋯` is shown by
+   `:focus-visible` when it is tabbed to, so the block it belongs to is washed
+   the same way — `:has()` and not `:focus-within`, for the reason the button
+   itself has: a closed `dialog` hands focus back to what opened it, and a block
+   washed because a menu had been used would stay washed for good. */
+.document .block:has(> .block-actions button:focus-visible) {
+  background-color: var(--highlight);
+  box-shadow: 0 0 0 4px var(--highlight);
+  border-radius: 4px;
+}
+
+/* **Beside the text, not on it.** A button drawn over the paragraph it acts on
+   is a button hiding the thing it is about, and on a table it lands on the last
+   header cell — a cell somebody is in the middle of reading.
+
+   The strip belongs to every block and not only to the one under the pointer. A
+   block that made room for its button as it appeared would re-wrap its own
+   paragraph under the reader's cursor, which is a paragraph that moves while
+   being read.
+
+   **One row, and one glyph.** Both matter, and for the same reason: the next
+   block's button is directly below this one's, on the same strip. Anything
+   taller than a line of text — a second button under the first, say — hangs
+   past a one-line paragraph and lands on the next block's, and two of them on
+   screen at once overlap. */
+.document .block-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+/* Shown by the pointer, which is the opposite of what the records list does
+   and for the opposite reason. There a row is inert, so a control that only
+   appears under the pointer is a control that cannot be found; here the block
+   *is* the document, and a button hanging off every paragraph is a page nobody
+   reads.
+
+   Hidden on the button rather than on the box around it, which is what makes
+   the keyboard rule below possible at all: a child cannot be seen through a
+   transparent parent.
+
+   **`:focus-visible`, not `:focus-within`, and the difference was a bug.** A
+   modal `dialog` hands focus back to whatever opened it when it closes, so
+   `:focus-within` became true the moment the menu was used and stayed true —
+   the dots were left sitting on the block for good. `:focus-visible` is the
+   browser's own answer to "did somebody get here by keyboard", which is exactly
+   the question being asked. */
+.document .block-actions button {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.document .block:hover .block-actions button,
+.document .block-actions button:focus-visible { opacity: 1; }
+
+/* What a block was copied: the tick that stands in for the dots for a moment.
+   Green, and the same green the settings tab uses for a badge that says a thing
+   works — the one colour in the window that means "this is fine". */
+.document .block-actions button.done {
+  color: var(--ok);
+  border-color: var(--ok);
+}
 
 /* ── the report on a document ───────────────────────────────────────────── */
 
@@ -948,13 +1062,17 @@ button.link:hover { background: none; filter: brightness(1.15); }
 #set-note.ok { color: var(--accent); }
 #set-note.bad { color: var(--warn); }
 
-/* ── the question a row's Delete asks ───────────────────────────────────── */
+/* ── the questions: what to do with a row, and what to export ───────────── */
 
 /* `dialog` centres itself and takes itself out of the flow; what is left is
    the shape. Everything the browser does with it — the focus trap, Escape, the
    backdrop, keeping the page behind it inert — is why this is a `dialog`
-   rather than a div that looks like one. */
-#record-question {
+   rather than a div that looks like one.
+
+   One shape for both, because they are the same kind of thing and a second
+   dialog that looked slightly different would read as a different kind. */
+#record-question,
+#export-question {
   width: min(30rem, calc(100vw - 32px));
   padding: 20px 22px 16px;
   border: 1px solid var(--line);
@@ -965,16 +1083,22 @@ button.link:hover { background: none; filter: brightness(1.15); }
 
 /* Dimmed rather than hidden, so that what is being asked about stays visible
    behind the question. `color-scheme` would draw it black in both themes. */
-#record-question::backdrop {
+#record-question::backdrop,
+#export-question::backdrop {
   background: light-dark(rgb(15 23 42 / 0.35), rgb(0 0 0 / 0.55));
 }
 
-#record-question h2 {
+#record-question h2,
+#export-question h2 {
   margin: 0 0 6px;
   font-size: 1.05em;
+  /* The export one is a document's own words — a block is named by the first of
+     them — so it can hold a run with no space in it. */
+  overflow-wrap: anywhere;
 }
 
-#record-question .lead {
+#record-question .lead,
+#export-question .lead {
   margin: 0 0 4px;
   color: var(--muted);
   font-size: 13px;
@@ -1009,7 +1133,8 @@ button.link:hover { background: none; filter: brightness(1.15); }
   color: var(--muted);
 }
 
-#record-question .actions {
+#record-question .actions,
+#export-question .actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -1020,3 +1145,31 @@ button.link:hover { background: none; filter: brightness(1.15); }
 /* Pushed to the far end, so the two that do something are together and the one
    that does nothing is not between them and the edge the eye reads to. */
 #record-question #ask-cancel { margin-right: auto; }
+
+/* The formats, as buttons rather than as a list of choices with a confirm
+   under it: choosing one is the whole of the answer.
+
+   Stacked rather than side by side, because each carries a line saying what it
+   keeps and four columns of two lines is a paragraph broken into four. */
+.formats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 14px 0 4px;
+}
+
+.formats button {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  text-align: left;
+}
+
+.formats .name { display: block; font-weight: 600; }
+
+.formats .what {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}

@@ -12,12 +12,13 @@
 mod state;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use docfusion_core::backend::{PageRequest, VisionBackend};
 use docfusion_core::ir::Shapes;
 use docfusion_core::extract::{ExtractError, Router};
+use docfusion_core::export::{self, Format};
 use docfusion_core::render;
 use docfusion_core::verify::{VerifyMode, VerifyPolicy};
 use docfusion_store::config;
@@ -48,10 +49,12 @@ pub struct App {
     policy: VerifyPolicy,
     readers: usize,
     view: Mutex<View>,
-    /// The stop flag of a fetch that is running, if one is.
+    /// The fetch that is running, if one is.
     ///
-    /// Held here rather than inside the fetch because stopping it is a command
-    /// of its own, arriving on a different thread from the one doing the work.
+    /// What is held is the flag the store takes to interrupt itself, and
+    /// nothing in this window ever sets it — there is no Stop button. It is
+    /// here because the slot is also what says a fetch is in flight, which is
+    /// both what the card draws from and what refuses a second one.
     fetching: Mutex<Option<Arc<AtomicBool>>>,
 }
 
@@ -157,11 +160,11 @@ impl App {
         }
     }
 
-    /// Puts a fetch in flight, and hands back the flag that stops it.
+    /// Puts a fetch in flight, and hands back the flag it is watched by.
     ///
     /// Refused when one is already running, because two fetches writing the
-    /// same two files would each see the other's partial download and resume
-    /// from a length that is not theirs.
+    /// same files would each see the other's partial download and resume from a
+    /// length that is not theirs.
     fn begin_fetch(&self) -> Result<Arc<AtomicBool>, String> {
         let mut slot = self
             .fetching
@@ -183,18 +186,6 @@ impl App {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *slot = None;
-    }
-
-    /// Asks a running fetch to stop. Nothing to stop is not a failure.
-    fn stop_fetch(&self) {
-        let slot = self
-            .fetching
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        if let Some(flag) = slot.as_ref() {
-            flag.store(true, Ordering::Relaxed);
-        }
     }
 
     /// Reads one document, and puts what came of it on screen.
@@ -435,7 +426,7 @@ impl App {
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             output: output.display().to_string(),
-            html: render::html(document),
+            html: window_html(document),
             engines,
             conflicts,
             report: conflicts_of(report),
@@ -454,6 +445,37 @@ impl App {
                 .collect();
         }
     }
+}
+
+/// The document as the window draws it: one element per top-level block, each
+/// saying which block it is.
+///
+/// From the same list an export numbers by, and the number is written onto the
+/// element rather than counted by the window — the alternative is the window
+/// assuming that the nth element it finds is the nth block, which is true today
+/// because `render::html` is the blocks joined, and would stop being true
+/// without anything saying so.
+///
+/// The wrapper adds no spacing of its own, so the blocks' margins collapse
+/// through it and the page lays out as it did before it was there.
+fn window_html(markdown: &str) -> String {
+    let mut out = String::new();
+
+    for (at, block) in render::blocks(markdown).into_iter().enumerate() {
+        // A table is marked as one here rather than recognised as a `<table>`
+        // by the window, so that the formats the window offers for a block and
+        // the formats the other half will write are one fact read twice, rather
+        // than two facts that happen to agree.
+        let kind = if block.table { " block-table" } else { "" };
+
+        out.push_str(&format!(
+            "<section class=\"block{kind}\" data-block=\"{at}\">\
+             <div class=\"block-body\">{}</div></section>",
+            block.html
+        ));
+    }
+
+    out
 }
 
 /// The number the test page shows, and the number the answer has to contain.
@@ -897,6 +919,129 @@ async fn choose_file(app: AppHandle, title: String) -> Option<String> {
     picked.map(|path| path.to_string())
 }
 
+/// Writes a document, or one block of it, out as a file.
+///
+/// `block` is the number the pane put on the block, or `None` for the whole
+/// document, and `format` is one of [`Format`]'s names. Which of them suits
+/// what is [`export::write`]'s rule and not the window's: the list the window
+/// offers is built from the same facts, so a table cannot be a spreadsheet in
+/// one half of the program and not in the other.
+///
+/// `Ok(None)` when the save dialog was dismissed, which is not a failure and is
+/// not said as one.
+///
+/// A failure comes back as a [`Trouble`] rather than as a string, because the
+/// window already has sentences for its kinds and a place to put them — see
+/// `drawProblem`.
+#[tauri::command]
+async fn export(
+    app: AppHandle,
+    id: String,
+    title: String,
+    format: String,
+    block: Option<usize>,
+) -> Result<Option<String>, Trouble> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let Some(chosen) = Format::parse(&format) else {
+        return Err(Trouble::new(
+            Cause::Unsupported,
+            format!("`{format}` is not a format this program writes"),
+        ));
+    };
+
+    let state = app.state::<App>();
+    let pipeline = state.pipeline()?;
+
+    let record = pipeline
+        .resolve(&id)
+        .map_err(|error| Trouble::new(cause_of(&error), error.to_string()))?;
+
+    let source = pipeline.root().join(&record.output_path);
+    let markdown = std::fs::read_to_string(&source).map_err(|error| {
+        Trouble::new(Cause::Unreadable, format!("{}: {error}", source.display()))
+    })?;
+
+    // The file carries the report this program appends to the document, and the
+    // pane draws the document without it. A block is numbered by what is on
+    // screen, so a block is taken from the same part of the file the pane drew;
+    // only the whole document is the whole file.
+    let (document, _) = split_report(&markdown);
+    let drawn = if block.is_some() { document } else { &markdown };
+
+    if let Some(index) = block
+        && index >= render::blocks(drawn).len()
+    {
+        return Err(Trouble::new(
+            Cause::Missing,
+            format!("the document no longer has a block {index}"),
+        ));
+    }
+
+    let Some(written) = export::write(drawn, chosen, block) else {
+        // Not reachable from the window, which offers only the formats that
+        // suit what is being exported. It is here because the command is
+        // reachable from anything that can talk to it.
+        return Err(Trouble::new(
+            Cause::Unsupported,
+            format!("this document cannot be written as {chosen}"),
+        ));
+    };
+
+    let name = suggested_name(&source, chosen, block);
+
+    let Some(where_to) = app
+        .dialog()
+        .file()
+        .set_title(title)
+        .set_file_name(name)
+        .add_filter(chosen.as_str().to_uppercase(), &[chosen.extension()])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+
+    let where_to = where_to
+        .into_path()
+        .map_err(|error| Trouble::new(Cause::Unwritable, error.to_string()))?;
+
+    // The one spreadsheet that gets a byte-order mark and everything else that
+    // does not. The reason is in `export::wants_a_mark`, and it is the same call
+    // the command line makes — which matters more here than there, since a mark
+    // in front of an Office package is a file that will not open at all.
+    let mut bytes = Vec::with_capacity(written.len() + 3);
+    if export::wants_a_mark(chosen) {
+        bytes.extend_from_slice("\u{feff}".as_bytes());
+    }
+    bytes.extend_from_slice(&written);
+
+    std::fs::write(&where_to, &bytes).map_err(|error| {
+        Trouble::new(Cause::Unwritable, format!("{}: {error}", where_to.display()))
+    })?;
+
+    Ok(Some(where_to.display().to_string()))
+}
+
+/// What to call the file the save dialog opens with.
+///
+/// The document's own name, because that is what the person calls it, and the
+/// block's number when it is one block: two exports of the same document
+/// proposed under the same name is a question the save dialog answers with
+/// " (2)".
+fn suggested_name(source: &Path, format: Format, block: Option<usize>) -> String {
+    let stem = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "document".to_owned());
+
+    let extension = format.extension();
+
+    match block {
+        Some(index) => format!("{stem}-{index}.{extension}"),
+        None => format!("{stem}.{extension}"),
+    }
+}
+
 /// Reads a document, on a thread of its own.
 ///
 /// Reading a scan takes seconds a page and a long document takes minutes, so
@@ -1037,8 +1182,12 @@ struct Progress {
 ///
 /// A failure comes back as a view with a problem on it rather than as an error,
 /// because the window can draw that and an error it has no view for is a
-/// sentence in a language it does not speak. Stopping is not a failure: what
-/// arrived is kept, and the next attempt resumes.
+/// sentence in a language it does not speak.
+///
+/// There is no way to stop one from here. A download that is interrupted — the
+/// window closed, the machine asleep — leaves what arrived, and the next
+/// attempt resumes from it, which is the thing a Stop button would have been
+/// for and is already true without one.
 #[tauri::command]
 async fn fetch_local_models(app: AppHandle) -> Result<View, String> {
     let handle = app.clone();
@@ -1111,16 +1260,6 @@ async fn fetch_local_models(app: AppHandle) -> Result<View, String> {
     .map_err(|error| error.to_string())?
 }
 
-/// Asks a fetch that is running to stop.
-///
-/// Says nothing back, because the fetch says it: the view it returns when it
-/// stops already knows it was stopped, and the window draws that. Two answers
-/// to the same question is two chances to disagree.
-#[tauri::command]
-fn cancel_local_models(app: AppHandle) {
-    app.state::<App>().stop_fetch();
-}
-
 /// Opens something already in the knowledge base.
 #[tauri::command]
 async fn open(app: AppHandle, id: String, name: String) -> Result<View, String> {
@@ -1147,13 +1286,13 @@ pub fn run() {
             forget_record,
             delete_record,
             choose_file,
+            export,
             process,
             open,
             save_model,
             reveal_key,
             probe_models,
             fetch_local_models,
-            cancel_local_models,
             test_model
         ])
         .run(tauri::generate_context!())
@@ -1389,6 +1528,54 @@ code
         assert_eq!(nothing.lock().unwrap().screen, Screen::Empty);
     }
 
+    /// The number the pane hangs on a block is the number an export takes.
+    ///
+    /// The whole feature rests on this. A block's buttons send back the
+    /// `data-block` of the element they were drawn on, and the other side takes
+    /// that index out of `render::blocks` — so if the two ever numbered
+    /// differently, pressing Export on a table would write a paragraph, and
+    /// nothing on screen would say so.
+    ///
+    /// The wrapper is what makes them agree rather than two lists that happen
+    /// to line up, which is what this checks: the number, the block inside it,
+    /// and that there is exactly one of each.
+    #[test]
+    fn the_pane_numbers_the_blocks_the_way_an_export_takes_them() {
+        let markdown = "# One\n\nA paragraph.\n\n- one\n- two\n\n> quoted\n\n\
+                        | a | b |\n| --- | --- |\n| c | d |\n\n```\ncode\n```\n";
+
+        let drawn = window_html(markdown);
+        let blocks = render::blocks(markdown);
+
+        // Or the loops below would pass by finding nothing.
+        assert!(blocks.len() > 4, "only {} blocks were drawn", blocks.len());
+        assert_eq!(drawn.matches("data-block=").count(), blocks.len());
+
+        for (at, block) in blocks.iter().enumerate() {
+            assert!(
+                drawn.contains(&format!(
+                    "data-block=\"{at}\"><div class=\"block-body\">{}</div></section>",
+                    block.html
+                )),
+                "the block numbered {at} is not the one that came out of `blocks`"
+            );
+        }
+
+        // The one table is marked as one, and it is the only thing that is —
+        // which is the fact the window's list of formats is built from.
+        assert_eq!(blocks.iter().filter(|block| block.table).count(), 1);
+        assert_eq!(drawn.matches("block-table").count(), 1);
+    }
+
+    /// Two exports of the same document are not proposed under the same name.
+    #[test]
+    fn an_export_is_named_after_the_document_it_came_out_of() {
+        let source = Path::new("/library/docs/notes.md");
+
+        assert_eq!(suggested_name(source, Format::Html, None), "notes.html");
+        assert_eq!(suggested_name(source, Format::Markdown, Some(3)), "notes-3.md");
+    }
+
     /// Every element the script looks up is in the markup.
     ///
     /// `el()` throws when the id is not there, and the throw lands wherever in
@@ -1421,46 +1608,40 @@ code
         assert!(looked > 20, "only {looked} ids were checked");
     }
 
-    /// Every sentence the script asks for has been written, in both languages.
+    /// Every sentence the script asks for has been written.
     ///
     /// The failure this catches is silent on screen: a key that is not there is
-    /// `undefined`, and `undefined` interpolated into a template is drawn as
-    /// the word. A rename on one side of the boundary is the whole of the risk,
-    /// and nothing else here can see across it.
+    /// `undefined`, and `undefined` interpolated into a template is drawn as the
+    /// word. A rename on one side of the boundary is the whole of the risk, and
+    /// nothing else here can see across it.
     ///
-    /// Two ways of asking, both counted. `t().name` is the inline use, and
-    /// `words.name` is the table that puts a sentence into the markup — which
-    /// is the one a rename lands on, since it is where most of them are named.
+    /// One way of asking, counted everywhere it appears: `TEXT.name`, whether
+    /// that is inline or in the run that fills the markup. It was two ways while
+    /// there were two languages and a `t()` that chose between them; there is one
+    /// table now and the name is read straight out of it.
     #[test]
-    fn every_sentence_the_script_asks_for_is_written_twice() {
+    fn every_sentence_the_script_asks_for_has_been_written() {
         let js = include_str!("../ui/app.js");
 
-        let english = blocks(js, "en: {");
-        let chinese = blocks(js, "zh: {");
+        let table = blocks(js, "const TEXT = {");
+        assert_eq!(table.len(), 1, "there should be one table of words");
 
-        assert_eq!(english.len(), 1, "there should be one block per language");
-        assert_eq!(chinese.len(), 1, "there should be one block per language");
-
-        let en = keys_in(english[0]);
-        let zh = keys_in(chinese[0]);
+        let written = keys_in(table[0]);
         let mut asked = 0;
 
-        for prefix in ["t().", "words."] {
-            for (at, _) in js.match_indices(prefix) {
-                let rest = &js[at + prefix.len()..];
-                let name: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .collect();
+        for (at, _) in js.match_indices("TEXT.") {
+            let rest = &js[at + "TEXT.".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
 
-                if name.is_empty() {
-                    continue;
-                }
-
-                asked += 1;
-                assert!(en.contains(&name), "`{name}` is asked for and not written");
-                assert!(zh.contains(&name), "`{name}` is written once, not twice");
+            if name.is_empty() {
+                continue;
             }
+
+            asked += 1;
+            assert!(written.contains(&name), "`{name}` is asked for and not written");
         }
 
         // A floor rather than a count: what it catches is the parse above
@@ -1503,7 +1684,7 @@ code
         found
     }
 
-    /// Every name an engine can give itself has words behind it, twice.
+    /// Every name an engine can give itself has words behind it.
     ///
     /// **This is the test for something that went wrong.** `rapidocr+layout+tables`
     /// was drawn raw in the status bar — in Chinese, to somebody who had just
@@ -1519,13 +1700,13 @@ code
     /// short because the ways of appending are two — see `RapidOcrBackend::id`
     /// and `PdfTextLayer::id`, which are the only places a `+` is put in.
     #[test]
-    fn every_part_of_an_engine_name_has_words_in_both_languages() {
+    fn every_part_of_an_engine_name_has_words() {
         let js = include_str!("../ui/app.js");
-        let blocks = blocks(js, "engine_names: {");
+        let table = blocks(js, "engine_names: {");
 
-        assert_eq!(blocks.len(), 2, "there should be one block per language");
+        assert_eq!(table.len(), 1, "there should be one list of engine names");
 
-        let written: Vec<Vec<String>> = blocks.iter().map(|block| keys_in(block)).collect();
+        let written = keys_in(table[0]);
 
         for part in [
             // What can read a page.
@@ -1541,17 +1722,14 @@ code
             "layout",
             "tables",
         ] {
-            for (at, keys) in written.iter().enumerate() {
-                assert!(
-                    keys.iter().any(|key| key == part),
-                    "no {} name for `{part}`, so an engine called that is drawn raw",
-                    if at == 0 { "English" } else { "Chinese" }
-                );
-            }
+            assert!(
+                written.iter().any(|key| key == part),
+                "no name for `{part}`, so an engine called that is drawn raw"
+            );
         }
     }
 
-    /// Every kind of failure has a sentence, in both languages.
+    /// Every kind of failure has a sentence.
     ///
     /// The gap this exists to catch was real and was here: `Download` was added
     /// to `Cause` for the local models, reached the backend and the failure
@@ -1561,7 +1739,7 @@ code
     /// The list of causes is matched exhaustively below, so that adding one
     /// fails to compile rather than failing silently.
     #[test]
-    fn every_cause_is_written_in_both_languages() {
+    fn every_cause_has_a_sentence() {
         fn spoken_for(cause: Cause) {
             match cause {
                 Cause::Unsupported
@@ -1580,7 +1758,7 @@ code
         let js = include_str!("../ui/app.js");
         let causes = blocks(js, "causes: {");
 
-        assert_eq!(causes.len(), 2, "there should be one block per language");
+        assert_eq!(causes.len(), 1, "there should be one set of sentences");
 
         for cause in [
             Cause::Unsupported,
@@ -1605,13 +1783,10 @@ code
             // quoted form is the one that looks like the rule.
             let written = [format!("\"{name}\":"), format!("{name}:")];
 
-            for (at, block) in causes.iter().enumerate() {
-                assert!(
-                    written.iter().any(|form| block.contains(form.as_str())),
-                    "cause `{name}` is missing from the {} set of sentences",
-                    if at == 0 { "first" } else { "second" }
-                );
-            }
+            assert!(
+                written.iter().any(|form| causes[0].contains(form.as_str())),
+                "cause `{name}` is missing from the set of sentences"
+            );
         }
     }
 

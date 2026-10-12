@@ -1,5 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<!-- One language, and it is this one. `zh-Hans` and not `zh`: what the webview
+     does with the tag is choose which of the machine's few dozen Han fonts to
+     draw a character with, and the ones for the traditional set look wrong
+     beside text this program wrote. -->
+<html lang="zh-Hans">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -17,7 +21,7 @@
           aria-selected="true"
           aria-controls="panel-document"
         >
-          Document
+          文档
         </button>
         <button
           id="tab-records"
@@ -26,7 +30,7 @@
           aria-selected="false"
           aria-controls="panel-records"
         >
-          Records
+          记录
         </button>
         <button
           id="tab-settings"
@@ -35,14 +39,13 @@
           aria-selected="false"
           aria-controls="panel-settings"
         >
-          Settings
+          设置
         </button>
       </nav>
       <span class="spacer"></span>
       <!-- Drawn rather than typed: no icon font and no library, just two paths
            stroked in whatever colour the button is using. The one shown is the
-           theme pressing it gives you, so a sun while the window is dark —
-           the same rule the language button follows. -->
+           theme pressing it gives you, so a sun while the window is dark. -->
       <button id="theme" class="quiet" title="切换到亮色">
         <svg id="icon-sun" class="icon" viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="4" />
@@ -59,8 +62,7 @@
           <path d="M12 3A9 9 0 0 0 12 21 10.6 10.6 0 0 1 12 3Z" />
         </svg>
       </button>
-      <button id="lang" class="quiet" title="用中文显示界面">中文</button>
-      <button id="add" class="primary">Add a document</button>
+      <button id="add" class="primary">添加文档</button>
     </header>
 
     <p id="problem" class="banner" hidden></p>
@@ -105,7 +107,7 @@
       >
         <form id="settings">
           <div class="title-row">
-            <h2 id="set-title">Model</h2>
+            <h2 id="set-title">模型</h2>
             <!-- Whether this is known to work, which is not the same as whether
                  it is saved, and is the question somebody setting it up
                  actually has. -->
@@ -119,7 +121,7 @@
           <div class="field">
             <label class="check">
               <input id="set-enabled" type="checkbox" />
-              <span id="lbl-enabled">Use a vision model</span>
+              <span id="lbl-enabled">使用大模型</span>
             </label>
             <p id="set-enabled-hint" class="hint"></p>
           </div>
@@ -128,7 +130,7 @@
                that what is switched off can still be read. -->
           <div id="model-fields">
           <div class="field">
-            <label id="lbl-endpoint" for="set-endpoint">Endpoint</label>
+            <label id="lbl-endpoint" for="set-endpoint">端点地址</label>
             <input
               id="set-endpoint"
               type="text"
@@ -141,7 +143,7 @@
           </div>
 
           <div class="field">
-            <label id="lbl-model" for="set-model">Model</label>
+            <label id="lbl-model" for="set-model">模型</label>
             <!-- One of the two shows, never both. Which one is `drawModelField`
                  in app.js: the list once the endpoint has said what it serves,
                  and the text field when there is nothing to choose from. -->
@@ -160,13 +162,13 @@
             </div>
             <p id="set-model-error" class="error" hidden></p>
             <p class="hint">
-              <span id="set-model-hint">Not sure what goes here?</span>
-              <button id="fetch-models" type="button" class="link">Ask the endpoint</button>
+              <span id="set-model-hint">不知道填什么？</span>
+              <button id="fetch-models" type="button" class="link">问端点</button>
             </p>
           </div>
 
           <div class="field">
-            <label id="lbl-key" for="set-key">Key</label>
+            <label id="lbl-key" for="set-key">密钥</label>
             <div class="with-affix">
               <input id="set-key" type="password" spellcheck="false" autocomplete="new-password" />
               <!-- The eye says what pressing it gives you, like the theme and
@@ -197,7 +199,7 @@
           <div class="field">
             <label class="check">
               <input id="set-reasoning" type="checkbox" />
-              <span id="lbl-reasoning">Let the model think first</span>
+              <span id="lbl-reasoning">让模型先想一遍再回答</span>
             </label>
             <p id="set-reasoning-hint" class="hint"></p>
           </div>
@@ -214,7 +216,7 @@
                to add up before they can answer the only question they came
                with, which is whether to press the button. -->
           <div class="field">
-            <label id="lbl-local">Models on this machine</label>
+            <label id="lbl-local">本机模型</label>
 
             <div id="local-card" class="model">
               <div class="model-head">
@@ -225,17 +227,21 @@
 
               <div class="bar" id="local-bar" hidden><span id="local-fill"></span></div>
 
+              <!-- One button, and during a download none at all. There is no
+                   Stop: a quarter of a gigabyte arrives in seconds to tens of
+                   seconds, it resumes if it is interrupted anyway, and a
+                   second control beside the first is a decision offered where
+                   nobody has one to make. -->
               <div class="model-row">
                 <span id="local-state" class="model-state"></span>
-                <button id="get-local" type="button" class="small">Download</button>
-                <button id="stop-local" type="button" class="small" hidden>Stop</button>
+                <button id="get-local" type="button" class="small">下载</button>
               </div>
             </div>
           </div>
 
           <div class="actions">
-            <button id="save" type="submit" class="primary">Save</button>
-            <button id="test" type="button">Test</button>
+            <button id="save" type="submit" class="primary">保存</button>
+            <button id="test" type="button">测试</button>
             <span id="set-note" class="hint"></span>
           </div>
         </form>
@@ -271,6 +277,31 @@
         <button id="ask-cancel" type="button"></button>
         <button id="ask-remove" type="button"></button>
         <button id="ask-delete" type="button" class="danger filled"></button>
+      </div>
+    </dialog>
+
+    <!-- The question an Export button asks: which of the formats.
+
+         One button per format rather than a list of choices with a confirm
+         under it, because the choice is the whole of the answer — the second
+         step would be asking the same question again.
+
+         Each button says what the format *keeps*, because that is what is
+         being chosen between: not four file extensions, but a paragraph's
+         emphasis and a table a spreadsheet can open. That is also why the
+         formats on offer differ by what is being exported — a heading and a
+         table do not have the same answer.
+
+         A `dialog` for the same reasons as the one above. What it carries that
+         the one above does not is what it is about: the backdrop covers the
+         document, so after opening it a person can no longer see which block
+         they pressed Export on. -->
+    <dialog id="export-question">
+      <h2 id="export-title"></h2>
+      <p id="export-about" class="lead"></p>
+      <div id="export-formats" class="formats"></div>
+      <div class="actions">
+        <button id="export-cancel" type="button" class="quiet"></button>
       </div>
     </dialog>
 

@@ -1022,7 +1022,7 @@ docfusion reconcile [--fix]    Repair the index against the file tree
 docfusion reindex --stale      Reprocess after an engine/model/prompt change
 docfusion bench --set <dir>    Compare backends on a golden corpus
 docfusion doctor               What this installation can read, and what is missing
-docfusion export <id> --to <fmt>   md | html | docx | pdf | txt | json(IR)
+docfusion export <id> --to <fmt> [--block N] [--out FILE]   md | docx | html | txt | xlsx | csv
 docfusion serve                Local HTTP surface (agent-facing)
 docfusion mcp                  MCP server (P4, thin wrapper)
 ```
@@ -1117,7 +1117,7 @@ Document tab                   Records tab
 │ │Year│ Rev  │ YoY │  │      │                      │
 │ └────┴──────┴─────┘  │      │ scan-0007.png        │
 ├──────────────────────┤      │ done                 │
-│ rapidocr · ⚠ 3  [Copy]│     │         [查看][删除] │
+│ rapidocr · ⚠ 3 [导出]│     │         [查看][删除] │
 └──────────────────────┘      └──────────────────────┘
 ```
 
@@ -1414,12 +1414,25 @@ would be six things to add up before answering the only question somebody came
 with, which is whether to press the button — so the card carries the name, one
 sentence about what it is for, the total, and a state line.
 
-The state line is one of `needed · Download`, a progress bar with
-`38 MB / 138 MB · 26% · Stop`, `Installed`, or the reason it failed with the
-button back. The bar appears only while a fetch is running; a bar that is always
-there and always full is a bar nobody reads. Its first frame is filled to what
-is already on disk rather than to nothing, because the fetch resumes rather than
-restarts and a bar beginning at zero would say the half-downloaded set was gone.
+The state line is one of `needs 138 MB · Download`, a progress bar with
+`38 MB / 138 MB · 26%` and no button at all, `Installed`, or the reason it
+failed with the button back. The bar appears only while a fetch is running; a
+bar that is always there and always full is a bar nobody reads. Its first frame
+is filled to what is already on disk rather than to nothing, because the fetch
+resumes rather than restarts and a bar beginning at zero would say the
+half-downloaded set was gone.
+
+**There is no Stop.** There was one, and it was reachable for exactly as long as
+there was a download to stop — which is the only time it existed for — and it
+answered a question nobody was asking: the whole set arrives in seconds to tens
+of seconds, an interrupted download keeps what arrived and resumes from there,
+and the way to interrupt one is to close the window. A control that offers a
+decision is a control that has to be read; this one had nothing to decide.
+
+The card is put into its running face **on the press** rather than when the
+backend answers, because the backend answers once and only at the end. Before
+that, the button that had just been pressed stayed on screen for the whole
+fetch, still saying Download.
 
 **Progress is the set's, not the file's.** Six files each running from zero to
 a hundred would look like six downloads and would make the bar fall back five
@@ -1437,17 +1450,17 @@ it" is never said about an address that did not answer.
 
 ### 11.3 Language
 
-The interface is in Chinese and English, and it opens in whichever one the
-machine is set to. Nothing has to be configured: `navigator.language` on a
-Chinese Windows is already `zh-CN`. A button in the header switches, and the
-choice is remembered.
+**Chinese, and only Chinese.** The window was bilingual, with a header button
+that switched and a choice that was remembered; it is one language now, and the
+button, the second table of words and the `t()` that chose between them are all
+gone. `TEXT` in `app.js` is one object and the markup carries the same words, so
+the window says the same thing before the script runs as after.
 
-**The window sends the kind of a failure, not the sentence about it.** This is
-the whole reason the interface can be translated at all, and it is the part
-worth writing down. A `thiserror` message is English, and it is the string the
-command line prints. A window that had to show it in Chinese could only match on
-the sentence — which comes apart the moment somebody rewords it, silently, in a
-place nobody looks. So a failure crosses the boundary in two halves:
+**The window still sends the kind of a failure, not the sentence about it**, and
+that split outlives the translation it was built for. A `thiserror` message is
+English, and it is the string the command line prints. A window that showed it
+would be showing one language inside another. So a failure crosses the boundary
+in two halves:
 
 - **`cause`** — the kind: nothing can read this, an engine failed, a file could
   not be read, the index is not usable, and so on. `Cause` in `state.rs` is a
@@ -1461,7 +1474,7 @@ place nobody looks. So a failure crosses the boundary in two halves:
 
 **Which leaves one thing in English, and it is not laziness.** `detail` is
 somebody else's words: `reqwest` said the connection was refused, the OS said
-`os error 10061`, SQLite said what was wrong with the query. Translating those
+`os error 10061`, SQLite said what was wrong with the query. Rewriting those
 would mean guessing at what a third-party crate meant and writing the guess in
 Chinese — inventing an explanation instead of reporting one. It is shown as it
 arrived, set apart so it reads as a quotation rather than as our own sentence.
@@ -1478,11 +1491,11 @@ state to explain, no query to the system, and no way for the window to open in
 one theme and change its mind a moment later.
 
 **The button is a sun or a moon, and it says what pressing it gives you** — a
-sun while the window is dark — which is the rule the language button follows
-too, because the thing worth saying is the one you cannot see. Both are drawn
-inline as stroked `<svg>`: no icon font, no library, no emoji. Emoji were ruled
-out by eye before anything else — `☀` is one codepoint away from being rendered
-in colour by the system font, which is not a thing a button can decide.
+sun while the window is dark — because the thing worth saying is the one you
+cannot see. It is drawn inline as a stroked `<svg>`: no icon font, no library,
+no emoji. Emoji were ruled out by eye before anything else — `☀` is one
+codepoint away from being rendered in colour by the system font, which is not a
+thing a button can decide.
 
 **A wordless button still needs words.** They go in `title` and `aria-label`,
 translated like everything else, because an icon has no accessible name of its
@@ -1521,14 +1534,90 @@ rule at all until now, so they kept the browser's default, which is a dark blue
 chosen for a white page. On a dark one it is very nearly invisible.
 
 Renumbering follows: the settings tab is §11.2, language §11.3, appearance
-§11.4, and copy behaviour §11.5.
+§11.4, and copy and export §11.5.
 
-### 11.5 Copy behavior
+### 11.5 Copy and export
 
-The displayed Markdown is **rendered** (headings, tables, emphasis). A dedicated
-**Copy** action yields **plain text with formatting stripped** — what users
-actually paste into other tools. (Rendering is a view concern; copying is a
-content concern. They must not be the same code path.)
+The displayed Markdown is **rendered** (headings, tables, emphasis).
+
+**Copy gives the words.** It is in the corner of every block, revealed by the
+pointer, and it yields plain text — what somebody pastes into another tool. The
+document-wide `copy` handler strips markup from a selection for the same reason.
+(Rendering is a view concern; copying is a content concern. They must not be the
+same code path.)
+
+**Export gives the file.** It is offered for the whole document in the status
+bar, and for each block from that block's `⋯`, and it always keeps something the
+words do not have — which is the only thing that justifies a button next to
+Copy:
+
+| what | formats | why |
+|---|---|---|
+| whole document | Markdown, Word, HTML, plain text, Excel, CSV | `md` is the file as written, front matter and all |
+| a table | Markdown, Word, HTML, **Excel**, **CSV** | a table must come out as a table |
+| anything else | Markdown, Word, HTML | **no plain text** — that is what Copy is for |
+
+One rule decides the last two columns, and `Format::suits` is the whole of it:
+**a spreadsheet is a table and only a table.** Asking for a paragraph as CSV or
+as a workbook is refused rather than approximated, because a paragraph in comma
+separated values is a paragraph with quotes round it. On a *document* they mean
+the tables in it, one after another (CSV) or one sheet each (Excel).
+
+The two Office formats are zips built here — `word/document.xml` from the same
+`comrak` parse the pane is drawn from, and a workbook with a sheet per table.
+Neither needs a dependency: `zip` is already in the tree for reading them, and
+`quick-xml`'s job is small enough to be `write!`.
+
+Three details that are the format's rather than a preference:
+
+- A `.csv` gets a UTF-8 **byte-order mark** and nothing else does. Excel on
+  Windows reads one as the legacy code page without it and shows mojibake —
+  which is the commonest way a working export produces a file nobody can read.
+  **A mark in front of a zip is not a zip**, which is why `.xlsx` and `.docx`
+  are not "the spreadsheets" for this rule but exceptions to it.
+- HTML is a complete page carrying `<meta charset="utf-8">`, not a fragment.
+- No `pdf`. A PDF needs a font embedded and a page laid out, which is a
+  different program from a reader of documents; the HTML export opens in a
+  browser and prints to PDF from there.
+
+**The pane numbers its blocks.** `window_html` wraps every top-level block in
+`<section class="block" data-block="N">`, so the number a block's buttons send
+back is written down by the same code that produced the block list rather than
+counted by position in the DOM. `--block N` and the window's n are the same n.
+
+**A block has one button, and it is drawn beside the text.** Each block keeps a
+48 px strip on its right (`--actions`) holding a single `⋯`, and `.document` is
+that much wider to pay for it, so a paragraph wraps exactly where it wrapped
+before.
+
+Three things are deliberate, and each was arrived at by getting it wrong first:
+
+- **Beside the text, not on it.** The first version absolutely positioned the
+  controls at the block's top right, which put them on the first line of every
+  paragraph and on the last header cell of every table. A button drawn on the
+  thing it acts on is a button hiding the thing it is about.
+- **One glyph, not two buttons.** A pair is more than twice as wide as a glyph,
+  and — worse — taller than a line of text. Being taller, it hangs past a
+  one-line paragraph into the margin the next block's pair is also hanging in,
+  and two blocks' pairs land on each other. One glyph is a row of its own; the
+  two things it does are a list in the dialog.
+- **The strip is on every block**, not only on the one under the pointer. A
+  block that made room for its button as it appeared would re-wrap its own
+  paragraph under the reader's cursor.
+- **The block under the pointer is washed**, which is what makes the `⋯` read as
+  belonging to *this* block rather than to the one above it. A halo
+  (`box-shadow`, four pixels) rather than padding, because padding on the block
+  would stop its child's margins collapsing through it — the property the whole
+  layout rests on — and every document would breathe out. The colour is
+  `--highlight` rather than `--wash`: the wash is what a button hovers into,
+  where the pointer is already there and the colour only confirms, and in the
+  light theme it is a hair off white.
+
+The dialog leads with **Copy** and then the formats, because Copy is the one
+entry that keeps nothing and everything under it keeps something. What a block
+was copied is said by the `⋯` turning into a green `✓` for a moment — a tick
+rather than the word, because the button is one glyph wide and "Copied" written
+in its place would push it into the paragraph it stands beside.
 
 ### 11.6 Conflict review
 

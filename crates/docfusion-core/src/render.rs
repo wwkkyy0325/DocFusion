@@ -4,6 +4,9 @@
 //! paragraph that happens to begin with `#` or `-` would be reinterpreted as
 //! structure the document never had, so text is escaped before it is written.
 
+use comrak::nodes::NodeValue;
+use comrak::{Arena, Options, format_commonmark, format_html, parse_document};
+
 use crate::ir::{Block, BlockKind, ConflictKind, Document};
 use crate::text::{is_cjk, needs_space};
 
@@ -35,7 +38,135 @@ const RESERVED_NAMES: [&str; 22] = [
 /// The front matter is dropped rather than shown. It is a machine's record of
 /// where the document came from, not something the document says.
 pub fn html(markdown: &str) -> String {
-    let mut options = comrak::Options::default();
+    blocks(markdown).into_iter().map(|block| block.html).collect()
+}
+
+/// One block of a document, in the two shapes anything can be done with it in.
+///
+/// A block is a **top-level thing in the rendered document** — a heading, a
+/// paragraph, a list, a table, a fenced block — which is what somebody pointing
+/// at a page means by "this bit". Not the IR's blocks: those are finer (a list
+/// item and a table cell are each one) and they are not what is on screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rendered {
+    /// Whether this block is a table, which is the one thing that changes what
+    /// can be done with it: a table can be a spreadsheet and nothing else can.
+    /// Every other distinction is one the formats do not care about.
+    pub table: bool,
+    pub html: String,
+    /// The block as Markdown, which is what the document it came from is made
+    /// of — so a block taken out of it is a document that stands on its own.
+    pub markdown: String,
+}
+
+/// Splits a document into the blocks it is displayed as, and renders each one.
+///
+/// **This is what makes "the nth thing in the pane" and "the nth block" the same
+/// block**, rather than two counts that agree until they do not: [`html`] is
+/// defined as these blocks joined, so the correspondence is not a convention
+/// that has to be maintained, it is the definition. The window numbers the
+/// elements it drew; the other side numbers the nodes it parsed; they are the
+/// same list because there is only one.
+///
+/// The parse is `comrak`'s, the same one the pane is rendered with — so a block
+/// exported here is the block that was on screen, down to how a table's
+/// alignment was written.
+pub fn blocks(markdown: &str) -> Vec<Rendered> {
+    let options = rendering();
+
+    let arena = Arena::new();
+    let document = parse_document(&arena, markdown, &options);
+
+    document
+        .children()
+        .filter_map(|node| {
+            let mut html = String::new();
+            format_html(node, &options, &mut html).expect("a String is always writable");
+
+            // **A block is a node that renders to something**, and the front
+            // matter is the one that does not: `comrak` keeps it as a top-level
+            // node and draws nothing for it, so counting it would put every
+            // block's number one out — the window numbers what it drew, and it
+            // never drew this. Written as "renders to nothing" rather than "is
+            // not front matter" so that anything else `comrak` draws nothing
+            // for is excluded by the same line.
+            if html.trim().is_empty() {
+                return None;
+            }
+
+            let mut commonmark = String::new();
+            format_commonmark(node, &options, &mut commonmark).expect("a String is always writable");
+
+            Some(Rendered {
+                table: matches!(node.data.borrow().value, NodeValue::Table(_)),
+                html,
+                markdown: commonmark,
+            })
+        })
+        .collect()
+}
+
+/// The plain text of a block or a document: the words, and no structure.
+///
+/// Taken from the parse rather than from the rendering, because getting text
+/// out of HTML means taking tags out of it and that is a guess — `&amp;` and a
+/// literal `&amp;` in the source are the same three characters by the time it is
+/// markup. The parse still knows which characters were the document's.
+///
+/// A space between two words, and none between two Chinese ones, which is the
+/// same rule the rest of this program joins text with.
+pub fn plain(markdown: &str) -> String {
+    let options = rendering();
+
+    let arena = Arena::new();
+    let document = parse_document(&arena, markdown, &options);
+
+    let mut out = String::new();
+
+    for node in document.descendants() {
+        match &node.data.borrow().value {
+            NodeValue::Text(text) => {
+                // No space where a break has already been written: a tab and a
+                // space is a cell that starts with a space, and the space is
+                // not in the document.
+                if needs_space(&out, text) && !out.ends_with(['\t', '\n']) {
+                    out.push(' ');
+                }
+                out.push_str(text);
+            }
+            // A line break in the source is a break in the words.
+            NodeValue::LineBreak | NodeValue::SoftBreak => out.push('\n'),
+            NodeValue::Paragraph | NodeValue::Heading(_) => break_before(&mut out, '\n'),
+            // **A cell boundary is not a word boundary.** Cells are separate
+            // things, and joining them by the rule for words runs 名称 and 数量
+            // together — which reads as one word and is two, with nothing left
+            // to tell them apart. A tab, because that is what a table flattened
+            // into text is made of.
+            NodeValue::TableCell => break_before(&mut out, '\t'),
+            NodeValue::TableRow(_) => break_before(&mut out, '\n'),
+            _ => {}
+        }
+    }
+
+    // The separator is written before the thing that follows it, so the last
+    // one is a tab or a newline that nothing follows.
+    out.trim_end_matches(['\t', '\n']).to_owned()
+}
+
+/// Ends the current line, unless there is nothing on it.
+fn break_before(out: &mut String, separator: char) {
+    if !out.is_empty() && !out.ends_with('\n') && !out.ends_with('\t') {
+        out.push(separator);
+    }
+}
+
+/// The options a document is parsed with, wherever it is parsed.
+///
+/// One function because the callers have to agree: the pane, the blocks it is
+/// made of and the exports written from the same text are one parse, and two
+/// sets of options would be two different documents.
+pub(crate) fn rendering() -> Options<'static> {
+    let mut options = Options::default();
     options.extension.table = true;
     options.extension.strikethrough = true;
     options.extension.autolink = true;
@@ -47,7 +178,7 @@ pub fn html(markdown: &str) -> String {
     // webview, where markup that passes through is script that runs.
     options.render.escape = true;
 
-    comrak::markdown_to_html(markdown, &options)
+    options
 }
 
 /// Renders a document as Markdown with YAML front matter.
@@ -816,6 +947,80 @@ mod tests {
         assert!(markdown.contains(&format!("created_at: \"{CREATED_AT}\"")));
         assert!(markdown.contains("engines: [pdfium]"));
         assert!(markdown.contains("conflict_count: 0"));
+    }
+
+    // ── The blocks a document is displayed as ────────────────────────────────
+
+    /// The pane and the blocks it is made of are **one parse, not two that
+    /// agree** — which is what lets the window number what it drew and the other
+    /// side number what it parsed without either having to be told the other's
+    /// convention.
+    #[test]
+    fn the_html_is_the_blocks_joined() {
+        let markdown = "# Title\n\nA paragraph.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- one\n- two\n";
+
+        let joined: String = blocks(markdown).into_iter().map(|block| block.html).collect();
+
+        assert_eq!(joined, html(markdown));
+    }
+
+    /// **The front matter is not a block.** It is a top-level node to `comrak`
+    /// and it draws nothing, and counting it would put every block's number one
+    /// out — so a window numbering what it drew and a backend numbering what it
+    /// parsed would disagree by one, on every document, silently.
+    #[test]
+    fn the_front_matter_is_not_one_of_the_blocks() {
+        let markdown = "---\ntitle: Report\nengines: [pdfium]\n---\n\n# Title\n\nA paragraph.\n";
+
+        let found = blocks(markdown);
+
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].markdown.trim(), "# Title");
+        assert_eq!(found[1].markdown.trim(), "A paragraph.");
+        assert!(!found[0].html.contains("title"), "{found:?}");
+    }
+
+    #[test]
+    fn a_block_knows_when_it_is_a_table() {
+        let markdown = "# Title\n\nA paragraph.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- one\n";
+
+        let tables: Vec<bool> = blocks(markdown).iter().map(|block| block.table).collect();
+
+        assert_eq!(tables, vec![false, false, true, false]);
+    }
+
+    /// A block taken out of a document is Markdown that stands on its own —
+    /// which is the whole of what "export this bit" means.
+    #[test]
+    fn a_block_is_markdown_of_its_own() {
+        let markdown = "# Title\n\nThe words.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+
+        let found = blocks(markdown);
+
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert_eq!(found[0].markdown.trim(), "# Title");
+        assert!(found[1].markdown.contains("The words."));
+        assert!(found[2].markdown.contains("| a | b |"), "{:?}", found[2]);
+    }
+
+    /// The words, with the punctuation of the markup taken out and nothing else
+    /// disturbed — including the rule about spaces, which for Chinese is that
+    /// there are none.
+    #[test]
+    fn the_plain_text_is_the_words() {
+        let text = plain("# 标题\n\n我国大豆研究取得突破\n");
+
+        assert_eq!(text, "标题\n我国大豆研究取得突破");
+        assert!(!text.contains('#'));
+    }
+
+    /// Taken from the parse and not from the markup, because getting text out
+    /// of markup means taking tags out of it and that cannot be done: the two
+    /// are the same characters by then.
+    #[test]
+    fn an_ampersand_comes_back_as_an_ampersand() {
+        assert_eq!(plain("Ben & Jerry"), "Ben & Jerry");
+        assert_eq!(plain("a < b"), "a < b");
     }
 
     // ── Conflicts ────────────────────────────────────────────────────────────

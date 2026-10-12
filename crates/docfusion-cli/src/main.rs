@@ -13,6 +13,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use docfusion_core::extract::{ExtractError, Extractor, Router};
+use docfusion_core::export::Format;
 use docfusion_core::text::{HIT_END, HIT_START};
 use docfusion_core::verify::{DEFAULT_MAX_VERIFY_PAGES, VerifyMode, VerifyPolicy};
 use docfusion_store::endpoint::{EndpointConfig, OpenAiEndpoint};
@@ -217,6 +218,33 @@ enum Command {
         status: Option<String>,
     },
 
+    /// Write a document, or one block of it, out as a file.
+    ///
+    /// The formats keep what the words alone do not: a table as a spreadsheet, a
+    /// document as a Word file or a page with its emphasis and its heading
+    /// levels. Plain text is offered for a whole document and not for a block,
+    /// because a block's words are what `show` and a copy button are for.
+    Export {
+        /// The document: its id, the first few characters of one, its path, or
+        /// its file name.
+        document: String,
+
+        /// md, html, docx, txt, csv or xlsx. The last two are a table's and need
+        /// --block or a document whose tables are what was wanted; docx and xlsx
+        /// are zips and need --out, since neither can be written to a terminal.
+        #[arg(long, default_value = "md")]
+        to: String,
+
+        /// One block of the document, counted from zero in the order the window
+        /// draws them. Without it, the whole document.
+        #[arg(long)]
+        block: Option<usize>,
+
+        /// Where to write it. Without this it goes to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
     /// Find documents by what is in them.
     ///
     /// Every word has to appear for a document to match. Chinese needs no
@@ -315,6 +343,16 @@ enum CliError {
     /// The command line asks for something that cannot be honoured as given.
     #[error("{0}")]
     Usage(String),
+
+    /// A file the command had to touch itself, rather than through a pipeline
+    /// that wraps its own. The path is carried because the operating system's
+    /// account of what went wrong never says which file it was about.
+    #[error("could not {action} {path}: {source}")]
+    File {
+        action: &'static str,
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 fn main() -> ExitCode {
@@ -343,6 +381,12 @@ fn run(cli: &Cli, reporter: &Reporter) -> Result<u8, CliError> {
         Command::Add { paths } => add(cli, reporter, paths),
         Command::Show { document } => show(cli, reporter, document),
         Command::List { status } => list(cli, reporter, status.as_deref()),
+        Command::Export {
+            document,
+            to,
+            block,
+            out,
+        } => export(cli, reporter, document, to, *block, out.as_deref()),
         Command::Search { query, limit } => search(cli, reporter, query, *limit),
         Command::Index => rebuild_index(cli, reporter),
         Command::Reindex { document } => reindex(cli, reporter, document.as_deref()),
@@ -538,6 +582,125 @@ fn list(cli: &Cli, reporter: &Reporter, status: Option<&str>) -> Result<u8, CliE
             ),
         );
     }
+
+    Ok(OK)
+}
+
+/// Writes a document, or one block of it, out.
+///
+/// **To stdout unless told where else**, so that it pipes: a format on stdout is
+/// a format a shell can hand to something, and one that silently wrote a file
+/// would be a command whose output went somewhere the caller did not name.
+///
+/// The refusal is a usage error and not an empty answer. A CSV of a paragraph
+/// has no representation, and a command that wrote a file of nothing would be
+/// one nobody could tell from a command that worked on an empty document.
+fn export(
+    cli: &Cli,
+    reporter: &Reporter,
+    document: &str,
+    to: &str,
+    block: Option<usize>,
+    out: Option<&Path>,
+) -> Result<u8, CliError> {
+    let Some(format) = Format::parse(to) else {
+        return Err(CliError::Usage(format!(
+            "`{to}` is not a format. Try one of {}.",
+            Format::ALL
+                .iter()
+                .map(|format| format.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    };
+
+    let pipeline = open(cli)?;
+    let record = pipeline.resolve(document)?;
+
+    let source = pipeline.root().join(&record.output_path);
+    let markdown = std::fs::read_to_string(&source).map_err(|source_error| CliError::File {
+        action: "read",
+        path: source.clone(),
+        source: source_error,
+    })?;
+
+    // Asked before the export rather than read out of its refusal, because a
+    // block that is not there and a format that does not apply are two
+    // different mistakes and a caller should not be told the wrong one.
+    let blocks = docfusion_core::render::blocks(&markdown);
+    if let Some(index) = block
+        && index >= blocks.len()
+    {
+        return Err(CliError::Usage(format!(
+            "this document has {} block{}, numbered from 0; there is no block {index}",
+            blocks.len(),
+            if blocks.len() == 1 { "" } else { "s" }
+        )));
+    }
+
+    let Some(written) = docfusion_core::export::write(&markdown, format, block) else {
+        return Err(CliError::Usage(match (format, block) {
+            (Format::Text, Some(index)) => format!(
+                "block {index} has no plain-text export: the words with no structure are \
+                 what `docfusion show` prints, and what `export` is for is the structure"
+            ),
+            (Format::Csv, Some(index)) => format!(
+                "block {index} is not a table, so it cannot be written as csv — \
+                 a paragraph in comma separated values is a paragraph with quotes round it"
+            ),
+            _ => format!("this document cannot be written as {format}"),
+        }));
+    };
+
+    let mut bytes = Vec::with_capacity(written.len() + 3);
+    // A spreadsheet gets a byte-order mark and nothing else does; see
+    // `export::wants_a_mark` for why Excel needs one and a `.md` must not have
+    // one. Only a file gets it — a mark at the front of a pipe is three bytes
+    // the thing reading it did not ask for.
+    if out.is_some() && docfusion_core::export::wants_a_mark(format) {
+        bytes.extend_from_slice("\u{feff}".as_bytes());
+    }
+    bytes.extend_from_slice(&written);
+
+    // Taken before anything is printed, because printing a text one consumes it
+    // and the record below still has to say how long it was.
+    let size = bytes.len();
+
+    match out {
+        Some(path) => {
+            std::fs::write(path, &bytes).map_err(|source| CliError::File {
+                action: "write",
+                path: path.to_path_buf(),
+                source,
+            })?;
+            reporter.note(format!("wrote {}", path.display()));
+        }
+        // A zip written to a terminal is a screenful of noise, and a caller
+        // that piped one into something expecting text would have nothing to
+        // read. The file is the only place these two can go.
+        None if format.binary() => {
+            return Err(CliError::Usage(format!(
+                "{format} is a file format and cannot be written to a terminal; \
+                 give it --out"
+            )));
+        }
+        // Every other format is text, which is what makes this the one place
+        // that has to know which is which; `binary` is the other.
+        None => print!("{}", String::from_utf8(bytes).expect("a text format writes text")),
+    }
+
+    reporter.record(
+        json!({
+            "command": "export",
+            "id": record.id,
+            "output": record.output_path,
+            "to": format.as_str(),
+            "block": block,
+            "file": out.map(|path| path.display().to_string()),
+            "bytes": size,
+        }),
+        "",
+    );
 
     Ok(OK)
 }

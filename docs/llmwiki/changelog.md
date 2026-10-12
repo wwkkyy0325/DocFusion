@@ -4,6 +4,305 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-12 — The block under the pointer is washed
+
+**What:** Hovering a block now lights it up, so the `⋯` at its right edge reads
+as belonging to *that* block rather than to the one above it.
+
+**A halo, not padding.** The obvious way to make a highlight that is bigger than
+the text is to pad the block, and that is the one thing this layout cannot take:
+padding on `.block` stops its child's margins collapsing through it, which is
+what keeps the page spaced the way it was before the wrapper existed — every
+document in the archive would breathe out by a few pixels. `box-shadow` with a
+4 px spread is drawn outside the box and moves nothing, and 4 px is well inside
+the ten or so between two blocks, so a halo never reaches its neighbour.
+
+**A new colour, `--highlight`, and why not `--wash`.** The wash is what a button
+and a code block and a table header are drawn in, and it is chosen to sit under
+the pointer that is already there. This one has to be *found*. In the light
+theme `--wash` is `#f8fafc` against `#ffffff` — a hair off white, and a hair is
+not a highlight.
+
+**Two rules, not one selector list.** The keyboard half needs `:has()`, and a
+browser that does not know a selector drops the entire rule it appears in — which
+would have taken the pointer's highlight down with it. The keyboard half uses
+`:has(> .block-actions button:focus-visible)` rather than `:focus-within`, for
+exactly the reason the button itself does: a closed `dialog` hands focus back to
+what opened it, and a block washed because a menu had been used would stay washed
+for good.
+
+590 tests, clippy clean.
+
+---
+
+## 2026-10-12 — No Stop button
+
+**What:** The Stop beside Download is gone, along with `stopLocalModels`, the
+`stopping` flag, `cancel_local_models`, `App::stop_fetch` and the two sentences
+about being stopped. During a download the card now has no button at all.
+
+**Why it should never have been there.** It was reachable for exactly as long as
+there was a download to stop — the only time it existed for — and the download
+is 13 seconds measured against the real mirror. An interrupted fetch keeps what
+arrived and resumes from where it left off, which was already true and is what
+the button would have been *for*; the way to interrupt one is to close the
+window. A control that offers a decision has to be read before it can be
+ignored, and this one had no decision in it.
+
+**What stays.** The store still takes the flag and still stops when it is set —
+`ensure_of`'s signature is the store's, and the tests that interrupt a fetch on
+purpose are how the resume path is exercised. What went is the window's half:
+the command that set it and the button that called the command.
+
+`App::fetching` stays too, with both of its other jobs intact: it is what says a
+fetch is in flight, which is what the card draws from **and** what refuses a
+second fetch — two of them writing the same files would each see the other's
+partial download and resume from a length that is not theirs.
+
+590 tests, clippy clean.
+
+---
+
+## 2026-10-12 — The download button that would not go away
+
+**What:** Pressing Download on the models card left the card exactly as it was
+for the whole fetch. It is now put into its running face on the press.
+
+**Why, and what it cost.** Progress was arriving the whole time — measured, not
+assumed: 50 events over a 13-second fetch of all six files, from 0 to the last
+byte. What was missing was a *listener that could change a button*. `drawLocal`
+owns the buttons and was called once, when the fetch returned; `drawLocalProgress`
+owns the bar and the line under it and touches nothing else. So for the length of
+the download the button that had just been pressed was still drawn, and — the
+real cost — **the Stop beside it was never shown at all**. The one control that
+can end a download was unreachable for exactly as long as there was a download
+to end. Nothing could see it: the panel looks correct at rest and correct at the
+end, and both are the states a test can construct.
+
+`getLocalModels` now draws the running face itself, from the numbers the view
+last had, before it awaits anything.
+
+**Measured, because the report was "the progress jumped straight to the end".**
+Over the six files: 14.7 MB in the first 7.5 s, then 129.7 MB in the last 3.0 s —
+**10 % of the bytes take 57 % of the time**, each small file paying its own
+connection, and the bar sits near zero for most of the wait. That is the mirror's
+shape and not a bug in the reporting, which was honest at every step. Worth
+knowing before concluding anything from how the bar looks.
+
+**"Installed" is checkable, and was checked.** `present_spec` compares each
+file's SHA-256 against the spec, so the card saying installed means the digests
+match, not that files of the right name are lying around. Verified by hand after
+the fetch: all six sizes exactly as specified, 144 450 586 bytes in total.
+
+590 tests, clippy clean.
+
+---
+
+## 2026-10-12 — One language
+
+**What:** The window is Chinese and only Chinese. The header button that
+switched to English is gone, along with the second table of words, the `t()`
+that chose between them, the remembered choice and `navigator.language` sniffing.
+
+**Why the split it was built on survives anyway.** The window has always sent
+**the kind of a failure and not the sentence about it** — `Cause` is a closed
+enum and the frontend holds one sentence per kind, with `detail` carrying the
+engine's or the operating system's own words through untouched. That was built
+so the sentence could be translated; it is worth keeping for the second reason it
+gives, which is that `os error 10061` is not a thing to rewrite in Chinese.
+
+**What went, exactly.** `TEXT` in `app.js` is one object rather than
+`{ en, zh }`; `t()` and its ~110 call sites are `TEXT.name`; `LANG_KEY`,
+`startingLang`, `toggleLang` and the `#lang` button are deleted; `applyLang` is
+`writeWords`, run once, because there is no longer anything to switch to and the
+markup already carries the same words.
+
+The markup's static text was English and is Chinese now, which matters for the
+instant before the script runs: `<html lang="zh-Hans">`, and the tab labels,
+field labels and buttons are the words the script would have written over them.
+
+Two tests changed shape rather than going: `every_sentence_the_script_asks_for_
+is_written_twice` is `…has_been_written` (one table, one `TEXT.` prefix counted),
+and `every_cause_is_written_in_both_languages` is `every_cause_has_a_sentence`.
+Both still bite — proved by renaming `copy_what` in its one use.
+
+The command line is untouched and stays English: it is the agent surface, and an
+agent reading a `Display` message is the case those messages are written for.
+
+590 tests, clippy clean.
+
+---
+
+## 2026-10-12 — Word and Excel, and the dots that would not go away
+
+**What:** Two formats the export was missing — `.docx` and `.xlsx` — and a bug
+in the block menu.
+
+**The formats.** A document can now come out as a Word file and a table as a
+workbook. Both are written here rather than through a dependency: `zip` is
+already in the tree for *reading* these two, and `quick-xml` was not needed,
+because writing the parts is `write!` and `escape`.
+
+- **`.docx` is built from the `comrak` parse**, not from the HTML — Word's XML
+  is a document model and the HTML is a rendering of one. A heading is a
+  heading, a table is a table with a header row marked as one, and the styles
+  the body names (`Heading1`…`Heading6`, `Quote`, `Code`) are defined in
+  `styles.xml`, because a document that names a style it does not define opens
+  in Times New Roman with an empty navigation pane.
+- **`.xlsx` is one sheet per table**, and a cell whose text and whose number
+  say the same thing is written as a number. That single condition is the whole
+  rule and it is what keeps `007` and `12.50` as text: a money column that has
+  lost its last place is worse than a column Excel cannot add up.
+- The rule about what suits what grew a second clause and stayed one rule:
+  **a spreadsheet is a table and only a table.** CSV and Excel both go through
+  `Format::suits`, and neither is offered for a paragraph.
+- `Format::binary` is new, because a zip cannot be printed — the command line
+  refuses `--to docx` without `--out` rather than writing a screenful of noise.
+- **No `pdf`**, and that is a decision rather than an omission: a PDF needs a
+  font embedded and a page laid out. The HTML export opens in a browser and
+  prints to PDF from there.
+
+**Verification worth naming.** The two new writers are tested by handing what
+they write to **the parsers this program already has** for somebody else's
+`.docx` and `.xlsx` — `extract::docx::DocxParser` and `extract::xlsx::XlsxParser`
+— because the two are exactly the kinds of file where being nearly right
+produces something that is not a document at all. Proved to bite by dropping one
+`</w:p>`: the reader answers `expected </w:p>, but </w:body> was found`.
+
+**The dots.** Clicking a block's `⋯` and choosing something left the `⋯` on
+screen for good. The rule that shows it was `:focus-within`, and a modal
+`dialog` **hands focus back to whatever opened it when it closes** — so from the
+moment the menu was used, the block was "focused" and the button stayed. It is
+`:focus-visible` now, on the button rather than on the box around it, which is
+the browser's own answer to "did somebody get here by keyboard".
+
+That change made the export's own confirmation invisible — it was a word written
+onto the button that asked, and the button is transparent unless the pointer is
+on the block, which after a save dialog it is not. The flash is gone: what the
+window has to say about a file it wrote is nothing, and a failure still goes to
+the banner.
+
+589 tests, clippy clean.
+
+---
+
+## 2026-10-12 — A block gets one button, not two
+
+**What:** The Export/Copy pair beside each block is gone. Each block now has a
+single `⋯` at its right edge, which opens the same dialog with **Copy** at the
+top of the list and the formats under it. The strip each block gives up went
+from 78 px to 48.
+
+**Why the pair had to go, twice over.** The first version overlaid the two
+buttons on the block, which put them on the first line of every paragraph. The
+second moved them into a strip beside the text, stacked — and **two adjacent
+blocks' pairs came to the same place**: a column of two buttons is ~50 px tall
+where a one-line paragraph is ~22 px, so block N's pair hung down into block
+N+1's share of the strip and the two landed on each other.
+
+The constraint that fell out of it: **a block's control has to be one row tall.**
+Two worded buttons in a row satisfy that and cost 117 px of strip, which is a
+lot to take out of a document's right margin for a control that is used rarely.
+One glyph costs 48 px and satisfies it for free.
+
+**So the two actions became a list.** Copy is the first line, and it is the
+plainest thing to want from a block — the one entry that keeps nothing, which is
+exactly what everything under it does. The dialog's heading changed from an
+instruction to the *subject* ("「甲方 12 乙方 3」这一块"), because with a mixed
+list a heading like "导出为" is no longer true.
+
+A copy is confirmed by the `⋯` turning into a green `✓` for a moment. Not the
+word: the button is one glyph wide, and "Copied" in its place would widen it into
+the paragraph it is standing beside. A copy that *fails* has nowhere on a glyph
+to say so, so it goes to the banner at the top — which is where this window says
+things that are wrong with the machine rather than with a document.
+
+567 tests, clippy clean.
+
+---
+
+## 2026-10-10 — The block buttons get out of the way of the text
+
+**What:** The Export/Copy pair on each block was absolutely positioned at the
+block's top right, which put it **on top of the words** — over the first line of
+a paragraph, over the last header cell of a table. Each block now keeps a 78 px
+strip on its right and the pair is drawn in it.
+
+**Why the first version did that, and why it was wrong.** An overlay is the
+cheap answer: it costs no layout, and the buttons are only there while the
+pointer is. But the pointer is over a block exactly when somebody is reading it,
+so the pair appeared precisely where it was least wanted. A button drawn on the
+thing it acts on is a button hiding the thing it is about.
+
+**The strip costs the document nothing.** `.document`'s max-width is
+`calc(78ch + var(--actions))` — the blocks give the strip up on the right and
+the article hands it back on the outside, so every paragraph wraps where it
+wrapped before and no document in the archive reflows.
+
+Two smaller decisions fell out of it:
+
+- The strip is on **every** block rather than on the one under the pointer. A
+  block that made room only while its buttons were shown would re-wrap its own
+  paragraph as the pointer arrived.
+- The two buttons are **stacked**. Side by side they need 117 px and a column
+  needs 61, and 117 px out of the measure is visible. A column is taller than a
+  one-line paragraph, though, so the lower button hangs below its block — and
+  the pointer travelling to it crosses the gap between blocks, where nothing is
+  hovered. The pair therefore fades **out** on a delay and in immediately.
+
+567 tests, clippy clean.
+
+---
+
+## 2026-10-10 — Export, and the copy button that was doing two jobs
+
+**What:** The status bar's one **Copy** button is gone. In its place is
+**Export** for the whole document, and every block in the pane now carries a
+pair of buttons at its top right — Export and Copy — revealed by the pointer.
+Export asks which format in a `dialog`, one button per format, each saying what
+it keeps.
+
+**Why Copy was the wrong button.** It put the plain text of the whole document on
+the clipboard. That is right for pasting a page into a chat window and wrong for
+everything else, and two of the everything-elses were not reachable at all: a
+**table**, which comes out of a copy as words with the columns gone, and **one
+block** of a document, which is what somebody usually wants rather than all of
+it.
+
+**The rule the feature is built on: an export keeps something the words do not
+have.** A button that gave the words would be a second button doing Copy's job —
+which is exactly what the first draft was, with four buttons on a paragraph where
+three of them did the same thing. So:
+
+| what | formats | why |
+|---|---|---|
+| whole document | Markdown, HTML, plain text, CSV | a document is not a thing to paste, it is a thing to keep |
+| a table | Markdown, HTML, **CSV** | a table must come out as a table |
+| anything else | Markdown, HTML | **no plain text** — that is what Copy is for |
+
+A CSV of a whole document is the tables in it, one after another; of a paragraph
+it is **refused rather than approximated**, because a paragraph in comma
+separated values is a paragraph with quotes round it. CSV files get a UTF-8
+byte-order mark (Excel on Windows reads one as the legacy code page without it
+and shows mojibake) and nothing else does. HTML is a complete page with
+`<meta charset="utf-8">`, not a fragment.
+
+**The pane numbers its blocks.** `render::blocks` returns one thing per
+top-level comrak node, `render::html` is now defined as those joined, and the
+window draws each one wrapped in `<section class="block" data-block="N">`. So
+`--block N` and the window's N are the same N by construction — the number is
+written by the code that produced the list, not counted by position in the DOM.
+That, in turn, turned up a bug: **front matter is a top-level node that renders
+to nothing**, so counting it put every index off by one and `--block 0` exported
+something that is not on screen at all. A block that renders to nothing is not a
+block.
+
+Line-height of the change: `docfusion export <id> --to <fmt> [--block N] [--out
+FILE]`, `crates/docfusion-core/src/export.rs`, `render::blocks`/`render::plain`,
+`window_html`, and the export dialog. 567 tests, clippy clean.
+
+---
+
 ## 2026-10-10 — The status bar stops speaking machine
 
 **What:** A document read by the local engine with both models installed was

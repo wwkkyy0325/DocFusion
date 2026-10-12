@@ -4,182 +4,18 @@
 // draws a view, asks for another one, and does two things the webview is better
 // at than Rust — copying to the clipboard and knowing what is selected.
 
-// Everything this file says, in the two languages it says it in.
+// Everything this file says.
 //
-// A failure arrives as two halves, and the split is why this can be translated
-// at all. `cause` is the kind of failure, which the window owns and says in the
-// reader's language. `detail` is the account the engine or the operating system
-// gave, which is somebody else's words in somebody else's language: it is shown
-// as it came, because translating a cause by guessing at it would be inventing
-// an explanation rather than reporting one.
+// A failure arrives as two halves, and the split is the point. `cause` is the
+// kind of failure, which the window owns and so writes its own sentence for.
+// `detail` is the account the engine or the operating system gave — somebody
+// else's words, in whatever language they came in — and it is shown as it came,
+// because rewriting a cause into a sentence of our own is inventing an
+// explanation rather than reporting one.
 const TEXT = {
-  en: {
-    document: "Document",
-    records: "Records",
-    add: "Add a document",
-    switch_lang: "中文",
-    switch_title: "用中文显示界面",
-    to_dark: "Switch to the dark theme",
-    to_light: "Switch to the light theme",
-
-    empty_lead: "Drop a document here, or add one.",
-    empty_hint:
-      "Anything with a text layer is read as it is. A scan or a photo is read by the engine inside this app.",
-    documents: "Documents",
-    settings: "Settings",
-
-    reading: (name) => `Reading ${name}…`,
-    scan_note: "a scan takes a few seconds a page",
-    seconds: (n) => (n < 60 ? `${n}s` : `${Math.floor(n / 60)}m ${n % 60}s`),
-    could_not_read: (name) => `${name} could not be read`,
-
-    read: "read",
-    already: "already in the knowledge base",
-    disagreed: (n) => `the engines disagreed in ${n === 1 ? "1 place" : `${n} places`}`,
-    copy: "Copy",
-    copied: "Copied",
-    copy_failed: "Could not copy",
-
-    nothing: "Nothing here yet.",
-    to_review: (n) => `${n} to review`,
-    status: { done: "done", partial: "partial", failed: "failed" },
-
-    search_placeholder: "Search the documents",
-    search_none: (query) => `Nothing in the archive holds “${query}”.`,
-    search_gone: "Its Markdown is no longer on disk.",
-
-    view_record: "View",
-    delete_record: "Delete",
-    ask_title: "What should happen to this document?",
-    ask_about: (name) => `“${name}” is in the knowledge base.`,
-    remove_record: "Remove from the list",
-    ask_remove_what:
-      "Take it out of the list and leave its Markdown where it is. Reading the document again puts it back.",
-    ask_delete_what: (path) => `Delete ${path} as well. This cannot be undone.`,
-    ask_delete_nothing:
-      "Its Markdown is no longer on disk, so there is no file to delete.",
-    ask_source:
-      "Neither one touches the document you chose: it was never copied into the knowledge base.",
-    cancel: "Cancel",
-
-    dialog_title: "Choose a document",
-
-    settings: "Settings",
-    settings_title: "Model",
-    endpoint: "Endpoint",
-    model_label: "Model",
-    key: "Key",
-    save: "Save",
-    health_untested: "Not tested",
-    health_works: "Working",
-    health_failed: "Not working",
-    health_note_untested: "Nothing has been read with these settings yet.",
-    health_note_works: "The last test read the number off the test page.",
-    health_note_failed: "The last test did not get the number back.",
-    changed: "Changed since it was saved.",
-    saved: "Saved.",
-    saving: "Saving…",
-    save_failed: "Could not save.",
-    fetch_models: "Ask the endpoint",
-    fetching_models: "Asking the endpoint which models it serves…",
-    models_found: (n) => `The endpoint lists ${n}. Open the field to pick one.`,
-    models_none: "The endpoint answered, and lists no models.",
-    models_blind: (n) =>
-      `${n} of them accept text only and are not listed — they cannot be shown a page.`,
-    none_can_see: "None of these models accept images, so none of them can read a scan.",
-    models_unlisted:
-      "The endpoint works but does not list its models, so this one has to be typed. Its own documentation will name it.",
-    models_failed: "Could not reach the endpoint:",
-    endpoint_first: "Fill in the endpoint first.",
-    model_hint: "Not sure what goes here?",
-    test: "Test",
-    testing: "Asking the endpoint to read a test page…",
-    test_read: "It read the number. This endpoint works.",
-    test_misread: (said, expected) =>
-      `It answered, but not with what it was shown: it said “${said}” and the page says ${expected}. The model probably cannot see images.`,
-    test_failed: "The endpoint did not answer:",
-    show_key: "Show the key",
-    hide_key: "Hide the key",
-    key_set: "A key is set. Leave this box empty to keep it.",
-    key_unset: "No key is set. One is only needed if the endpoint asks for it.",
-    enabled_label: "Use a vision model",
-    enabled_hint:
-      "On. The engine inside this app reads every page whatever this says, offline and with nothing configured. This decides whether a model on the other end reads them too, and whether what it read is checked against the engine's. Switching it off keeps the address and the key; clearing the endpoint removes them.",
-    reasoning_label: "Let the model think before it answers",
-    reasoning_hint:
-      "Off. Measured on one page: 1m55s with it, 1m13s without, and not one word of the body different — all it changed was how the headings were classified. Turn it on only if your endpoint refuses a request it does not recognise.",
-    settings_about:
-      "Let a model on the other end read scanned pages, and have the engine inside this app check what it read. Any OpenAI-compatible server will do — vLLM, llama.cpp, Ollama, or a hosted one.",
-    address_needs_scheme: "The address needs http:// or https:// in front of it.",
-    model_needed: "An endpoint needs a model: one endpoint can serve several.",
-    endpoint_needed: "A model needs an endpoint to be reached through.",
-
-    local_label: "Models on this machine",
-    local_name: "The local reading set",
-    local_hint:
-      "Runs here, not at the endpoint above: no address, no key, nothing sent anywhere. It reads the words on a page, finds the regions of it, and reads the cells of a table as cells rather than as a run of loose numbers. Without it a page that is a picture cannot be read at all.",
-    local_installed: "Installed",
-    local_need: (mb) => `Needs ${mb} MB`,
-    local_get: "Download",
-    local_stop: "Stop",
-    local_fetching: "Downloading…",
-    local_progress: (received, total, percent) =>
-      `${received} MB / ${total} MB · ${percent}%`,
-    local_failed: "The download failed:",
-    local_stopped: "Stopped. What arrived is kept, and the rest resumes where it left off.",
-
-    shape_plain: (n) => `Text only · ${n} passages`,
-    shape_structured: (headings, lists, tables, text) =>
-      `${headings} headings · ${lists} lists · ${tables} tables · ${text} passages`,
-    findings: "Places to check",
-    findings_note:
-      "Both engines read the same page and their text does not match. Neither reading is marked as the right one — that is not a judgement this tool can make — so both are here, as each engine wrote them, with what each of them read it as. The engine inside this app recognises the text and, when its two models are on disk, the headings and tables around it; a reading that came out as plain text is one where they were not.",
-    page: (n) => `Page ${n}`,
-    kinds: {
-      "the engines read it differently": "the two readings do not match",
-      "one engine found text the other did not": "one engine found text the other did not",
-    },
-    // The parts an engine's name is built from, not the names themselves: the
-    // name is assembled out of what an engine had to read with, so it is read
-    // back the same way. See `engineName`.
-    engine_names: {
-      "openai-compatible": "the configured endpoint",
-      rapidocr: "the engine inside this app",
-      pdfium: "the PDF's own text layer",
-      scan: "a scan",
-      docx: "Word",
-      xlsx: "Excel",
-      pptx: "PowerPoint",
-      "text-passthrough": "plain text",
-      layout: "layout",
-      tables: "tables",
-    },
-
-    /// What an engine that read with something extra is called.
-    engine_with: (name, parts) => `${name} (${parts.join(", ")})`,
-
-    causes: {
-      unsupported: "Nothing here can read this kind of file.",
-      "engine-failed": "The engine that reads this kind of file failed.",
-      unreadable: "The file could not be read.",
-      unwritable: "The result could not be written.",
-      index: "The index of the knowledge base is not usable.",
-      missing: "That document is no longer in the knowledge base.",
-      settings: "The settings file could not be used.",
-      "nothing-to-read": "It was read, and there was nothing in it.",
-      download:
-        "The models this app reads pages with are not here, or could not be downloaded. Open Settings — Models on this machine, and download them.",
-      delete: "The document could not be taken out of the knowledge base.",
-      unknown: "Something went wrong.",
-    },
-  },
-
-  zh: {
     document: "文档",
     records: "记录",
     add: "添加文档",
-    switch_lang: "EN",
-    switch_title: "Show the interface in English",
     to_dark: "切换到暗色",
     to_light: "切换到亮色",
 
@@ -199,6 +35,26 @@ const TEXT = {
     copy: "复制",
     copied: "已复制",
     copy_failed: "复制失败",
+
+    export: "导出",
+    export_about: "要拿走哪一样？",
+    export_whole: "整份文档",
+    export_block: (start) => (start ? `「${start}」这一块` : "这一块"),
+    export_dialog: "从 DocFusion 导出",
+    block_actions: "导出或复制这一块",
+    copy_what: "只有文字，可以直接粘贴",
+    format_md: "Markdown",
+    format_md_what: "程序写出来的原文",
+    format_docx: "Word",
+    format_docx_what: "Word 能打开、能编辑的文档",
+    format_html: "HTML",
+    format_html_what: "浏览器能打开的网页",
+    format_txt: "纯文本",
+    format_txt_what: "只有文字，不带格式",
+    format_xlsx: "Excel",
+    format_xlsx_what: "工作簿，一张表一个工作表",
+    format_csv: "逗号分隔",
+    format_csv_what: "纯文本，什么软件都能打开",
 
     nothing: "还没有记录。",
     to_review: (n) => `${n} 处待确认`,
@@ -277,12 +133,10 @@ const TEXT = {
     local_installed: "已安装",
     local_need: (mb) => `需要下载 ${mb} MB`,
     local_get: "下载",
-    local_stop: "停止",
     local_fetching: "正在下载…",
     local_progress: (received, total, percent) =>
       `${received} MB / ${total} MB · ${percent}%`,
     local_failed: "下载失败：",
-    local_stopped: "已停止。已经下到的部分会留着，下次从断的地方接着下。",
 
     shape_plain: (n) => `只有文字 · ${n} 段`,
     shape_structured: (headings, lists, tables, text) =>
@@ -324,7 +178,6 @@ const TEXT = {
       delete: "这份文档没能从知识库里拿掉。",
       unknown: "出错了。",
     },
-  },
 };
 
 // Read defensively rather than destructured outright. If this is ever absent
@@ -340,18 +193,21 @@ let revealed = false;
 let ticker = 0;
 let started = 0;
 
+/// The button that opened the menu — the footer's, or a block's.
+///
+/// Kept because what comes of copying is said *on it*, and by then the dialog
+/// that did the asking has closed and taken the focus with it. There is one of
+/// these at a time because the dialog is modal.
+let menuOpener = null;
+
 // A read blocks for as long as it takes, and the window has to keep saying so.
 // Long enough that switching to an already-read document does not flash a
 // spinner for one frame, short enough that a real read shows one immediately.
 const SPINNER_DELAY = 120;
 
-const LANG_KEY = "docfusion.lang";
 const THEME_KEY = "docfusion.theme";
 
-let lang = startingLang();
 let theme = startingTheme();
-
-const t = () => TEXT[lang];
 
 /// Dark, unless somebody has said otherwise.
 ///
@@ -364,8 +220,8 @@ function startingTheme() {
     const chosen = localStorage.getItem(THEME_KEY);
     if (chosen === "light" || chosen === "dark") return chosen;
   } catch {
-    // Storage can be unavailable. Same as the language: the default is still a
-    // working answer.
+    // Storage can be unavailable. Not worth failing to open over: the default
+    // is still a working answer.
   }
 
   return "dark";
@@ -386,9 +242,9 @@ function toggleTheme() {
 /// The theme is one attribute on the root element: everything else is a colour
 /// in the stylesheet that reads it.
 ///
-/// The icon is the one pressing it gives you — a sun while the window is dark —
-/// which is what the language button does with its label too. What the button
-/// is worth saying is the thing you cannot see, not the thing you can.
+/// The icon is the one pressing it gives you — a sun while the window is dark.
+/// What the button is worth saying is the thing you cannot see, not the thing
+/// you can.
 function applyTheme() {
   document.documentElement.dataset.theme = theme;
 
@@ -407,93 +263,55 @@ function applyTheme() {
   // read out instead of looked at: the tooltip, and the name a screen reader
   // announces.
   const label = el("theme");
-  label.title = going_to_light ? t().to_light : t().to_dark;
+  label.title = going_to_light ? TEXT.to_light : TEXT.to_dark;
   label.setAttribute("aria-label", label.title);
 }
 
-/// The language to open in: the last one chosen, or the one the machine is set
-/// to. Somebody who has never touched the switch gets their own language
-/// without being asked, which is the whole point of asking the machine.
-function startingLang() {
-  try {
-    const chosen = localStorage.getItem(LANG_KEY);
-    if (chosen && TEXT[chosen]) return chosen;
-  } catch {
-    // Storage can be unavailable. It is not worth failing to open over: the
-    // machine still knows what language it is in.
-  }
-
-  return (navigator.language ?? "").toLowerCase().startsWith("zh") ? "zh" : "en";
-}
-
-function toggleLang() {
-  lang = lang === "zh" ? "en" : "zh";
-
-  try {
-    localStorage.setItem(LANG_KEY, lang);
-  } catch {
-    // As above: the interface still switches, it just does not remember.
-  }
-
-  applyLang();
-
-  // Everything on screen was drawn in the other language, so it is drawn again.
-  // Nothing has to be told what changed: the whole view is a function of it.
-  if (current) draw(current);
-}
-
 /// The words that live in the markup rather than in the view.
-function applyLang() {
-  const words = t();
-
-  document.documentElement.lang = lang === "zh" ? "zh-Hans" : "en";
-
+///
+/// Run once, at the end of the module. It was a language switch and it is not
+/// one any more: there is one language, the markup already carries it, and this
+/// only makes sure the two say the same thing.
+function writeWords() {
   for (const [id, text] of [
-    ["tab-document", words.document],
-    ["tab-records", words.records],
-    ["tab-settings", words.settings],
-    ["add", words.add],
-    ["lang", words.switch_lang],
-    ["set-title", words.settings_title],
-    ["lbl-enabled", words.enabled_label],
-    ["set-enabled-hint", words.enabled_hint],
-    ["lbl-endpoint", words.endpoint],
-    ["lbl-model", words.model_label],
-    ["lbl-key", words.key],
-    ["lbl-reasoning", words.reasoning_label],
-    ["set-reasoning-hint", words.reasoning_hint],
-    ["save", words.save],
-    ["test", words.test],
-    ["set-model-hint", words.model_hint],
-    ["fetch-models", words.fetch_models],
-    ["set-about", words.settings_about],
-    ["lbl-local", words.local_label],
-    ["local-name", words.local_name],
-    ["local-hint", words.local_hint],
-    ["get-local", words.local_get],
-    ["stop-local", words.local_stop],
-    ["ask-title", words.ask_title],
-    ["ask-remove-label", words.remove_record],
-    ["ask-delete-label", words.delete_record],
-    ["ask-source", words.ask_source],
-    ["ask-cancel", words.cancel],
-    ["ask-remove", words.remove_record],
-    ["ask-delete", words.delete_record],
+    ["tab-document", TEXT.document],
+    ["tab-records", TEXT.records],
+    ["tab-settings", TEXT.settings],
+    ["add", TEXT.add],
+    ["set-title", TEXT.settings_title],
+    ["lbl-enabled", TEXT.enabled_label],
+    ["set-enabled-hint", TEXT.enabled_hint],
+    ["lbl-endpoint", TEXT.endpoint],
+    ["lbl-model", TEXT.model_label],
+    ["lbl-key", TEXT.key],
+    ["lbl-reasoning", TEXT.reasoning_label],
+    ["set-reasoning-hint", TEXT.reasoning_hint],
+    ["save", TEXT.save],
+    ["test", TEXT.test],
+    ["set-model-hint", TEXT.model_hint],
+    ["fetch-models", TEXT.fetch_models],
+    ["set-about", TEXT.settings_about],
+    ["lbl-local", TEXT.local_label],
+    ["local-name", TEXT.local_name],
+    ["local-hint", TEXT.local_hint],
+    ["get-local", TEXT.local_get],
+    ["ask-title", TEXT.ask_title],
+    ["ask-remove-label", TEXT.remove_record],
+    ["ask-delete-label", TEXT.delete_record],
+    ["ask-source", TEXT.ask_source],
+    ["ask-cancel", TEXT.cancel],
+    ["ask-remove", TEXT.remove_record],
+    ["ask-delete", TEXT.delete_record],
+    ["export-cancel", TEXT.cancel],
   ]) {
     el(id).textContent = text;
   }
 
-  el("search").placeholder = words.search_placeholder;
+  el("search").placeholder = TEXT.search_placeholder;
 
-  el("lang").title = words.switch_title;
-
-  // Both of these write words of their own, and both were written in the
-  // language that was just replaced.
+  // These three write their labels themselves.
   drawReveal();
   drawHealth();
-
-  // Last, because it writes a label of its own and that label is a word in the
-  // language that has just been chosen.
   applyTheme();
 }
 
@@ -529,7 +347,7 @@ function drawSettings(model) {
   key.type = "password";
   key.placeholder = "•".repeat(model.key_length);
 
-  el("set-hint").textContent = model.key_length > 0 ? t().key_set : t().key_unset;
+  el("set-hint").textContent = model.key_length > 0 ? TEXT.key_set : TEXT.key_unset;
   el("set-reasoning").checked = model.reasoning;
   el("set-enabled").checked = model.enabled;
   drawEnabled();
@@ -547,14 +365,14 @@ function drawSettings(model) {
 
 /// The eye, and which of the two shapes is on it.
 ///
-/// It says what pressing it gives you, like the theme and the language buttons:
-/// a plain eye while the key is hidden. The tooltip says the action too,
+/// It says what pressing it gives you, like the theme button: a plain eye
+/// while the key is hidden. The tooltip says the action too,
 /// because which of the two means "hidden" is a convention nobody agrees on.
 function drawReveal() {
   el("icon-eye").toggleAttribute("hidden", revealed);
   el("icon-eye-off").toggleAttribute("hidden", !revealed);
   el("reveal").setAttribute("aria-pressed", String(revealed));
-  el("reveal").title = revealed ? t().hide_key : t().show_key;
+  el("reveal").title = revealed ? TEXT.hide_key : TEXT.show_key;
 }
 
 /// Shows or hides the key, fetching it on the way if it is the one on file.
@@ -588,13 +406,13 @@ function drawProblem(problem) {
   banner.replaceChildren();
   if (!problem) return;
 
-  banner.append(node("strong", "", t().causes[problem.cause] ?? t().causes.unknown));
+  banner.append(node("strong", "", TEXT.causes[problem.cause] ?? TEXT.causes.unknown));
   if (problem.detail) banner.append(node("span", "detail", problem.detail));
 }
 
 /// The two halves of a failure, drawn where they are read.
 function drawTrouble(box, trouble) {
-  box.append(node("p", "cause", t().causes[trouble.cause] ?? t().causes.unknown));
+  box.append(node("p", "cause", TEXT.causes[trouble.cause] ?? TEXT.causes.unknown));
 
   // Left out when there is nothing in it: a frame with nothing inside reads as
   // something that failed to load.
@@ -609,16 +427,16 @@ function drawScreen(view) {
     const where = document.createElement("dl");
     where.className = "where";
     for (const [term, value] of [
-      [t().documents, view.knowledge_base],
-      [t().settings, view.config_path],
+      [TEXT.documents, view.knowledge_base],
+      [TEXT.settings, view.config_path],
     ]) {
       where.append(node("dt", "", term), node("dd", "", value));
     }
 
     box.replaceChildren(
       describe("empty", [
-        node("p", "lead", t().empty_lead),
-        node("p", "hint", t().empty_hint),
+        node("p", "lead", TEXT.empty_lead),
+        node("p", "hint", TEXT.empty_hint),
         where,
       ]),
     );
@@ -632,6 +450,14 @@ function drawScreen(view) {
     // not translatable — it is the document.
     article.innerHTML = state.html;
 
+    // Drawn by the other half, one element per block and each saying which
+    // block it is — see `window_html`. What is added here is the pair of things
+    // somebody wants from one block, which is furniture the document does not
+    // have and therefore does not come with it.
+    for (const block of article.querySelectorAll(".block")) {
+      block.append(blockActions(block));
+    }
+
     // The report about the document goes after it, not inside it. In the file
     // they are one thing, because a disagreement has to travel with what it is
     // about; on a screen they are two, because a report on a document sitting
@@ -644,7 +470,7 @@ function drawScreen(view) {
   } else {
     const failure = document.createElement("div");
     failure.className = "failure";
-    failure.append(node("h2", "", t().could_not_read(state.name)));
+    failure.append(node("h2", "", TEXT.could_not_read(state.name)));
     drawTrouble(failure, state.trouble);
     box.replaceChildren(failure);
   }
@@ -663,8 +489,8 @@ function shapeLine(shapes) {
 
   const structured = shapes.headings + shapes.lists + shapes.tables;
   return structured === 0
-    ? t().shape_plain(shapes.text)
-    : t().shape_structured(shapes.headings, shapes.lists, shapes.tables, shapes.text);
+    ? TEXT.shape_plain(shapes.text)
+    : TEXT.shape_structured(shapes.headings, shapes.lists, shapes.tables, shapes.text);
 }
 
 /// The tool's report on the document: where two engines disagreed, and what
@@ -680,14 +506,14 @@ function findings(report) {
   box.className = "findings";
   box.id = "findings";
 
-  box.append(node("h2", "", t().findings));
-  box.append(node("p", "note", t().findings_note));
+  box.append(node("h2", "", TEXT.findings));
+  box.append(node("p", "note", TEXT.findings_note));
 
   for (const finding of report) {
     const entry = document.createElement("div");
     entry.className = "finding";
     entry.append(
-      node("p", "where", `${t().page(finding.page)} · ${t().kinds[finding.kind] ?? finding.kind}`),
+      node("p", "where", `${TEXT.page(finding.page)} · ${TEXT.kinds[finding.kind] ?? finding.kind}`),
     );
 
     const readings = document.createElement("div");
@@ -738,22 +564,28 @@ function drawStatus(state) {
   // kept one hover away. "openai-compatible" is the protocol its client speaks
   // and says nothing to anybody about what it is.
   const named = state.engines.map(engineName);
-  const engines = node("span", "", named.join(" · ") || t().read);
+  const engines = node("span", "", named.join(" · ") || TEXT.read);
   engines.title = state.engines.join(" · ");
   status.append(engines);
 
   if (state.reused) {
-    status.append(node("span", "", t().already));
+    status.append(node("span", "", TEXT.already));
   }
 
   // A button, because a count of places to look at that cannot be clicked is a
   // count of places to go hunting for.
   if (state.conflicts > 0) {
-    status.append(button(t().disagreed(state.conflicts), "warn link", showFindings));
+    status.append(button(TEXT.disagreed(state.conflicts), "warn link", showFindings));
   }
 
   status.append(node("span", "spacer", ""));
-  status.append(button(t().copy, "quiet", copyAll));
+
+  // Export rather than Copy, and the difference is what each of them keeps: a
+  // copy gives the words, and every block already offers them from where
+  // somebody is looking. What is left for the footer is the whole document, and
+  // a document is not a thing to paste — it is a thing to keep, which means a
+  // file, which means a format.
+  status.append(button(TEXT.export, "quiet", (event) => askExport(null, event.currentTarget)));
 }
 
 /// Instant rather than smooth. A smooth scroll is a promise to arrive that a
@@ -778,7 +610,7 @@ function drawRecords(list) {
   records.replaceChildren();
 
   if (!list || list.length === 0) {
-    records.append(node("li", "none", t().nothing));
+    records.append(node("li", "none", TEXT.nothing));
     return;
   }
 
@@ -789,7 +621,7 @@ function drawRecords(list) {
     // A status this frontend does not know is shown as it arrived rather than
     // hidden: the three it does know are the three the index can hold, and
     // anything else is worth seeing.
-    const status = t().status[record.status] ?? record.status;
+    const status = TEXT.status[record.status] ?? record.status;
 
     // The row shows one line of it, so the rest has to be somewhere: a name cut
     // off with nothing to reveal it is a name that cannot be told from another.
@@ -802,14 +634,14 @@ function drawRecords(list) {
         node(
           "span",
           "meta",
-          [status, record.conflicts ? t().to_review(record.conflicts) : null, record.created_at]
+          [status, record.conflicts ? TEXT.to_review(record.conflicts) : null, record.created_at]
             .filter(Boolean)
             .join(" · "),
         ),
       ]),
       describe("row-actions", [
-        button(t().view_record, "small", () => openRecord(record)),
-        button(t().delete_record, "small danger", () => askAbout(record)),
+        button(TEXT.view_record, "small", () => openRecord(record)),
+        button(TEXT.delete_record, "small danger", () => askAbout(record)),
       ]),
     );
 
@@ -889,7 +721,7 @@ function drawMatches(matches, query) {
     records.replaceChildren();
 
     if (!matches || matches.length === 0) {
-        records.append(node("li", "none", t().search_none(query)));
+        records.append(node("li", "none", TEXT.search_none(query)));
         return;
     }
 
@@ -903,14 +735,14 @@ function drawMatches(matches, query) {
         const what = describe("what", [
             name,
             match.excerpt === null
-                ? node("span", "meta", t().search_gone)
+                ? node("span", "meta", TEXT.search_gone)
                 : passage(match.excerpt),
         ]);
 
         item.append(
             what,
             describe("row-actions", [
-                button(t().view_record, "small", () => openMatch(match)),
+                button(TEXT.view_record, "small", () => openMatch(match)),
             ]),
         );
 
@@ -960,14 +792,14 @@ let asking = null;
 function askAbout(record) {
   asking = record;
 
-  el("ask-about").textContent = t().ask_about(record.name);
-  el("ask-remove-what").textContent = t().ask_remove_what;
+  el("ask-about").textContent = TEXT.ask_about(record.name);
+  el("ask-remove-what").textContent = TEXT.ask_remove_what;
 
   // Said in the row rather than left to a button that does nothing when
   // pressed, which is a thing people press twice.
   el("ask-delete-what").textContent = record.on_disk
-    ? t().ask_delete_what(record.output)
-    : t().ask_delete_nothing;
+    ? TEXT.ask_delete_what(record.output)
+    : TEXT.ask_delete_nothing;
   el("ask-delete").disabled = !record.on_disk;
 
   el("record-question").showModal();
@@ -1016,12 +848,12 @@ function working(hint) {
   const box = document.createElement("div");
   box.className = "working";
 
-  const clock = node("span", "elapsed", t().seconds(0));
+  const clock = node("span", "elapsed", TEXT.seconds(0));
   clock.id = "elapsed";
   const progress = node("p", "progress", "");
-  progress.append(clock, document.createTextNode(` · ${t().scan_note}`));
+  progress.append(clock, document.createTextNode(` · ${TEXT.scan_note}`));
 
-  box.append(node("div", "pulse", ""), node("p", "", t().reading(hint.name)), progress);
+  box.append(node("div", "pulse", ""), node("p", "", TEXT.reading(hint.name)), progress);
   return box;
 }
 
@@ -1032,9 +864,9 @@ async function add() {
 
   let path;
   try {
-    // The dialog is the operating system's, but its title is ours, so it is
-    // asked for in the language the rest of the window is in.
-    path = await invoke("choose_file", { title: t().dialog_title });
+    // The dialog is the operating system's, but its title is ours and is
+    // passed as words like everything else here.
+    path = await invoke("choose_file", { title: TEXT.dialog_title });
   } catch (error) {
     return failed("DocFusion", error);
   }
@@ -1087,7 +919,7 @@ function showWorking(name) {
   stopClock();
   ticker = setInterval(() => {
     const clock = el("elapsed");
-    if (clock) clock.textContent = t().seconds(Math.round((Date.now() - started) / 1000));
+    if (clock) clock.textContent = TEXT.seconds(Math.round((Date.now() - started) / 1000));
   }, 1000);
 }
 
@@ -1107,21 +939,191 @@ function failed(name, error) {
   });
 }
 
-async function copyAll() {
+// ── taking a document, or a piece of one, out ───────────────────────────────
+
+/// The one thing a block offers at its right edge.
+///
+/// **One glyph, not two buttons.** A pair has to be drawn beside the text to
+/// stay off it, and a pair is more than twice as wide as a glyph and tall
+/// enough to hang past a one-line paragraph — into the margin the next block's
+/// pair is also hanging in, where the two overlap. One glyph is a row of its
+/// own, and the two things it does are a list in the dialog.
+function blockActions(block) {
+  const where = Number(block.dataset.block);
+
+  const more = button("⋯", "small", (event) => askExport(where, event.currentTarget));
+  more.title = TEXT.block_actions;
+
+  const actions = node("div", "block-actions");
+  actions.append(more);
+
+  return actions;
+}
+
+/// Says a block was copied, on the button that asked for the menu.
+///
+/// A tick rather than the word, because the button has no room for one: it is a
+/// single glyph standing beside the text, and "Copied" written in its place
+/// would push it into the paragraph it is meant to stay out of. The tick is the
+/// same width as the dots it replaces, and green is the one colour in this
+/// window that means a thing worked.
+function tick(element) {
+  if (!element) return;
+
+  const was = element.textContent;
+  element.classList.add("done");
+  element.textContent = "✓";
+
+  setTimeout(() => {
+    element.classList.remove("done");
+    element.textContent = was;
+  }, 1200);
+}
+
+/// Asks what to take out of a block, or out of the whole document.
+///
+/// `where` is the number the pane put on a block, or `null` for the whole
+/// document, and `opener` is the button that asked — what comes of it is said
+/// on that button, because that is where whoever asked is looking.
+///
+/// What is offered is what the other half will write. `export::suits` is the
+/// rule and it is one rule — a table can be a spreadsheet and nothing else can
+/// — repeated here because this is where the list is drawn, and read off the
+/// marker the other half put on the block rather than off a `<table>`, so that
+/// the two are one fact rather than two that agree.
+///
+/// The other rule is about Copy rather than about a format: the words with no
+/// structure are what a copy gives, so a copy is offered for a block and not
+/// for a whole document — a document is not a thing to paste.
+function askExport(where, opener) {
   const article = el("screen").querySelector(".document");
   if (!article) return;
 
-  const label = el("status").lastElementChild;
-  const was = label.textContent;
+  const block = where === null ? null : article.querySelector(`.block[data-block="${where}"]`);
+  if (where !== null && !block) return;
 
-  try {
-    await navigator.clipboard.writeText(article.innerText);
-    label.textContent = t().copied;
-  } catch (error) {
-    label.textContent = t().copy_failed;
+  const inside = block ?? article;
+  menuOpener = opener;
+
+  // What it is about, as the heading: the backdrop covers the document, so the
+  // question has to say which block it means, and a block's own words say it
+  // better than its kind would — a document can hold three tables and only one
+  // of them is this one.
+  el("export-title").textContent =
+    block === null
+      ? TEXT.export_whole
+      : TEXT.export_block(headline(block.querySelector(".block-body").innerText));
+  el("export-about").textContent = TEXT.export_about;
+
+  const lines = [];
+
+  // Copy first, because it is the plainest thing to want from a block and the
+  // only line that keeps nothing — which is the whole difference between it and
+  // everything under it.
+  if (block !== null) {
+    lines.push(choice(TEXT.copy, TEXT.copy_what, () => copyBlock(inside)));
   }
 
-  setTimeout(() => (label.textContent = was), 1200);
+  const formats = block === null ? ["md", "docx", "html", "txt"] : ["md", "docx", "html"];
+  if (hasTable(inside)) formats.push("xlsx", "csv");
+
+  for (const format of formats) {
+    lines.push(choice(...formatWords(format), () => runExport(format, where)));
+  }
+
+  el("export-formats").replaceChildren(...lines);
+  el("export-question").showModal();
+}
+
+/// One line of the dialog: what it is called, and what it keeps.
+///
+/// Every line does its thing and closes the dialog, because the choice *is* the
+/// answer — a list of answers with a confirm under it asks the same question
+/// twice.
+function choice(name, keeps, onChoose) {
+  const line = document.createElement("button");
+  line.type = "button";
+  line.append(node("span", "name", name), node("span", "what", keeps));
+
+  // Closed before the work, so that the file dialog the other half opens is not
+  // underneath this one.
+  line.addEventListener("click", () => {
+    el("export-question").close();
+    onChoose();
+  });
+
+  return line;
+}
+
+/// What each format is called, and what it keeps.
+///
+/// The second half is the whole of the choice: somebody standing here is not
+/// choosing between four file extensions, they are choosing between a table a
+/// spreadsheet can open and a paragraph with its emphasis still on it.
+function formatWords(format) {
+  return {
+    md: [TEXT.format_md, TEXT.format_md_what],
+    docx: [TEXT.format_docx, TEXT.format_docx_what],
+    html: [TEXT.format_html, TEXT.format_html_what],
+    txt: [TEXT.format_txt, TEXT.format_txt_what],
+    xlsx: [TEXT.format_xlsx, TEXT.format_xlsx_what],
+    csv: [TEXT.format_csv, TEXT.format_csv_what],
+  }[format];
+}
+
+/// The words of one block, with no structure.
+///
+/// The body rather than the block: the block holds the button that was pressed
+/// as well, and copying the block would paste the dots.
+async function copyBlock(block) {
+  try {
+    await navigator.clipboard.writeText(block.querySelector(".block-body").innerText);
+    tick(menuOpener);
+  } catch (error) {
+    // Nothing on the block to say this with — the button that asked is one
+    // glyph wide — and it is not a fault of the document, which is what the
+    // banner at the top is for.
+    drawProblem({ cause: "unknown", detail: String(error) });
+  }
+}
+
+/// Whether this is a table, or holds one.
+function hasTable(node) {
+  return node.matches(".block-table") || node.querySelector(".block-table") !== null;
+}
+
+/// The first few words of a block, for the question to name it by.
+const HEADLINE = 24;
+
+function headline(text) {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > HEADLINE ? `${line.slice(0, HEADLINE)}…` : line;
+}
+
+/// Writes it out, having asked the operating system where to put it.
+///
+/// Both the asking and the writing happen on the other side — this half has no
+/// filesystem. What is left here is what the window says about it, and a
+/// dismissed save dialog is not a failure and says nothing.
+async function runExport(format, where) {
+  const screen = current?.screen;
+  if (screen?.kind !== "ready") return;
+
+  try {
+    // A file that was written says nothing, and that is the whole of what this
+    // window has to say about it: the save dialog closing *is* the answer, and
+    // it is the operating system's. What is left to report is a failure.
+    await invoke("export", {
+      id: screen.id,
+      title: TEXT.export_dialog,
+      format,
+      block: where,
+    });
+  } catch (trouble) {
+    // Two halves, like every other failure here: the kind, which this side has
+    // a sentence for, and the account the other side gave.
+    drawProblem(trouble);
+  }
 }
 
 // ── tabs ────────────────────────────────────────────────────────────────────
@@ -1139,7 +1141,7 @@ function showTab(which) {
 /// Refused here rather than in the other half because this is a form, and a
 /// form is the one place the person is looking when they get it wrong. The
 /// other half refuses a half-written pair as well, but its answer is a string
-/// in a language this side cannot choose.
+/// of its own rather than a field marked in red.
 /// Returns whether it got as far as writing, so that a caller which needs the
 /// settings to be on file — the test does — can stop when they are not.
 async function saveSettings(event) {
@@ -1151,19 +1153,19 @@ async function saveSettings(event) {
   clearFieldErrors();
 
   if (endpoint && !/^https?:\/\//i.test(endpoint)) {
-    fieldError("set-endpoint", t().address_needs_scheme);
+    fieldError("set-endpoint", TEXT.address_needs_scheme);
     return false;
   }
   if (endpoint && !model) {
-    fieldError("set-model", t().model_needed);
+    fieldError("set-model", TEXT.model_needed);
     return false;
   }
   if (model && !endpoint) {
-    fieldError("set-endpoint", t().endpoint_needed);
+    fieldError("set-endpoint", TEXT.endpoint_needed);
     return false;
   }
 
-  note(t().saving, true);
+  note(TEXT.saving, true);
 
   try {
     draw(
@@ -1175,11 +1177,11 @@ async function saveSettings(event) {
         enabled: el("set-enabled").checked,
       }),
     );
-    note(t().saved, true);
+    note(TEXT.saved, true);
     return true;
   } catch (error) {
     // The other half had the last word, and it is the half that owns the file.
-    note(`${t().save_failed} ${error}`, false);
+    note(`${TEXT.save_failed} ${error}`, false);
     return false;
   }
 }
@@ -1221,11 +1223,10 @@ function drawLocal(local) {
   el("local-card").dataset.state = installed ? "ready" : running ? "busy" : "absent";
   el("local-bar").hidden = !running;
   el("get-local").hidden = running || installed;
-  el("stop-local").hidden = !running;
 
-  if (installed) return void (el("local-state").textContent = t().local_installed);
+  if (installed) return void (el("local-state").textContent = TEXT.local_installed);
   if (!running) {
-    return void (el("local-state").textContent = t().local_need(
+    return void (el("local-state").textContent = TEXT.local_need(
       megabytes(here.needed_bytes ?? 0),
     ));
   }
@@ -1238,7 +1239,7 @@ function drawLocal(local) {
     total,
   })}%`;
 
-  el("local-state").textContent = t().local_fetching;
+  el("local-state").textContent = TEXT.local_fetching;
 }
 
 /// A fetch saying how far it has got.
@@ -1249,7 +1250,7 @@ function drawLocalProgress(progress) {
   if (!progress?.total) return;
 
   el("local-fill").style.width = `${percent(progress)}%`;
-  el("local-state").textContent = t().local_progress(
+  el("local-state").textContent = TEXT.local_progress(
     megabytes(progress.received),
     megabytes(progress.total),
     percent(progress),
@@ -1279,10 +1280,10 @@ const percent = ({ received = 0, total = 0 } = {}) =>
 /// about — and the test that watches this list is what stops it happening.
 function engineName(id) {
   const [reader, ...using] = String(id).split("+");
-  const called = (part) => t().engine_names[part] ?? part;
+  const called = (part) => TEXT.engine_names[part] ?? part;
   const name = called(reader);
 
-  return using.length === 0 ? name : t().engine_with(name, using.map(called));
+  return using.length === 0 ? name : TEXT.engine_with(name, using.map(called));
 }
 
 /// Whole megabytes, rounded up.
@@ -1291,10 +1292,20 @@ function engineName(id) {
 /// saying "0 MB" would be the one answer that is worse than the estimate.
 const megabytes = (bytes) => Math.max(1, Math.ceil(bytes / (1024 * 1024)));
 
-/// Fetches the two models this app reads a page with.
+/// Fetches the set of models this app reads a page with.
 async function getLocalModels() {
-  stopping = false;
-  el("local-state").textContent = t().local_fetching;
+  // **The card takes its running face here, not when the other side answers** —
+  // and the other side does not answer until the whole download is over. What
+  // was drawn before this line existed: the button that had just been pressed
+  // stayed on screen for the entire fetch, still saying Download, and **the
+  // Stop beside it was never shown at all**, so the one control that can end a
+  // download was unreachable for exactly as long as there was a download to
+  // end. Progress kept arriving the whole time; nothing was listening to it
+  // that could change a button.
+  //
+  // The numbers are the last the view had, which is what is still missing — a
+  // fetch resumes rather than restarts, so the bar starts where it left off.
+  drawLocal({ ...(current?.local ?? {}), fetching: true });
 
   try {
     // The answer is drawn the way the settings tab draws everything else: only
@@ -1305,35 +1316,11 @@ async function getLocalModels() {
     drawProblem(view.problem);
     drawLocal(view.local);
 
-    // Stopped is not the same answer as never started, and the view cannot tell
-    // them apart: both leave a model missing. This is the half that knows which
-    // one it was.
-    if (stopping && !view.problem) el("local-state").textContent = t().local_stopped;
   } catch (error) {
     drawLocal(current?.local);
-    el("local-state").textContent = `${t().local_failed} ${error}`;
+    el("local-state").textContent = `${TEXT.local_failed} ${error}`;
   }
 }
-
-/// Asks a fetch to stop.
-///
-/// Says nothing on the line itself beyond the flag above: the fetch comes back
-/// with a view when it stops, and that is what redraws.
-async function stopLocalModels() {
-  stopping = true;
-  el("stop-local").disabled = true;
-
-  try {
-    await invoke("cancel_local_models");
-  } catch (error) {
-    el("local-state").textContent = `${t().local_failed} ${error}`;
-  } finally {
-    el("stop-local").disabled = false;
-  }
-}
-
-/// Whether the fetch now running is one somebody asked to stop.
-let stopping = false;
 
 /// Asks the endpoint to read a page it has never seen.
 ///
@@ -1344,14 +1331,14 @@ let stopping = false;
 async function testModel() {
   const button = el("test");
   button.disabled = true;
-  note(t().testing, true);
+  note(TEXT.testing, true);
 
   try {
     // The message is already on screen when it does not save.
     if (!(await saveSettings())) return;
     showTest(await invoke("test_model"));
   } catch (error) {
-    note(`${t().test_failed} ${error}`, false);
+    note(`${TEXT.test_failed} ${error}`, false);
   } finally {
     button.disabled = false;
   }
@@ -1370,10 +1357,10 @@ function showTest(result) {
   health = result.outcome === "read" ? "works" : "failed";
   drawHealth();
 
-  if (result.outcome === "read") return note(t().test_read, true);
-  if (result.outcome === "misread") return note(t().test_misread(result.said, result.expected), false);
+  if (result.outcome === "read") return note(TEXT.test_read, true);
+  if (result.outcome === "misread") return note(TEXT.test_misread(result.said, result.expected), false);
 
-  note(`${t().test_failed} ${result.detail}`, false);
+  note(`${TEXT.test_failed} ${result.detail}`, false);
 }
 
 /// Asks the endpoint which models it serves, and puts them on the field.
@@ -1384,11 +1371,11 @@ function showTest(result) {
 async function fetchModels() {
   const endpoint = el("set-endpoint").value.trim();
 
-  if (!endpoint) return note(t().endpoint_first, false);
+  if (!endpoint) return note(TEXT.endpoint_first, false);
 
   const button = el("fetch-models");
   button.disabled = true;
-  note(t().fetching_models, true);
+  note(TEXT.fetching_models, true);
 
   try {
     const remote = await invoke("probe_models", {
@@ -1406,16 +1393,16 @@ async function fetchModels() {
       // this job.
       const usable = offered.length > 0;
       const said = usable
-        ? t().models_found(offered.length)
+        ? TEXT.models_found(offered.length)
         : remote.blind > 0
-          ? t().none_can_see
-          : t().models_none;
+          ? TEXT.none_can_see
+          : TEXT.models_none;
 
-      note(usable && remote.blind > 0 ? `${said} ${t().models_blind(remote.blind)}` : said, usable);
+      note(usable && remote.blind > 0 ? `${said} ${TEXT.models_blind(remote.blind)}` : said, usable);
       return;
     }
 
-    const said = remote.outcome === "unlisted" ? t().models_unlisted : t().models_failed;
+    const said = remote.outcome === "unlisted" ? TEXT.models_unlisted : TEXT.models_failed;
     note(`${said} ${remote.detail}`, false);
   } catch (error) {
     note(String(error), false);
@@ -1443,15 +1430,15 @@ let health = "untested";
 
 function drawHealth() {
   const words = {
-    untested: t().health_untested,
-    works: t().health_works,
-    failed: t().health_failed,
+    untested: TEXT.health_untested,
+    works: TEXT.health_works,
+    failed: TEXT.health_failed,
   };
 
   const badge = el("health");
   badge.dataset.state = health;
   badge.textContent = words[health];
-  badge.title = t()[`health_note_${health}`];
+  badge.title = TEXT[`health_note_${health}`];
 }
 
 /// A change to anything the test was about makes the answer about something
@@ -1463,7 +1450,7 @@ function forgetHealth() {
   }
 
   // And the settings are no longer what is on file.
-  if (dirty()) note(t().changed, false);
+  if (dirty()) note(TEXT.changed, false);
 }
 
 /// Whether the form differs from what is on file.
@@ -1660,7 +1647,6 @@ function fileLabel(path) {
 }
 
 el("add").addEventListener("click", add);
-el("lang").addEventListener("click", toggleLang);
 el("theme").addEventListener("click", toggleTheme);
 el("tab-document").addEventListener("click", () => showTab("document"));
 el("tab-records").addEventListener("click", openRecords);
@@ -1671,13 +1657,13 @@ el("test").addEventListener("click", testModel);
 el("fetch-models").addEventListener("click", fetchModels);
 el("set-enabled").addEventListener("change", drawEnabled);
 el("get-local").addEventListener("click", getLocalModels);
-el("stop-local").addEventListener("click", stopLocalModels);
 
 el("search").addEventListener("input", searchChanged);
 
 el("ask-cancel").addEventListener("click", () => el("record-question").close());
 el("ask-remove").addEventListener("click", () => answer("forget_record"));
 el("ask-delete").addEventListener("click", () => answer("delete_record"));
+el("export-cancel").addEventListener("click", () => el("export-question").close());
 
 // Escape and a press outside both close a modal `dialog` without running any
 // of the code above, so the row the question was about is dropped here instead
@@ -1692,7 +1678,7 @@ for (const id of ["set-endpoint", "set-model", "set-model-choice", "set-key", "s
 }
 
 
-applyLang();
+writeWords();
 
 // Drawn once at the start. A window that cannot say anything at all is the one
 // failure worth drawing by hand.
