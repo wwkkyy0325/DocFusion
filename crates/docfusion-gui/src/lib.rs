@@ -495,9 +495,11 @@ impl App {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
         else {
-            return Test::Failed {
-                detail: "no endpoint is configured".to_owned(),
-            };
+            // Not a `Failed`, and the difference is the whole point: nothing was
+            // asked, so nothing failed to answer. Said as an outcome of its own
+            // so the window can say what is actually wrong — the switch, or the
+            // two fields — instead of reporting a request that never happened.
+            return Test::Unconfigured;
         };
 
         let endpoint = docfusion_store::endpoint::OpenAiEndpoint::new(config.with_timeout(TEST_TIMEOUT));
@@ -1938,6 +1940,70 @@ code
         }
 
         assert!(looked > 20, "only {looked} ids were checked");
+    }
+
+    /// **This is the test for something that went wrong.**
+    ///
+    /// The index answers with the newest document first — `ORDER BY updated_at
+    /// DESC` — and the window drew the list upside down, so the document
+    /// somebody had just added appeared at the bottom of it. Nothing failed and
+    /// nothing was logged: the script did the opposite of what it was handed,
+    /// and the only way to notice was to know which order you were expecting.
+    ///
+    /// So this pins the rule rather than the code: the list is drawn in the
+    /// order it arrives. Reordering belongs in the query, where the reason can
+    /// sit beside it and where the command line gets the same answer.
+    #[test]
+    fn the_records_list_is_drawn_in_the_order_it_arrives() {
+        let js = include_str!("../ui/app.js");
+
+        let start = js
+            .find("function drawRecords(")
+            .expect("drawRecords is not in the script");
+
+        // To the closing brace in the first column, which is how the file ends
+        // a top-level function.
+        let rest = &js[start..];
+        let end = rest.find("\n}").expect("drawRecords never closes") + 2;
+        let body = &rest[..end];
+
+        for rearranging in [".reverse()", ".sort("] {
+            assert!(
+                !body.contains(rearranging),
+                "drawRecords calls `{rearranging}`, so the records come out in an order \
+                 the index did not choose — and the index already answers newest first"
+            );
+        }
+
+        assert!(
+            body.contains("of list"),
+            "drawRecords does not iterate the list it was given"
+        );
+    }
+
+    /// The outcome is a name on the wire, and the window decides what to say by
+    /// matching it.
+    ///
+    /// **A name that stops matching is silent.** The script's chain ends in a
+    /// fallback, so a renamed variant does not fail — it quietly falls through
+    /// to the message about a failure, which is how "there is no endpoint"
+    /// spent its life being reported as "the endpoint did not answer".
+    #[test]
+    fn the_window_matches_the_outcome_the_state_sends() {
+        let sent = serde_json::to_value(Test::Unconfigured).expect("serialises");
+        let name = sent["outcome"].as_str().expect("an outcome field");
+
+        assert_eq!(
+            name, "unconfigured",
+            "the wire name changed, and the window is matching the old one"
+        );
+
+        let js = include_str!("../ui/app.js");
+        assert!(
+            js.contains(&format!("result.outcome === \"{name}\"")),
+            "the state sends `{name}` and the script has no branch for it, so it \
+             falls through to the failure message it exists to replace"
+        );
     }
 
     /// **A file that has pages, and a file that does not.**

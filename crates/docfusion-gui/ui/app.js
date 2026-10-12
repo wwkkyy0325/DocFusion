@@ -137,6 +137,10 @@ const TEXT = {
     test_misread: (said, expected) =>
       `端点答了，但答的不是图上写的东西：它说「${said}」，图上写的是 ${expected}。这个模型多半看不见图片。`,
     test_failed: "端点没能回答：",
+    // Nothing was asked, so nothing failed to answer. Saying "端点没能回答"
+    // about an endpoint that was never configured is the small lie this is
+    // here to stop: the reader is told what to fix instead.
+    test_unconfigured: "还没有可用的端点：地址和模型要都填上，开关要打开。",
     show_key: "显示密钥",
     hide_key: "隐藏密钥",
     key_set: "已设置密钥，这个框留空即不改动。",
@@ -688,7 +692,12 @@ function drawRecords(list) {
     return;
   }
 
-  for (const record of [...list].reverse()) {
+  // In the order the index gave them, which is newest first — `ORDER BY
+  // updated_at DESC`. This used to reverse it, which put the document somebody
+  // had just added at the bottom of the list, and nothing failed: it simply did
+  // the opposite of what it was handed. Reordering belongs in the query, where
+  // the reason can sit beside it.
+  for (const record of list) {
     const item = document.createElement("li");
     item.className = "record";
 
@@ -1853,11 +1862,17 @@ function showTest(result) {
   // answer to "does this work" and only the first is a yes. A model that
   // answers something other than what it was shown is a model that cannot see,
   // which is not a working configuration however healthy the connection is.
-  health = result.outcome === "read" ? "works" : "failed";
+  //
+  // An unconfigured one is not an answer at all, so the badge goes back to
+  // 未测试 rather than saying 不可用 about something that does not exist.
+  if (result.outcome === "read") health = "works";
+  else if (result.outcome === "unconfigured") health = "untested";
+  else health = "failed";
   drawHealth();
 
   if (result.outcome === "read") return note(TEXT.test_read, true);
   if (result.outcome === "misread") return note(TEXT.test_misread(result.said, result.expected), false);
+  if (result.outcome === "unconfigured") return note(TEXT.test_unconfigured, false);
 
   note(`${TEXT.test_failed} ${result.detail}`, false);
 }

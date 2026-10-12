@@ -270,7 +270,7 @@ pub enum Remote {
 
 /// What came of asking the endpoint to read a page it has never seen.
 ///
-/// Three outcomes rather than a yes and a no, because "it answered and the
+/// Four outcomes rather than a yes and a no, because "it answered and the
 /// answer was wrong" is the one a person most needs told apart and the one a
 /// connection check cannot see: a model served without its vision half answers
 /// every request in fluent text about nothing.
@@ -284,6 +284,16 @@ pub enum Test {
     /// It never got as far as answering. The detail is the endpoint's own
     /// account of why.
     Failed { detail: String },
+    /// There is no endpoint to ask — the switch is off, or the address and the
+    /// model are not both filled in.
+    ///
+    /// **Its own outcome rather than a `Failed`, and this is the whole reason
+    /// it exists.** Nothing was asked and nothing went wrong, so "did not
+    /// answer" is a claim about a request that was never made; the window said
+    /// exactly that, and printed the English detail underneath it, so a
+    /// Chinese screen read *"端点没能回答：no endpoint is configured"*. Both
+    /// halves of that sentence were wrong and they contradicted each other.
+    Unconfigured,
 }
 
 /// One place two engines read the same part of a page differently.

@@ -4,6 +4,57 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — Two things the first installed build got wrong
+
+**What:** Both found by using the released build rather than by reading it, which
+is what it was for.
+
+### The list was drawn upside down
+
+The index answers with the newest document first — `ORDER BY updated_at DESC` —
+and `drawRecords` iterated `[...list].reverse()`, so **the document somebody had
+just added appeared at the bottom**. The two had contradicted each other since
+they were written, and neither was wrong on its own: the query said newest-first
+and the script said "draw it the other way", and together they produced
+oldest-first.
+
+What gave it away was the *other* list. `drawMatches` draws search results in the
+order it receives them, so one list reversed and its neighbour did not — which is
+a mistake rather than a design. Reordering belongs in the query, where the reason
+can live beside it and where the command line gets the same answer for free.
+
+`the_records_list_is_drawn_in_the_order_it_arrives` reads the function out of the
+script and refuses `.reverse()` and `.sort()` in it.
+
+### "There is no endpoint" was reported as "the endpoint did not answer"
+
+Clicking **Test** with nothing configured produced:
+
+> 端点没能回答：no endpoint is configured
+
+Two things wrong in one line, and they contradict each other. **Nothing was
+asked, so nothing failed to answer** — the state put the absence of a
+configuration into `Test::Failed`, and the window's label for a failure is a
+claim about a request that was never made. And the detail was English on a
+Chinese screen, because it was the library's phrasing rather than the window's.
+
+There is now a `Test::Unconfigured`, which says what is actually missing —
+the switch, or one of the two fields — and takes the health badge back to 未测试
+rather than saying 不可用 about something that does not exist. The failure
+outcome keeps the endpoint's own English, which is right for a failure: it is
+somebody else's account of what went wrong, and rewording it here would be
+inventing a diagnosis.
+
+**A name on the wire is a silent seam.** The window picks its sentence by
+matching the outcome name the state serialises, and its chain ends in a fallback
+— so a renamed variant does not fail, it quietly becomes "the endpoint did not
+answer". `the_window_matches_the_outcome_the_state_sends` pins the two together,
+which is the check that would have caught this one the first time.
+
+605 tests.
+
+---
+
 ## 2026-10-13 — The toolchain is pinned, so the two agree by construction
 
 **What:** `rust-toolchain.toml`, and CI reads it rather than carrying its own
