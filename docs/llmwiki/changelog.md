@@ -198,6 +198,19 @@ took them, the publish step skipped, and **no release appeared**. Dispatching
 from a branch without that guard would have created one named after the branch,
 to be deleted by hand.
 
+**Then the real tag was cut, and the part that had never run did.** `v0.1.0`
+published `docfusion-v0.1.0-windows-x86_64.zip` (16.9 MB) and
+`DocFusion_0.1.0_x64-setup.exe` (13.6 MB), and the version guard passed on its
+first execution. The zip was downloaded back and opened rather than assumed: it
+holds `docfusion.exe` and all three of `LICENSE`, `README.md` and
+`THIRD-PARTY.md` — which is the obligation the packaging exists to carry, since
+PDFium is linked into that executable.
+
+*(The released installer is built from the same inputs as the one installed and
+uninstalled by hand here, but the two files are not byte-identical — a few
+hundred bytes of build metadata. The behaviour was verified on the local build;
+the artifact on the release page has been downloaded by nobody yet.)*
+
 ---
 
 ## 2026-10-13 — Three documents that had stopped describing this program
