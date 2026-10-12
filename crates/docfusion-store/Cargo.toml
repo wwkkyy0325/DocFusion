@@ -3,6 +3,7 @@ name = "docfusion-store"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [features]
 # Runs the models on the GPU through DirectML. On by default once it has been

@@ -3,6 +3,7 @@ name = "docfusion-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 calamine = "0.36.1"

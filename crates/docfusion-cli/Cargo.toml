@@ -3,6 +3,7 @@ name = "docfusion-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 # The command is what the product is called. The package name says which crate
 # it is, which is a fact about the repository rather than about the tool, and a

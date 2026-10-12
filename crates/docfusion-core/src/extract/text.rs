@@ -91,9 +91,15 @@ fn decode(bytes: &[u8]) -> String {
 }
 
 fn decode_utf16(bytes: &[u8], to_unit: fn([u8; 2]) -> u16) -> String {
+    // `as_chunks` rather than `chunks_exact`, and a trailing odd byte is dropped
+    // by both. It hands the pair over as an array rather than a slice, which is
+    // what `to_unit` takes, so the two-byte assembly is the type system's rather
+    // than this function's. Stable since 1.88, which is this workspace's floor.
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| to_unit([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| to_unit(*pair))
         .collect();
     String::from_utf16_lossy(&units)
 }
