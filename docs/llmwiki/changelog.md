@@ -4,6 +4,37 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — 0.2.0
+
+**What:** The conflict panel learns to answer the two questions it was being
+asked. A minor bump rather than a patch, because it adds a capability rather
+than correcting one — and it carries the four fixes from 0.1.1 with it.
+
+**Bumped in the same six places as last time**, checked to agree before the tag
+rather than after:
+
+```
+docfusion 0.2.0
+tauri.conf.json : 0.2.0
+Cargo.lock      : docfusion-core 0.2.0
+```
+
+**What is in it, for anyone who reads this instead of the release page:** the
+records list the right way up, a clearer answer from Test when no endpoint is
+configured, settings fields that no longer show an example that reads as a
+value, timestamps in the reader's own time, which reading the document is
+holding, and the differences between the two readings marked in both.
+
+**The one thing to say to somebody upgrading:** the report is written when a
+document is read, so **a document already in the library keeps its old report
+until it is read again.** The marking works immediately — it is computed from
+the two readings, which were always there — but the line saying which reading is
+the document's arrives with the next `reindex`. That is not a defect to fix
+later; it is what "the answer travels with the document" costs, and the window
+says nothing rather than guessing in the meantime.
+
+---
+
 ## 2026-10-13 — Which of the two readings is the document's, and where they differ
 
 **What:** Two questions a real conflict could not answer, both asked by the

@@ -18,8 +18,8 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-docfusion-core = { version = "0.1.1", path = "../docfusion-core" }
-docfusion-store = { version = "0.1.1", path = "../docfusion-store" }
+docfusion-core = { version = "0.2.0", path = "../docfusion-core" }
+docfusion-store = { version = "0.2.0", path = "../docfusion-store" }
 base64 = "0.23.1"
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
