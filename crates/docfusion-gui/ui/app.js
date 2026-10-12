@@ -1,5 +1,10 @@
 // The window's half of the conversation.
 //
+// The only import in the file, and it is the editor: CodeMirror lays out the
+// Markdown being edited and, unlike a `textarea`, can say where every line of it
+// is on the screen — which is what the two halves of the editor lining up needs.
+import * as cm from "./vendor/codemirror.js";
+//
 // Everything of substance happens on the other side of `invoke`: this file
 // draws a view, asks for another one, and does two things the webview is better
 // at than Rust — copying to the clipboard and knowing what is selected.
@@ -55,6 +60,22 @@ const TEXT = {
     format_xlsx_what: "工作簿，一张表一个工作表",
     format_csv: "逗号分隔",
     format_csv_what: "纯文本，什么软件都能打开",
+
+    edit: "编辑",
+    edit_done: "退出编辑",
+    edit_unsaved: "未保存",
+    edit_saved: "已保存",
+    edited_mark: "手改过",
+
+    unsaved_title: "这些改动还没保存",
+    unsaved_about: "退出编辑会把它们丢掉。",
+    unsaved_drop: "丢掉改动",
+    unsaved_save: "保存",
+
+    rerun_title: "这份文档被手工改过",
+    rerun_about: (name) =>
+      `「${name}」的正文你自己动过。重新读取会用它读出来的内容替换你写的。`,
+    rerun_go: "重读并覆盖",
 
     nothing: "还没有记录。",
     to_review: (n) => `${n} 处待确认`,
@@ -193,6 +214,17 @@ let revealed = false;
 let ticker = 0;
 let started = 0;
 
+/// Whether the pane is showing the editor, whether what is in it is on disk,
+/// and the editor itself while it is open.
+///
+/// Off, and empty, until somebody asks for it: the pane is a reading pane, and
+/// an editor is a different way of looking at the same document rather than
+/// something to be in by accident.
+let editing = false;
+let dirty = false;
+let source = "";
+let editor = null;
+
 /// The button that opened the menu — the footer's, or a block's.
 ///
 /// Kept because what comes of copying is said *on it*, and by then the dialog
@@ -303,6 +335,14 @@ function writeWords() {
     ["ask-remove", TEXT.remove_record],
     ["ask-delete", TEXT.delete_record],
     ["export-cancel", TEXT.cancel],
+    ["unsaved-title", TEXT.unsaved_title],
+    ["unsaved-about", TEXT.unsaved_about],
+    ["unsaved-cancel", TEXT.cancel],
+    ["unsaved-drop", TEXT.unsaved_drop],
+    ["unsaved-save", TEXT.unsaved_save],
+    ["rerun-title", TEXT.rerun_title],
+    ["rerun-cancel", TEXT.cancel],
+    ["rerun-go", TEXT.rerun_go],
   ]) {
     el(id).textContent = text;
   }
@@ -463,7 +503,7 @@ function drawScreen(view) {
     // about; on a screen they are two, because a report on a document sitting
     // in the middle of the document reads as though somebody had written it
     // into the page.
-    const panes = [article];
+    const panes = [editing ? split(article) : article];
     if (state.report?.length > 0) panes.push(findings(state.report));
 
     box.replaceChildren(...panes);
@@ -580,6 +620,22 @@ function drawStatus(state) {
 
   status.append(node("span", "spacer", ""));
 
+  // **Editing is a mode of this pane, so its controls are on this pane** — the
+  // bar that says which engines read the document is the bar that says whether
+  // what is on screen is still that reading.
+  if (editing) {
+    status.append(node("span", dirty ? "unsaved" : "", dirty ? TEXT.edit_unsaved : TEXT.edit_saved));
+
+    // Only while there is something to save. A button that is always there and
+    // always does nothing is a button nobody reads.
+    if (dirty) status.append(button(TEXT.save, "quiet", () => saveSource()));
+
+    status.append(button(TEXT.edit_done, "quiet", toggleEditor));
+    return;
+  }
+
+  status.append(button(TEXT.edit, "quiet", toggleEditor));
+
   // Export rather than Copy, and the difference is what each of them keeps: a
   // copy gives the words, and every block already offers them from where
   // somebody is looking. What is left for the footer is the whole document, and
@@ -639,6 +695,10 @@ function drawRecords(list) {
             .join(" · "),
         ),
       ]),
+      // Said before the row is opened rather than after: a re-read is about to
+      // take these words away, and the list is where somebody finds out which
+      // documents they have been in.
+      ...(record.edited ? [node("span", "edited", TEXT.edited_mark)] : []),
       describe("row-actions", [
         button(TEXT.view_record, "small", () => openRecord(record)),
         button(TEXT.delete_record, "small danger", () => askAbout(record)),
@@ -872,7 +932,42 @@ async function add() {
   }
   if (!path) return;
 
+  await addPath(path);
+}
+
+/// Reads a file into the knowledge base, having asked first when the document it
+/// would replace has been edited by hand.
+///
+/// **Asked here and not before every add.** Adding a file that is already in the
+/// knowledge base and has not changed is a cache hit, and a cache hit does not
+/// write the document at all — an edit survives that, so there is nothing to
+/// warn about. It does not survive the engines changing, and the window cannot
+/// tell the two apart without doing the work, so the question is about the
+/// document rather than about this particular read: it may turn out that nothing
+/// was going to be overwritten.
+async function addPath(path) {
+  let edited = null;
+
+  try {
+    edited = await invoke("edited", { path });
+  } catch {
+    // A courtesy, and not worth failing a read over: a file nobody has edited
+    // is the common case and the one that says nothing.
+  }
+
+  if (edited) return askRerun(edited, path);
+
   await read(() => invoke("process", { path }), fileLabel(path));
+}
+
+/// The file a re-read is being asked about, while the question is up.
+let rerun = null;
+
+function askRerun(name, path) {
+  rerun = path;
+
+  el("rerun-about").textContent = TEXT.rerun_about(name);
+  el("rerun-question").showModal();
 }
 
 async function openRecord(record) {
@@ -887,6 +982,12 @@ async function openRecord(record) {
 /// while the first is in flight would have them writing over each other.
 async function read(action, name) {
   if (running) return;
+
+  // Whatever wants the pane is about to replace it, and the editor's words live
+  // in the element that replaces it.
+  if (!(await confirmLeaving())) return;
+
+  closeEditor();
 
   // Every read ends with a document on screen, so it starts by showing the
   // panel that document goes in — including when the file was dropped while
@@ -1124,6 +1225,245 @@ async function runExport(format, where) {
     // a sentence for, and the account the other side gave.
     drawProblem(trouble);
   }
+}
+
+// ── the editor ──────────────────────────────────────────────────────────────
+
+/// Opens the editor on the document that is on screen, or closes it.
+///
+/// Closing asks first when there is something in it that is not on disk. The
+/// words live in an element that the next drawing of the pane throws away, and a
+/// mode that discards what somebody typed when they press the button beside it
+/// is a mode nobody uses twice.
+async function toggleEditor() {
+  if (!editing) {
+    const screen = current?.screen;
+    if (screen?.kind !== "ready") return;
+
+    try {
+      source = await invoke("source", { id: screen.id });
+    } catch (trouble) {
+      return drawProblem(trouble);
+    }
+
+    editing = true;
+    dirty = false;
+    drawScreen(current);
+    return drawStatus(current.screen);
+  }
+
+  if (!(await confirmLeaving())) return;
+
+  closeEditor();
+  drawScreen(current);
+  drawStatus(current.screen);
+}
+
+/// Takes the editor down.
+///
+/// The pane is redrawn by replacing what is in it, and an editor still listening
+/// for changes to a document that is no longer on screen is an editor holding
+/// the whole file in memory for nothing.
+function closeEditor() {
+  editing = false;
+  dirty = false;
+  source = "";
+  editor?.destroy();
+  editor = null;
+}
+
+/// The document twice: what it comes to on the left, the words on the right.
+///
+/// **CodeMirror rather than a `textarea`**, and the reason is the one this went
+/// through two hand-written versions to find: a `textarea` will not say where
+/// its text is. It lays the text out privately and reports a scroll height and
+/// nothing else, so there is no way to ask which pixel the fortieth line begins
+/// at — and that question is the whole of keeping the two halves in step, since
+/// a paragraph written on one line is four rows of the pane.
+///
+/// An editor answers it, and brings the syntax highlighting, the undo history
+/// and the bracket matching that Markdown being punctuation as much as words
+/// wants anyway.
+///
+/// **Nothing in the preview acts on the document.** A block's menu exports the
+/// file, and while the editor is open the file is not what is on screen — the
+/// words being typed are. A menu there would write out something other than what
+/// it is pointing at, so there is none.
+function split(article) {
+  const host = node("div", "source-editor");
+
+  const view = new cm.EditorView({
+    doc: source,
+    parent: host,
+    extensions: [
+      // Ctrl+S first, so that it is this and not whatever `basicSetup` would
+      // otherwise make of the key. There is no browser save dialog to leave
+      // alone: this is not a page.
+      cm.keymap.of([
+        {
+          key: "Mod-s",
+          run: () => {
+            if (dirty) saveSource();
+            return true;
+          },
+        },
+      ]),
+
+      cm.basicSetup,
+      cm.markdown(),
+      // A paragraph is one line of the Markdown and several rows of the pane,
+      // and scrolling sideways to read prose is worse than the trouble wrapping
+      // makes for a line-based editor.
+      cm.EditorView.lineWrapping,
+      cm.EditorView.theme(THEME),
+      cm.syntaxHighlighting(HIGHLIGHT),
+
+      cm.EditorView.updateListener.of((update) => {
+        if (!update.docChanged) return;
+
+        source = update.state.doc.toString();
+        typed();
+      }),
+    ],
+  });
+
+  editor = view;
+
+  const side = node("div", "split");
+  side.append(article, host);
+  return side;
+}
+
+/// The editor's colours, taken from the window's rather than from its own.
+///
+/// CodeMirror brings a theme and it is a light one. Written in the stylesheet's
+/// variables instead of in hex, the editor follows the theme switch with
+/// everything else — the same argument every other colour in this window is
+/// under.
+const THEME = {
+  "&": {
+    height: "100%",
+    backgroundColor: "var(--wash)",
+    color: "var(--ink)",
+    fontSize: "13px",
+  },
+  ".cm-scroller": {
+    fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
+    lineHeight: "1.7",
+  },
+  ".cm-content": { padding: "22px 0 40px" },
+  ".cm-line": { padding: "0 20px 0 30px" },
+  ".cm-gutters": {
+    backgroundColor: "var(--wash)",
+    color: "var(--muted)",
+    border: "none",
+  },
+  // The active line is where the caret is, and the other half is already saying
+  // so; a second highlight for the same fact is one too many.
+  ".cm-activeLine": { backgroundColor: "transparent" },
+  ".cm-activeLineGutter": { backgroundColor: "transparent" },
+  "&.cm-focused": { outline: "none" },
+  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--ink)" },
+  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
+    backgroundColor: "var(--highlight)",
+  },
+};
+
+/// What the Markdown is coloured as.
+const HIGHLIGHT = cm.HighlightStyle.define([
+  { tag: cm.tags.heading, color: "var(--accent)", fontWeight: "bold" },
+  { tag: cm.tags.strong, fontWeight: "bold" },
+  { tag: cm.tags.emphasis, fontStyle: "italic" },
+  { tag: cm.tags.strikethrough, textDecoration: "line-through" },
+  { tag: cm.tags.link, color: "var(--accent)" },
+  { tag: cm.tags.url, color: "var(--muted)" },
+  { tag: cm.tags.quote, color: "var(--muted)" },
+  // What the Markdown *is* rather than what it says: the punctuation, which is
+  // the half of a document somebody editing has to be able to see.
+  { tag: cm.tags.processingInstruction, color: "var(--muted)" },
+  { tag: cm.tags.contentSeparator, color: "var(--muted)" },
+  {
+    tag: cm.tags.monospace,
+    fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
+  },
+]);
+
+/// How long a pause in typing is before the preview catches up.
+///
+/// A beat rather than every keystroke: rendering is a parse, and a sentence
+/// typed at speed is thirty of them for one line. Short enough that the preview
+/// never looks like it is behind.
+const TYPING_PAUSE = 120;
+let typing = 0;
+
+function typed() {
+  setDirty(true);
+
+  clearTimeout(typing);
+  typing = setTimeout(renderPreview, TYPING_PAUSE);
+}
+
+/// What has been typed, rendered where the reading pane would be.
+async function renderPreview() {
+  const article = el("screen").querySelector(".split .document");
+  if (!article) return;
+
+  try {
+    article.innerHTML = await invoke("preview", { body: source });
+  } catch (trouble) {
+    return drawProblem(trouble);
+  }
+
+}
+
+/// Says whether what is in the editor is on disk.
+function setDirty(on) {
+  if (dirty === on) return;
+
+  dirty = on;
+  drawStatus(current?.screen);
+}
+
+/// Writes it.
+///
+/// The pane is not drawn again afterwards: the editor is open on it, and drawing
+/// it would put the caret back at the top of the text. What changes is the list
+/// — the row now says the document has been edited — and the banner, which is
+/// where a save that did not happen says so.
+async function saveSource() {
+  const screen = current?.screen;
+  if (screen?.kind !== "ready") return;
+
+  clearTimeout(typing);
+
+  try {
+    const view = await invoke("save_source", { id: screen.id, body: source });
+    current = view;
+
+    drawProblem(view.problem);
+    drawRecords(view.records);
+    setDirty(false);
+  } catch (trouble) {
+    drawProblem(trouble);
+  }
+}
+
+/// The answer to the question about unsaved words, while it is being asked.
+let leaving = null;
+
+/// Asks what to do about words that are not on disk, and answers whether to go
+/// ahead with whatever wanted the pane.
+///
+/// The answer is read off `dirty` rather than off which button was pressed,
+/// because they are the same question: dropping the changes and saving them both
+/// leave nothing unsaved, and cancelling leaves it.
+function confirmLeaving() {
+  if (!dirty) return Promise.resolve(true);
+
+  return new Promise((resolve) => {
+    leaving = resolve;
+    el("unsaved-question").showModal();
+  });
 }
 
 // ── tabs ────────────────────────────────────────────────────────────────────
@@ -1450,11 +1790,15 @@ function forgetHealth() {
   }
 
   // And the settings are no longer what is on file.
-  if (dirty()) note(TEXT.changed, false);
+  if (formChanged()) note(TEXT.changed, false);
 }
 
-/// Whether the form differs from what is on file.
-function dirty() {
+/// Whether the settings form differs from what is on file.
+///
+/// `formChanged` and not `dirty`, which is what the document editor calls the
+/// answer to a different question: whether what somebody has typed into a
+/// document is on disk. Both are unsaved changes and only one of them is a form.
+function formChanged() {
   const saved = current?.model;
   if (!saved) return false;
 
@@ -1612,7 +1956,7 @@ if (globalThis.__TAURI__?.webview?.getCurrentWebview) {
   window.__TAURI__.webview.getCurrentWebview().onDragDropEvent((event) => {
     if (event.payload?.type !== "drop") return;
     const path = event.payload.paths?.[0];
-    if (path) read(() => invoke("process", { path }), fileLabel(path));
+    if (path) addPath(path);
   });
 }
 
@@ -1665,10 +2009,40 @@ el("ask-remove").addEventListener("click", () => answer("forget_record"));
 el("ask-delete").addEventListener("click", () => answer("delete_record"));
 el("export-cancel").addEventListener("click", () => el("export-question").close());
 
+el("unsaved-cancel").addEventListener("click", () => el("unsaved-question").close());
+el("unsaved-drop").addEventListener("click", () => {
+  setDirty(false);
+  el("unsaved-question").close();
+});
+el("unsaved-save").addEventListener("click", async () => {
+  await saveSource();
+  el("unsaved-question").close();
+});
+
+el("rerun-cancel").addEventListener("click", () => el("rerun-question").close());
+el("rerun-go").addEventListener("click", async () => {
+  const path = rerun;
+  rerun = null;
+  el("rerun-question").close();
+
+  if (path) await read(() => invoke("process", { path }), fileLabel(path));
+});
+
 // Escape and a press outside both close a modal `dialog` without running any
 // of the code above, so the row the question was about is dropped here instead
 // — otherwise the next Delete would act on whatever was asked about last.
 el("record-question").addEventListener("close", () => (asking = null));
+
+// Escape and a press outside close these without running any of the code
+// above, so the answer to each is read off what they left behind rather than
+// off which button was pressed: the words are unsaved or they are not, and the
+// file to read again is one or is none.
+el("unsaved-question").addEventListener("close", () => {
+  const answer = leaving;
+  leaving = null;
+  answer?.(!dirty);
+});
+el("rerun-question").addEventListener("close", () => (rerun = null));
 
 // Anything the answer was about: changing it makes the answer about something
 // that is no longer on screen.

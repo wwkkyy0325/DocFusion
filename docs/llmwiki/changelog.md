@@ -4,6 +4,223 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — The editor is the simple version
+
+**What:** The two halves no longer follow each other. No scroll sync, no caret
+highlight, no line numbers threaded through the renderer and the window. What is
+left is what was asked for at the start: a toggle, the words on one side, what
+they come to on the other, save, and out.
+
+**Three versions of the sync existed and all three are gone.** The first did the
+arithmetic, which is wrong because the source wraps. The second measured with a
+hidden ruler of the same text, which is correct and is an apparatus for asking a
+question a `textarea` cannot answer. The third brought in CodeMirror, which
+answers it directly — and by then the cost was countable: the handlers, the
+guards against the two halves pushing each other along, the ruler or the editor,
+the `Rendered.line`, the `data-line` on every block, the `sourcepos` on every
+element, and the two settings of the parse to keep those apart. All of it to
+answer "where am I" about a document that is already on the screen twice.
+
+`Rendered` carries a block's number and not its line. `window_html` writes the
+number and nothing else. The renderer has one setting instead of two.
+
+**CodeMirror stays.** It was brought in for the sync and it stays for what came
+with it: the syntax highlighting, the undo history and the bracket matching,
+which Markdown wants anyway. It is still the only third-party code in the window
+and still committed rather than installed, for the reason in
+`ui/vendor/README.md`.
+
+**And the window that did nothing is now caught by a test.** `node --check`,
+which had been run after every edit all session, cannot fail on a duplicate
+top-level declaration in this file — reproduced, and it passes a file that fails
+the same check renamed `.mjs`. `no_name_is_declared_twice_at_the_top_of_the_
+script` scans for it and bites.
+
+602 tests, clippy clean.
+
+---
+
+## 2026-10-13 — The window that did nothing
+
+**What:** The editor build opened to a window that could not be operated at all.
+Nothing was wired, including everything that had nothing to do with editing.
+
+**Why: `dirty` was declared twice.** The settings form has a `dirty()` deciding
+whether the form differs from what is on file; the editor added a `dirty` for
+whether the typed words are on disk. Two declarations of one name at the top of a
+module is a `SyntaxError` at parse time, and a module that does not parse is a
+module none of which runs. The rename that fixed this had been made once already,
+and **the rollback of the frontend took it out with everything else** — the two
+changes were in the same file and only one of them was meant to go.
+
+The form's is `formChanged()` now, which is what it always was.
+
+**How it was found.** Not by reading: the webview console is not visible from
+here, so a one-line module was loaded before `app.js` that reports through a
+command into a file. It said two things, and the first was the useful one —
+`codemirror ok: EditorView=function keymap=object`. The vendored bundle had
+loaded correctly all along, and the suspicion that had been sitting on it was
+wrong.
+
+**And the check that was supposed to catch this was not checking anything.**
+`node --check` had been run on `app.js` after every edit all session and had
+never once been able to fail: reproduced afterwards, it passes a file with the
+collision in it, where the same file renamed `.mjs` fails it. What does catch it
+is loading the module — `SyntaxError` at parse time, anything else meaning it
+got as far as the DOM. That is the check now, **and the rule is a Rust test**:
+`no_name_is_declared_twice_at_the_top_of_the_script` scans the top level of
+`app.js` and fails on a repeat, because this failure is total and silent and
+cost a build cycle to find by hand.
+
+604 tests, clippy clean.
+
+---
+
+## 2026-10-13 — The editor is CodeMirror
+
+**What:** The hand-written editor is gone and the pane edits in CodeMirror 6,
+committed to `ui/vendor/` as one ES module of 597 KB. Everything outside the
+editor is as it was: the split, the live preview, the per-element highlight, the
+save, the questions.
+
+**Three tries, and the first two were the same mistake.** The first synced the
+two halves by arithmetic — `line × lineHeight` — which is the pixel a line begins
+at only when a line is one row, and **the source wraps**: a paragraph written on
+one line is four rows of the pane, so the halves drifted further apart the longer
+the document was. The second measured instead of calculating, with a hidden ruler
+holding the same text in a box of the same width so that a line's position could
+be read out of it. That was correct and was the wrong thing to be doing: an
+entire apparatus for asking a question about the editor's own text that the
+editor could have answered.
+
+**The question is "where is this line", and a `textarea` does not answer it.**
+CodeMirror does: `lineBlockAtHeight` for the line at the top of a viewport,
+`lineBlockAt` for the pixel a line begins at. The ruler, the arithmetic and the
+line-height metrics are all deleted, along with about two hundred lines of
+scroll synchronisation.
+
+**Vendored rather than installed**, because this window has no build chain and
+the content policy is `default-src 'self'`: a dependency that has to be fetched is
+one that cannot be, on a machine that is offline, which is where this program is
+meant to work. `ui/vendor/README.md` records the versions and the two commands
+that rebuild it. It is the only third-party code in the window, and the window
+now has exactly one import.
+
+**The bundle was checked by loading it.** `import()` in Node and a look at what
+came out found that `codemirror`'s meta-package does not re-export `keymap` —
+which would not have been a build failure but a `TypeError` the moment somebody
+pressed 编辑.
+
+603 tests, clippy clean.
+
+---
+
+## 2026-10-13 — The two halves line up
+
+**What:** The caret's highlight is now the *element* it is in rather than the
+whole block, and the two halves scroll in step — which they did not.
+
+**The scroll was wrong, and the reason is that the source wraps.** The first
+version put the preview at `line × lineHeight`, which is right only for text
+where a line is one row. A paragraph written on one line is four rows in the
+pane, so every line after a long one was measured at the wrong pixel and the two
+halves drifted further apart the longer the document got.
+
+**A `textarea` will not say where its text is** — it lays the text out itself
+and reports a scroll height and nothing else. So a hidden ruler holds the same
+text in a box of the same width and the same font, one element per line, and the
+pixel each line begins at is read out of it in a single pass. The editor's
+divider moved from `border-left` to an inset shadow so that the width the ruler
+copies is the width the editor wraps in.
+
+**And the highlight is now per element.** `render::positioned` renders the pane
+with `sourcepos` on, so every element the renderer wrote carries where it came
+from, and the caret's line is matched against the innermost one holding it. The
+block-level match answered "which block" for a document that is one thirty-item
+list, where the whole list is the answer to every question. It is off for every
+other caller, because a document does not carry the line numbers of its own
+Markdown around with it — one function, two settings, and a test that they agree
+about what the blocks are.
+
+603 tests, clippy clean.
+
+---
+
+## 2026-10-12 — The two halves of the editor keep up with each other
+
+**What:** The editor is on the right and the preview on the left, and the two
+follow each other: the caret lights up the block it is in, and scrolling either
+half moves the other to the block at its top.
+
+**The lines are written down rather than looked up.** `render::blocks` now
+carries the line each block begins at, and `window_html` writes it on the element
+as `data-line`. The block somebody is typing in is the last one whose line is at
+or before the caret's, so both directions of the sync — caret to block, block to
+line — are lookups in a list that is already on screen.
+
+The alternative was a command that parses the body on every caret move, and it is
+the difference between a highlight that follows the caret and one that arrives a
+round trip after it has moved on. A test checks the numbers are the lines the
+blocks are actually on, in order and each one non-blank, because a number that
+lagged would light up a block somebody is not in.
+
+**The preview lost what it cannot use.** No block menus while editing — a menu
+exports the file, and the file is not what is on screen — so it also lost the
+strip they are drawn in and the wash under the pointer that makes them belong to
+a block. The only highlight in a preview now is the caret's.
+
+**A bug of my own, caught before it shipped:** `scrollByHand(change)` was called
+with a function and its result registered as the listener, which ran the sync
+once at attach time and then registered `undefined`. It returns a handler now.
+Both handlers ignore each other for 150 ms after the program moves something, or
+the two push each other along for ever.
+
+602 tests, clippy clean.
+
+---
+
+## 2026-10-12 — The document pane can be typed in
+
+**What:** A toggle in the status bar, off by default, turns the reading pane into
+an editor — the Markdown on the left, what it comes to on the right, rendered as
+it is typed. `Ctrl+S` writes it, the bar says `未保存` until it does, and closing
+with unsaved words asks rather than discards.
+
+**Three parts, and only one of them is editable.** `render::parts` splits a
+document into the front matter, the words and the conflict report;
+`Parts::with_body` replaces the middle one and `joined` puts them back. The
+guarantee is kept by never handing the editor the other two rather than by a
+rule about not typing in them — the same argument as `window_html` numbering its
+own blocks, which is that a thing that cannot be got wrong beats a thing that
+should not be.
+
+`body_of` was redefined as `parts(..).body.trim_end()`, so the rule the search
+index is built on and the rule the editor is built on are one split rather than
+two that happen to agree.
+
+**An edit is recorded.** Schema version 5 adds `edited_at`; the front matter gets
+the same line, replaced on each edit so that a document edited five times says
+when the fifth was; the list marks the row; and reading the file again asks first.
+Asking is about the document rather than about the read, because the answer is not
+always yes — **a cache hit does not write the document**, so re-adding a file that
+has not changed keeps the edit and the question turns out to have been about
+nothing. It is `reindex` and a changed engine set that do the writing.
+
+**A test caught a real bug in that path.** `produce` built its record with
+`..record.clone()`, so `reindex` wrote the engines' words over somebody's edit and
+kept the mark saying the document had been edited. The mark is cleared explicitly
+now, and the test that found it is `a_reread_writes_the_engines_words_back_and_
+clears_the_mark`.
+
+Line-height of the change: `render::{parts, Parts, edited, edited_at_of}`,
+`Pipeline::save_body`, four window commands, `Record.edited`, the split layout
+and two more `dialog`s. 601 tests, clippy clean.
+
+**Not done:** no scroll sync between the two halves, and `reindex` still has no
+window entry point, so the warning above is reachable only from the command line.
+
+---
+
 ## 2026-10-12 — The block under the pointer is washed
 
 **What:** Hovering a block now lights it up, so the `⋯` at its right edge reads

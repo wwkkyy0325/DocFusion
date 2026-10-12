@@ -356,23 +356,140 @@ fn field(out: &mut String, key: &str, value: &str) {
 /// document that is not in this shape — a person's own notes in the tree — is
 /// returned whole rather than mangled.
 pub fn body_of(markdown: &str) -> &str {
-    let mut body = markdown;
+    parts(markdown).body.trim_end()
+}
 
-    if let Some(rest) = body.strip_prefix("---\n")
-        && let Some(end) = rest.find("\n---\n")
-    {
-        body = &rest[end + "\n---\n".len()..];
+/// A document in the three pieces an editor has to keep apart.
+///
+/// **The front matter and the report are this program's; the body is the
+/// document's.** Somebody editing the words of a document should not be able to
+/// damage the record of where it came from or the note about what the engines
+/// disagreed on, and [`Parts::joined`] is what makes that impossible rather than
+/// merely discouraged: the file that comes out has the front matter it went in
+/// with, whatever was typed in between.
+///
+/// The three always reassemble to exactly the input, which is what a round trip
+/// through an editor has to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parts<'a> {
+    /// The front matter, its closing `---` and all, or empty.
+    pub front: &'a str,
+    /// The words.
+    pub body: &'a str,
+    /// The conflict report, its heading first, or empty.
+    pub report: &'a str,
+}
+
+impl<'a> Parts<'a> {
+    /// The three back as one file.
+    pub fn joined(&self) -> String {
+        format!("{}{}{}", self.front, self.body, self.report)
     }
 
-    if let Some(at) = body.find(CONFLICT_HEADING) {
-        body = &body[..at];
+    /// The same document with somebody else's words in it, and the program's
+    /// two halves untouched.
+    pub fn with_body(&self, body: &'a str) -> Self {
+        Self {
+            front: self.front,
+            body,
+            report: self.report,
+        }
+    }
+}
+
+/// Splits a document the way an editor needs it split.
+///
+/// **Line by line rather than by searching for the heading's text.** The report
+/// begins at a line of its own at the left margin, and a document that *says*
+/// `## Conflicts` inside a paragraph is a document about conflicts — cutting it
+/// in half there would take the rest of that paragraph with it.
+pub fn parts(markdown: &str) -> Parts<'_> {
+    let (front, rest) = split_front(markdown);
+
+    let mut offset = 0;
+    for line in rest.split_inclusive('\n') {
+        if line.trim_end() == REPORT_HEADING {
+            return Parts {
+                front,
+                body: &rest[..offset],
+                report: &rest[offset..],
+            };
+        }
+        offset += line.len();
     }
 
-    body
+    Parts {
+        front,
+        body: rest,
+        report: "",
+    }
+}
+
+/// The front matter, its opening `---` and its closing one, or empty.
+fn split_front(markdown: &str) -> (&str, &str) {
+    let Some(rest) = markdown.strip_prefix("---\n") else {
+        return ("", markdown);
+    };
+
+    let Some(end) = rest.find("\n---\n") else {
+        return ("", markdown);
+    };
+
+    markdown.split_at("---\n".len() + end + "\n---\n".len())
 }
 
 /// The heading the conflict report begins at, written by [`conflicts_markdown`].
-const CONFLICT_HEADING: &str = "\n## Conflicts\n";
+const REPORT_HEADING: &str = "## Conflicts";
+
+/// The front matter's note that somebody has edited this document by hand.
+pub const EDITED_AT: &str = "edited_at";
+
+/// The file with a note in its front matter saying when it was last edited.
+///
+/// When is the last one, not every one: a field that was already there is
+/// dropped before the new one is written, so editing a document five times
+/// says when the fifth was rather than carrying five lines about it.
+///
+/// A file with no front matter is returned untouched. Writing one would be this
+/// program inventing a record for a document it did not make — which is what
+/// the manifest is for, and it knows either way.
+pub fn edited(markdown: &str, at: &str) -> String {
+    let split = parts(markdown);
+
+    let Some(fields) = split
+        .front
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.strip_suffix("---\n"))
+    else {
+        return markdown.to_owned();
+    };
+
+    let mut out = String::from("---\n");
+
+    for line in fields.lines() {
+        if !line.starts_with(&format!("{EDITED_AT}:")) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    field(&mut out, EDITED_AT, at);
+    out.push_str("---\n");
+
+    out.push_str(split.body);
+    out.push_str(split.report);
+    out
+}
+
+/// When the document was last edited by hand, if it ever was.
+pub fn edited_at_of(markdown: &str) -> Option<String> {
+    parts(markdown)
+        .front
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{EDITED_AT}:")))
+        .map(|value| value.trim().trim_matches('"').to_owned())
+        .filter(|value| !value.is_empty())
+}
 
 /// `report.pdf` is merely what somebody saved it as — and the title is also what
 /// names the output file.
@@ -796,6 +913,96 @@ mod tests {
 
     fn rendered(blocks: Vec<Block>) -> String {
         markdown(&document(blocks), CREATED_AT)
+    }
+
+    /// **The three pieces reassemble to exactly what went in**, which is what a
+    /// round trip through an editor has to be: anything else and opening a
+    /// document and saving it unchanged would rewrite the file.
+    #[test]
+    fn a_document_splits_into_three_and_joins_back_into_one() {
+        let markdown = "---\ntitle: Report\n---\n# Heading\n\ntext\n\n## Conflicts\n\npage 1\n";
+
+        let split = parts(markdown);
+
+        assert_eq!(split.front, "---\ntitle: Report\n---\n");
+        assert_eq!(split.body, "# Heading\n\ntext\n\n");
+        assert_eq!(split.report, "## Conflicts\n\npage 1\n");
+        assert_eq!(split.joined(), markdown);
+    }
+
+    #[test]
+    fn a_document_with_neither_wrapper_is_all_body() {
+        let markdown = "# Just notes\n\nsomebody's own\n";
+
+        let split = parts(markdown);
+
+        assert_eq!(split.front, "");
+        assert_eq!(split.report, "");
+        assert_eq!(split.body, markdown);
+    }
+
+    /// **A paragraph that mentions the heading is not the heading.** The report
+    /// begins at a line of its own at the left margin, and cutting at the text
+    /// instead would take the rest of that paragraph with it.
+    #[test]
+    fn a_paragraph_naming_the_heading_is_not_cut_in_half() {
+        let markdown = "---\ntitle: x\n---\nthe report is under ## Conflicts, at the end\n";
+
+        let split = parts(markdown);
+
+        assert_eq!(split.report, "", "a paragraph was cut in half");
+        assert_eq!(split.body, "the report is under ## Conflicts, at the end\n");
+    }
+
+    /// **A document with no body still has its report kept apart.** The heading
+    /// can be the first thing after the front matter, and a search for the
+    /// heading *with a newline in front of it* finds nothing there — so the
+    /// report stays in the body, and editing the words would put the report
+    /// through the editor as though it were something the document says.
+    #[test]
+    fn a_document_with_nothing_but_a_report_keeps_it_apart() {
+        let markdown = "---\ntitle: x\n---\n## Conflicts\n\npage 1\n";
+
+        let split = parts(markdown);
+
+        assert_eq!(split.body, "");
+        assert_eq!(split.report, "## Conflicts\n\npage 1\n");
+        assert_eq!(split.joined(), markdown);
+    }
+
+    /// The note is when the *last* edit was, not every one: a document edited
+    /// five times says so once.
+    #[test]
+    fn editing_notes_when_and_carries_only_the_last_time() {
+        let markdown = "---\ntitle: Report\n---\n# A\n\ntext\n\n## Conflicts\n\npage 1\n";
+
+        let once = edited(markdown, "2026-10-12T10:00:00Z");
+        assert_eq!(edited_at_of(&once).as_deref(), Some("2026-10-12T10:00:00Z"));
+
+        let twice = edited(&once, "2026-10-13T09:00:00Z");
+        assert_eq!(edited_at_of(&twice).as_deref(), Some("2026-10-13T09:00:00Z"));
+        assert_eq!(twice.matches("edited_at:").count(), 1, "{twice}");
+
+        // And nothing else moved: the front matter it went in with, the words,
+        // and the report are all where they were.
+        assert!(twice.contains("title: Report"), "{twice}");
+        assert_eq!(parts(&twice).body, parts(markdown).body);
+        assert_eq!(parts(&twice).report, parts(markdown).report);
+    }
+
+    #[test]
+    fn a_document_nobody_has_edited_says_so() {
+        assert_eq!(edited_at_of("---\ntitle: Report\n---\n# A\n"), None);
+        assert_eq!(edited_at_of("# no front matter to write in\n"), None);
+    }
+
+    /// A file this program did not write has nowhere to keep the note, and
+    /// giving it a front matter would be inventing a provenance for it.
+    #[test]
+    fn a_file_with_no_front_matter_is_not_given_one() {
+        let markdown = "# somebody's own notes\n";
+
+        assert_eq!(edited(markdown, "2026-10-12T10:00:00Z"), markdown);
     }
 
     fn body(markdown: &str) -> &str {

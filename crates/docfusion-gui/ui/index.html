@@ -305,6 +305,40 @@
       </div>
     </dialog>
 
+    <!-- The question the editor asks when it is closed with something in it
+         that is not on disk.
+
+         Three ways out rather than two, because there are three things a person
+         wants at that moment and a button that guessed between them would
+         sometimes throw away what somebody typed: keep editing, save, or throw
+         it away deliberately. The destructive one is the quiet one, because it
+         is the answer nobody means to give. -->
+    <dialog id="unsaved-question">
+      <h2 id="unsaved-title"></h2>
+      <p id="unsaved-about" class="lead"></p>
+      <div class="actions">
+        <button id="unsaved-cancel" type="button" class="quiet"></button>
+        <button id="unsaved-drop" type="button" class="danger"></button>
+        <button id="unsaved-save" type="button" class="primary"></button>
+      </div>
+    </dialog>
+
+    <!-- The question asked before a file that has been edited by hand is read
+         again.
+
+         Not before every add: adding a file that is already in the knowledge
+         base and has not changed is a cache hit, which does not write the
+         document at all, and an edit survives that. It does not survive the
+         engines changing, which is when this appears. -->
+    <dialog id="rerun-question">
+      <h2 id="rerun-title"></h2>
+      <p id="rerun-about" class="lead"></p>
+      <div class="actions">
+        <button id="rerun-cancel" type="button" class="quiet"></button>
+        <button id="rerun-go" type="button" class="danger filled"></button>
+      </div>
+    </dialog>
+
     <script type="module" src="app.js"></script>
   </body>
 </html>

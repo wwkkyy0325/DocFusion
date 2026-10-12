@@ -247,6 +247,74 @@ impl App {
         }
     }
 
+    /// Writes somebody's own words into a document, and shows the result.
+    ///
+    /// The pane is re-rendered from what is now on disk rather than from the
+    /// text that was sent, so that what is on screen is the file — the same
+    /// rule [`App::open_at`] follows, and the reason the two go through the
+    /// same function.
+    fn save_source(&self, id: &str, body: &str) -> Result<Opened, Trouble> {
+        let pipeline = self.pipeline()?;
+
+        let record = pipeline
+            .save_body(id, body, &docfusion_store::manifest::now_iso8601())
+            .map_err(|error| Trouble::new(cause_of(&error), error.to_string()))?;
+
+        let output = pipeline.root().join(&record.output_path);
+        self.open_at(&record.id, &output, false)
+    }
+
+    /// What the editor is handed: a document's words, and neither of the two
+    /// things this program wrapped around them.
+    ///
+    /// The front matter is where the document says where it came from and the
+    /// report is what the engines disagreed about. Both are about the document
+    /// rather than in it, and an editor that could reach them could damage the
+    /// record of what happened to it.
+    fn source_of(&self, id: &str) -> Result<String, Trouble> {
+        let pipeline = self.pipeline()?;
+
+        let record = pipeline
+            .resolve(id)
+            .map_err(|error| Trouble::new(cause_of(&error), error.to_string()))?;
+
+        let path = pipeline.root().join(&record.output_path);
+        let markdown = std::fs::read_to_string(&path).map_err(|error| {
+            Trouble::new(Cause::Unreadable, format!("{}: {error}", path.display()))
+        })?;
+
+        Ok(render::parts(&markdown).body.to_owned())
+    }
+
+    /// Whether reading this file again would replace somebody's own edits.
+    ///
+    /// `None` when the file is not in the knowledge base, or is in it unedited.
+    /// The two are the same answer to the question being asked, which is
+    /// whether there is anything to warn about, and the answer is no either
+    /// way.
+    ///
+    /// What is asked before a **re-read**, and not before every add: adding a
+    /// file that is already in the knowledge base without having changed is a
+    /// cache hit, and a cache hit does not write the document at all. The edit
+    /// survives that, so there is nothing to warn about. It does not survive
+    /// the engines changing or `reindex`, which is what this is for.
+    fn edited_record(&self, path: &str) -> Option<String> {
+        let pipeline = self.pipeline().ok()?;
+        let record = pipeline.resolve(path).ok()?;
+
+        record.edited_at.as_ref()?;
+
+        // Named the way everything else here names a document — by the file it
+        // was read from, not by the path it was written to.
+        Some(
+            record
+                .source_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| record.id.clone()),
+        )
+    }
+
     fn forget_record(&self, id: &str) -> Result<(), Trouble> {
         let outcome = forget(&self.pipeline()?, id);
 
@@ -905,6 +973,64 @@ fn delete_record(app: AppHandle, id: String) -> View {
     after_removal(&state, state.delete_record(&id))
 }
 
+/// What the editor is handed to edit: a document's own words.
+///
+/// A command of its own rather than a field of the view. The view is serialised
+/// for every command the window sends, and doubling it so that a panel most
+/// documents are never opened in can have the text is a cost every document
+/// read would pay.
+#[tauri::command]
+fn source(app: AppHandle, id: String) -> Result<String, Trouble> {
+    app.state::<App>().source_of(&id)
+}
+
+/// Renders words that are not on disk yet.
+///
+/// The pane's own renderer, so what the editor shows beside the text is what
+/// the document will look like — and numbered the same way, so a block's menu
+/// keeps meaning what it meant while somebody types.
+#[tauri::command]
+fn preview(body: String) -> String {
+    window_html(&body)
+}
+
+/// Writes somebody's own words into a document.
+///
+/// A failure is an `Err` and not a view with a problem on it, so that the window
+/// can tell the two apart: a save that did not happen leaves what was typed
+/// unsaved, and the window says so. A screen replaced by a report of what went
+/// wrong would be that text gone with it — which is why this does not draw the
+/// failure panel either.
+#[tauri::command]
+async fn save_source(app: AppHandle, id: String, body: String) -> Result<View, Trouble> {
+    let handle = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<App>();
+        let opened = state.save_source(&id, &body)?;
+
+        let mut view = state.view();
+        view.ready(opened);
+        state.refresh(&mut view);
+
+        Ok(view)
+    })
+    .await
+    // The task itself did not finish, which is the save not happening rather
+    // than a document that could not be read.
+    .map_err(|error| Trouble::new(Cause::Unwritable, error.to_string()))?
+}
+
+/// Whether reading this file again would replace somebody's own edits.
+///
+/// `None` for a file that is not in the knowledge base, which is the common
+/// answer and the same one as for a file nobody has edited: there is nothing to
+/// warn about either way.
+#[tauri::command]
+fn edited(app: AppHandle, path: String) -> Option<String> {
+    app.state::<App>().edited_record(&path)
+}
+
 /// Asks the operating system for a file.
 ///
 /// Done here rather than in the webview because the webview's picker is a
@@ -1286,6 +1412,10 @@ pub fn run() {
             forget_record,
             delete_record,
             choose_file,
+            source,
+            preview,
+            save_source,
+            edited,
             export,
             process,
             open,
@@ -1327,6 +1457,15 @@ mod tests {
         }
 
         false
+    }
+
+    /// Two exports of the same document are not proposed under the same name.
+    #[test]
+    fn an_export_is_named_after_the_document_it_came_out_of() {
+        let source = Path::new("/library/docs/notes.md");
+
+        assert_eq!(suggested_name(source, Format::Html, None), "notes.html");
+        assert_eq!(suggested_name(source, Format::Markdown, Some(3)), "notes-3.md");
     }
 
     /// Every element a rendered document can hold has a rule in the stylesheet.
@@ -1567,15 +1706,6 @@ code
         assert_eq!(drawn.matches("block-table").count(), 1);
     }
 
-    /// Two exports of the same document are not proposed under the same name.
-    #[test]
-    fn an_export_is_named_after_the_document_it_came_out_of() {
-        let source = Path::new("/library/docs/notes.md");
-
-        assert_eq!(suggested_name(source, Format::Html, None), "notes.html");
-        assert_eq!(suggested_name(source, Format::Markdown, Some(3)), "notes-3.md");
-    }
-
     /// Every element the script looks up is in the markup.
     ///
     /// `el()` throws when the id is not there, and the throw lands wherever in
@@ -1606,6 +1736,52 @@ code
         }
 
         assert!(looked > 20, "only {looked} ids were checked");
+    }
+
+    /// **No name is declared twice at the top of the script.**
+    ///
+    /// This is a test because the failure it catches is total and silent: two
+    /// declarations of one name at the top of a module is a `SyntaxError` at
+    /// parse time, which takes the whole file with it — no wiring, no drawing, a
+    /// window that opens and does nothing. It happened, on the day the editor
+    /// was added: the settings form's `dirty()` and the editor's `dirty`
+    /// collided, and everything in the window stopped, including the parts that
+    /// had nothing to do with editing.
+    ///
+    /// Top level only, which is what the column check is for: a name inside a
+    /// function may shadow anything it likes, and this is about the one scope
+    /// where a repeat is an error rather than a choice.
+    #[test]
+    fn no_name_is_declared_twice_at_the_top_of_the_script() {
+        let js = include_str!("../ui/app.js");
+        let mut seen: Vec<String> = Vec::new();
+        let mut looked = 0;
+
+        for line in js.lines() {
+            let rest = ["async function ", "function ", "let ", "const ", "var "]
+                .iter()
+                .find_map(|head| line.strip_prefix(head));
+            let Some(rest) = rest else { continue };
+
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.is_empty() {
+                continue;
+            }
+
+            looked += 1;
+            assert!(
+                !seen.contains(&name),
+                "`{name}` is declared twice at the top of the script, which is a                  SyntaxError that takes the whole module with it"
+            );
+            seen.push(name);
+        }
+
+        // A floor rather than a count: what it catches is the scan above quietly
+        // finding nothing, which would make everything after it pass.
+        assert!(looked > 60, "only {looked} names were checked");
     }
 
     /// Every sentence the script asks for has been written.

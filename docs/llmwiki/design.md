@@ -1619,6 +1619,37 @@ was copied is said by the `⋯` turning into a green `✓` for a moment — a ti
 rather than the word, because the button is one glyph wide and "Copied" written
 in its place would push it into the paragraph it stands beside.
 
+**Editing is a mode of the pane, not a separate place.** A toggle in the status
+bar, off by default, turns the reading pane into what the document comes to on
+the left and the words on the right. The left-hand half is a real `.document`
+rendered by the same function the reading pane uses, so what is typed is shown
+where it will be read; each half scrolls itself.
+
+**That is the whole of it.** The two halves do not follow each other, and there
+is no highlight of where the caret is in the other one. Three versions of this
+pane tried to do that, and the third was on the point of working when the cost of
+it was counted: a hidden ruler of the document's text laid out beside the editor
+to answer a question a `textarea` cannot, or a third-party editor that answers it
+directly, plus the handlers, the guards against the two halves pushing each other
+along, and the line numbers threaded through the renderer and the window to make
+either possible. For a pane whose job is to show somebody what their Markdown
+comes to, that is a great deal of machinery to answer "where am I" about a
+document already on the screen twice.
+
+So: edit on the right, watch the left, save, leave. `Rendered` carries a block's
+number and not its line, `window_html` writes the number and nothing else, and
+the renderer has one setting rather than two.
+
+**The words are still edited in CodeMirror**, which is the only third-party code
+in this window. It was brought in for `lineBlockAtHeight` — the question above,
+which a `textarea` will not answer — and it stays for what came with it: the
+syntax highlighting, the undo history and the bracket matching that Markdown,
+punctuation as much as words, wants anyway. It is committed to `ui/vendor/`
+rather than installed, because this window has no build chain and the content
+policy is `default-src 'self'`: a dependency that has to be fetched is one that
+cannot be, on a machine that is offline, which is where this program is meant to
+work. `ui/vendor/README.md` says how to rebuild it.
+
 ### 11.6 Conflict review
 
 The conflict panel is the GUI's main reason to exist. The CLI can report that

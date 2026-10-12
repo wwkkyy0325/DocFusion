@@ -12,7 +12,7 @@ use docfusion_core::text;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 /// Bumped whenever the schema below changes, tracked in `PRAGMA user_version`.
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 /// How long a writer waits for another writer, in milliseconds.
 ///
@@ -24,7 +24,7 @@ const BUSY_TIMEOUT_MS: u32 = 5_000;
 const COLUMNS: &str = "id, source_path, source_size, source_mtime, mime, output_path, \
                        engine_id, engine_version, model, prompt_version, \
                        status, verified, conflict_count, created_at, updated_at, output_hash, \
-                       source_copy";
+                       source_copy, edited_at";
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS documents (
@@ -101,6 +101,15 @@ const MIGRATION_V3: &str = "ALTER TABLE documents ADD COLUMN source_copy TEXT";
 /// as being the `documents` table's key. Writing an entry is then a delete and
 /// an insert by rowid — two lookups — rather than a delete by matching a
 /// column, which FTS5 answers by reading the whole content table.
+/// Version 5 records that somebody has edited a document by hand.
+///
+/// **The document is the pipeline's output, and an edit makes it something
+/// else** — no longer what the engines read, and no longer reproducible from
+/// the source. That is worth knowing: the list says so, and a re-read can warn
+/// before it takes the edit away. `None` means nobody has, which is every
+/// document until somebody opens the editor.
+const MIGRATION_V5: &str = "ALTER TABLE documents ADD COLUMN edited_at TEXT";
+
 const MIGRATION_V4: &str = r#"
 CREATE VIRTUAL TABLE IF NOT EXISTS text USING fts5(
   document_id UNINDEXED,
@@ -173,6 +182,12 @@ pub struct DocumentRecord {
     /// record written before copies existed, and for one whose source could not
     /// be found when it was re-read.
     pub source_copy: Option<PathBuf>,
+    /// When somebody last edited the body by hand, or `None`.
+    ///
+    /// The record of an edit rather than the edit itself: the words are in the
+    /// file, and this is what says that file is no longer only what the engines
+    /// read.
+    pub edited_at: Option<String>,
 }
 
 /// Current UTC time as RFC 3339, to the second.
@@ -248,6 +263,9 @@ impl Manifest {
         }
         if existing < 4 {
             connection.execute_batch(MIGRATION_V4)?;
+        }
+        if existing < 5 {
+            connection.execute_batch(MIGRATION_V5)?;
         }
 
         if existing != SCHEMA_VERSION {
@@ -335,8 +353,8 @@ impl Manifest {
                  id, source_path, source_size, source_mtime, mime, output_path,
                  engine_id, engine_version, model, prompt_version,
                  status, verified, conflict_count, created_at, updated_at, output_hash,
-                 source_copy
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                 source_copy, edited_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(id) DO UPDATE SET
                  source_path    = excluded.source_path,
                  source_size    = excluded.source_size,
@@ -352,7 +370,8 @@ impl Manifest {
                  conflict_count = excluded.conflict_count,
                  updated_at     = excluded.updated_at,
                  output_hash    = excluded.output_hash,
-                 source_copy    = excluded.source_copy",
+                 source_copy    = excluded.source_copy,
+                 edited_at      = excluded.edited_at",
             params![
                 record.id,
                 path_to_string(&record.source_path),
@@ -371,6 +390,7 @@ impl Manifest {
                 record.updated_at,
                 record.output_hash,
                 record.source_copy.as_deref().map(path_to_string),
+                record.edited_at,
             ],
         )?;
 
@@ -614,6 +634,7 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<DocumentRecord> {
         updated_at: row.get(14)?,
         output_hash: row.get(15)?,
         source_copy: row.get::<_, Option<String>>(16)?.map(PathBuf::from),
+        edited_at: row.get(17)?,
     })
 }
 
@@ -687,6 +708,7 @@ mod tests {
             updated_at: now,
             output_hash: Some("b".repeat(64)),
             source_copy: None,
+            edited_at: None,
         }
     }
 

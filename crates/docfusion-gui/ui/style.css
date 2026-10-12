@@ -532,6 +532,66 @@ main {
   border-color: var(--ok);
 }
 
+/* ── the editor ─────────────────────────────────────────────────────────── */
+
+/* The document twice, side by side: what it comes to on the left and the words
+   on the right, which is the arrangement an editor with a preview has had since
+   the preview was invented — the text where it is typed, the result where it is
+   read, and neither one hidden behind a tab.
+
+   `height: 100%` rather than a growing column, so each half scrolls itself. Two
+   documents as long as each other in one scroller is one that cannot be read
+   while the other is scrolled to the paragraph being edited. */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+/* The words' half, and it is the box the editor is built in rather than the
+   editor itself: CodeMirror fills whatever it is given and scrolls inside it.
+   The divider is drawn inside the box rather than on it, so that the width it
+   wraps its text in is the width its box says it is. */
+.source-editor {
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--wash);
+  box-shadow: inset 1px 0 0 var(--line);
+}
+
+/* The preview half: the reading pane, in a box of its own. Its own width rather
+   than the reading pane's, because half a window is not 78 characters — the
+   column is whatever the column is, and the measure is what the reading pane is
+   for. */
+.split .document {
+  height: 100%;
+  padding: 22px 30px 40px;
+  max-width: none;
+  margin: 0;
+  overflow: auto;
+}
+
+/* The preview has no menus, so it has none of what a reading pane has for them:
+   the strip they are drawn in, and the wash under the pointer that makes them
+   belong to a block. Both are furniture for a control that is not here. */
+.split .document .block { padding-right: 0; }
+.split .document .block:hover { background: none; box-shadow: none; }
+
+/* What the status bar says while the editor is open, and it is the one thing
+   there that is a state rather than a control. */
+#status .unsaved { color: var(--warn); }
+
+/* The list's mark on a document somebody has edited by hand. */
+.record .edited {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ── the report on a document ───────────────────────────────────────────── */
 
 .findings {
@@ -1072,7 +1132,9 @@ button.link:hover { background: none; filter: brightness(1.15); }
    One shape for both, because they are the same kind of thing and a second
    dialog that looked slightly different would read as a different kind. */
 #record-question,
-#export-question {
+#export-question,
+#unsaved-question,
+#rerun-question {
   width: min(30rem, calc(100vw - 32px));
   padding: 20px 22px 16px;
   border: 1px solid var(--line);
@@ -1084,12 +1146,16 @@ button.link:hover { background: none; filter: brightness(1.15); }
 /* Dimmed rather than hidden, so that what is being asked about stays visible
    behind the question. `color-scheme` would draw it black in both themes. */
 #record-question::backdrop,
-#export-question::backdrop {
+#export-question::backdrop,
+#unsaved-question::backdrop,
+#rerun-question::backdrop {
   background: light-dark(rgb(15 23 42 / 0.35), rgb(0 0 0 / 0.55));
 }
 
 #record-question h2,
-#export-question h2 {
+#export-question h2,
+#unsaved-question h2,
+#rerun-question h2 {
   margin: 0 0 6px;
   font-size: 1.05em;
   /* The export one is a document's own words — a block is named by the first of
@@ -1098,7 +1164,9 @@ button.link:hover { background: none; filter: brightness(1.15); }
 }
 
 #record-question .lead,
-#export-question .lead {
+#export-question .lead,
+#unsaved-question .lead,
+#rerun-question .lead {
   margin: 0 0 4px;
   color: var(--muted);
   font-size: 13px;
@@ -1134,7 +1202,9 @@ button.link:hover { background: none; filter: brightness(1.15); }
 }
 
 #record-question .actions,
-#export-question .actions {
+#export-question .actions,
+#unsaved-question .actions,
+#rerun-question .actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;

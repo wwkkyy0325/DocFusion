@@ -316,6 +316,13 @@ pub struct Record {
     pub status: String,
     pub conflicts: u32,
     pub created_at: String,
+    /// Whether somebody has edited this document's words by hand.
+    ///
+    /// A document that has is no longer what the engines read, and the row says
+    /// so because the difference matters: a re-read will take it away, and
+    /// somebody looking at the list should be able to see which ones they have
+    /// touched before that happens.
+    pub edited: bool,
 }
 
 impl Record {
@@ -338,6 +345,7 @@ impl Record {
             status: record.status.as_str().to_owned(),
             conflicts: record.conflict_count,
             created_at: record.created_at.clone(),
+            edited: record.edited_at.is_some(),
         }
     }
 }
@@ -539,6 +547,7 @@ mod tests {
             updated_at: "2026-10-08T12:00:00Z".into(),
             output_hash: None,
             source_copy: None,
+            edited_at: None,
         }
     }
 }

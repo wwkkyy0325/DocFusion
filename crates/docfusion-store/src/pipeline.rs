@@ -241,6 +241,68 @@ impl Pipeline {
         }
     }
 
+    /// Writes somebody's own words into a document's Markdown.
+    ///
+    /// **The body only.** The front matter and the conflict report are this
+    /// program's — one is the record of where the document came from and the
+    /// other is what the engines disagreed about — and somebody editing the
+    /// words of a document has no business in either. `render::parts` is what
+    /// keeps the three apart and `joined` is what puts them back, so an editor
+    /// cannot damage what it was never handed.
+    ///
+    /// **The record is marked**, because the file stops being what the engines
+    /// read the moment somebody types in it: it is what they read with a
+    /// person's own words on top, and a re-read will take the difference away.
+    /// The mark is what lets the window say so before that happens.
+    ///
+    /// **The output hash moves with it**, since the file changed — `reconcile`
+    /// recognises a document's output by that hash, and leaving it stale would
+    /// make this file look like somebody else's.
+    ///
+    /// The clock is passed in rather than read here, like `created_at` in
+    /// [`Pipeline::ingest`], so that the same edit saved twice is the same
+    /// bytes twice.
+    pub fn save_body(
+        &self,
+        query: &str,
+        body: &str,
+        at: &str,
+    ) -> Result<DocumentRecord, PipelineError> {
+        let record = self.resolve(query)?;
+        let path = self.root.join(&record.output_path);
+
+        let markdown = std::fs::read_to_string(&path).map_err(|source| PipelineError::Read {
+            path: path.clone(),
+            source,
+        })?;
+
+        let split = render::parts(&markdown);
+        let written = render::edited(&split.with_body(body).joined(), at);
+
+        std::fs::write(&path, written.as_bytes()).map_err(|source| PipelineError::Write {
+            path: path.clone(),
+            source,
+        })?;
+
+        let saved = DocumentRecord {
+            updated_at: at.to_owned(),
+            output_hash: Some(content_hash(written.as_bytes())),
+            edited_at: Some(at.to_owned()),
+            ..record
+        };
+
+        self.manifest.upsert(&saved)?;
+
+        // The words that are now on disk are the words a search should find.
+        self.manifest.index_text(
+            &saved.id,
+            &source_name(&saved.source_path),
+            render::body_of(&written),
+        )?;
+
+        Ok(saved)
+    }
+
     /// Takes a document out of the index and leaves its Markdown where it is.
     ///
     /// The reversible half of taking a document out of the knowledge base, and
@@ -428,6 +490,13 @@ impl Pipeline {
                 // content is the same, so `keep_source_of` above has already
                 // put it back if it had gone.
                 source_copy: Some(self.relative(&copy)),
+                // **The file was just written by the engines**, so whatever
+                // somebody had typed into it is gone, and a mark saying they
+                // had is a mark about a file that no longer exists. Carried over
+                // from the old record by the spread below until this line was
+                // added, which made `reindex` the one re-read that said the
+                // document was still edited while overwriting the edit.
+                edited_at: None,
                 ..record.clone()
             })?;
 
@@ -762,6 +831,11 @@ impl Pipeline {
                 // document itself never changed.
                 output_hash: Some(content_hash(markdown.as_bytes())),
                 source_copy: Some(self.relative(&copy)),
+                // The file was just written by the engines, so whatever anybody
+                // had typed into it before this is gone with it. A document
+                // re-added without being read keeps its mark, because this is
+                // the path that does not run: `reuse` returns long before here.
+                edited_at: None,
             })?;
             self.manifest.add_alias(&id, source)?;
 
@@ -1207,6 +1281,7 @@ mod tests {
             .manifest()
             .upsert(&DocumentRecord {
                 source_copy: None,
+                edited_at: None,
                 ..record
             })
             .unwrap();
@@ -1502,6 +1577,7 @@ mod tests {
             updated_at: now_iso8601(),
             output_hash: None,
             source_copy: None,
+            edited_at: None,
         }
     }
 
@@ -1793,6 +1869,110 @@ mod tests {
             "got {error}"
         );
         assert!(error.to_string().contains("OCR"), "{error}");
+    }
+
+    /// The clock the edits below are saved with, so that the bytes are not a
+    /// function of when the test ran.
+    const AT: &str = "2026-10-12T09:00:00Z";
+
+    /// **An edit reaches the body and nothing else.**
+    ///
+    /// The front matter is where the document says what it came from and the
+    /// report is what the engines disagreed about. Neither is anything a person
+    /// editing the words of a document should be able to damage, and neither is
+    /// anywhere an editor is handed.
+    #[test]
+    fn an_edit_reaches_the_body_and_nothing_else() {
+        let (dir, mut pipeline) = setup();
+        let source = write_source(dir.path(), "notes.txt", "the words");
+        let wrote = pipeline.ingest(&source, Mode::Apply).unwrap();
+
+        let before = render::parts(&markdown_at(&wrote.output)).front.to_owned();
+
+        pipeline
+            .save_body(&wrote.id, "# somebody's heading\n\nnew words\n", AT)
+            .unwrap();
+
+        let after = markdown_at(&wrote.output);
+        let split = render::parts(&after);
+
+        assert_eq!(split.body, "# somebody's heading\n\nnew words\n");
+        assert!(split.front.contains("source:"), "the provenance went with it: {after}");
+        assert!(split.front.contains("sha256:"), "{after}");
+        assert_eq!(split.report, "", "there was no report to damage");
+
+        // And the only thing that changed about the front matter is the note,
+        // which is not the same as the front matter it had.
+        assert_eq!(
+            render::edited(&before, AT).replace("edited_at: ", ""),
+            split.front.replace("edited_at: ", "")
+        );
+    }
+
+    /// **Saving a document nobody typed in writes the note and nothing else.**
+    /// The alternative is an editor that rewrites the whole file on every save,
+    /// which is a diff on a document that did not change.
+    #[test]
+    fn saving_the_same_words_changes_only_the_note() {
+        let (dir, mut pipeline) = setup();
+        let source = write_source(dir.path(), "notes.txt", "the words");
+        let wrote = pipeline.ingest(&source, Mode::Apply).unwrap();
+
+        let before = markdown_at(&wrote.output);
+        let body = render::parts(&before).body.to_owned();
+
+        pipeline.save_body(&wrote.id, &body, AT).unwrap();
+
+        assert_eq!(
+            markdown_at(&wrote.output),
+            render::edited(&before, AT),
+            "a save that changed nothing changed something"
+        );
+    }
+
+    /// **The record says the file is no longer what the engines read**, and the
+    /// words on disk are the words a search finds.
+    #[test]
+    fn an_edit_is_recorded_and_is_what_a_search_finds() {
+        let (dir, mut pipeline) = setup();
+        let source = write_source(dir.path(), "notes.txt", "the words");
+        let wrote = pipeline.ingest(&source, Mode::Apply).unwrap();
+
+        assert!(pipeline.resolve(&wrote.id).unwrap().edited_at.is_none());
+
+        let saved = pipeline
+            .save_body(&wrote.id, "somebody's own words\n", AT)
+            .unwrap();
+
+        assert_eq!(saved.edited_at.as_deref(), Some(AT));
+        assert_eq!(
+            pipeline.resolve(&wrote.id).unwrap().edited_at.as_deref(),
+            Some(AT)
+        );
+
+        assert_eq!(pipeline.search("somebody", 10).unwrap().len(), 1, "not indexed");
+        assert!(pipeline.search("the words", 10).unwrap().is_empty(), "the old words are still indexed");
+    }
+
+    /// **Reading the document again takes the mark away with the edit**, which
+    /// is the whole reason the mark exists: it is what the window asks about
+    /// before letting this happen.
+    #[test]
+    fn a_reread_writes_the_engines_words_back_and_clears_the_mark() {
+        let (dir, mut pipeline) = setup();
+        let source = write_source(dir.path(), "notes.txt", "the words");
+        let wrote = pipeline.ingest(&source, Mode::Apply).unwrap();
+
+        let saved = pipeline
+            .save_body(&wrote.id, "somebody's own words\n", AT)
+            .unwrap();
+
+        pipeline.reindex(&saved, Mode::Apply).unwrap();
+
+        let after = pipeline.resolve(&wrote.id).unwrap();
+
+        assert!(after.edited_at.is_none(), "the mark outlived the edit");
+        assert!(!markdown_at(&wrote.output).contains("somebody"), "the edit outlived the mark");
     }
 
     #[test]

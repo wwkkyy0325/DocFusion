@@ -310,6 +310,7 @@ mod tests {
             .manifest()
             .upsert(&DocumentRecord {
                 source_copy: None,
+                edited_at: None,
                 ..record
             })
             .unwrap();
@@ -337,6 +338,7 @@ mod tests {
             .manifest()
             .upsert(&DocumentRecord {
                 source_copy: None,
+                edited_at: None,
                 ..record
             })
             .unwrap();
