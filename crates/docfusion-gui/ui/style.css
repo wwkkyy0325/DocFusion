@@ -671,6 +671,17 @@ main {
 .reading .engine { margin: 0 0 5px; font-size: 12px; }
 .reading .engine .id { margin-left: 6px; color: var(--muted); font-size: 11px; }
 
+/* Which of the two the document is holding. A mark rather than part of the
+   name, because the name is about the reading and this is about the file. */
+.reading .engine .side {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: var(--wash);
+  color: var(--muted);
+  font-size: 11px;
+}
+
 /* What the reading was made of. Its own line under the engine, because it is
    about the reading rather than about the engine. */
 .reading .shape { margin: 0 0 6px; font-size: 11px; line-height: 1.45; color: var(--muted); }
@@ -690,6 +701,17 @@ main {
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* Where the two readings differ, marked on both sides.
+   The existing warning colour rather than a new one — a difference is something
+   to look at, not a fourth kind of thing. The colour is on the *text*, not only
+   on the wash behind it: the washes in this theme are a shade or two apart from
+   the panel they sit on, and at 12px a shade is not a highlight. */
+.reading pre mark.differ {
+  border-radius: 2px;
+  background: var(--warn-wash);
+  color: var(--warn);
 }
 
 .failure {

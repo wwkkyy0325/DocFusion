@@ -12,7 +12,7 @@
 
 use regex::RegexSet;
 
-use crate::ir::{Block, Conflict, ConflictKind, Rect, Shapes, Variant};
+use crate::ir::{Block, Conflict, ConflictKind, Rect, Shapes, Side, Variant};
 
 /// Below this, a block is one the engine was unsure of itself.
 const DEFAULT_CONFIDENCE: f32 = 0.85;
@@ -225,7 +225,11 @@ fn aligned_by_position(page: u32, primary: &[Block], secondary: &[Block]) -> Opt
 
     for left in primary {
         let Some(index) = best_match(left, secondary, &matched) else {
-            conflicts.push(conflict(page, ConflictKind::StructuralMismatch, &[left]));
+            conflicts.push(conflict(
+                page,
+                ConflictKind::StructuralMismatch,
+                &[(left, Side::Primary)],
+            ));
             continue;
         };
 
@@ -233,7 +237,11 @@ fn aligned_by_position(page: u32, primary: &[Block], secondary: &[Block]) -> Opt
         let right = &secondary[index];
 
         if normalize(&block_text(left)) != normalize(&block_text(right)) {
-            conflicts.push(conflict(page, ConflictKind::TextMismatch, &[left, right]));
+            conflicts.push(conflict(
+                page,
+                ConflictKind::TextMismatch,
+                &[(left, Side::Primary), (right, Side::Secondary)],
+            ));
         }
     }
 
@@ -242,7 +250,14 @@ fn aligned_by_position(page: u32, primary: &[Block], secondary: &[Block]) -> Opt
     // dropped, not a reordering.
     for (index, right) in secondary.iter().enumerate() {
         if !matched[index] {
-            conflicts.push(conflict(page, ConflictKind::StructuralMismatch, &[right]));
+            // From the second engine, and **the document does not contain it**.
+            // The reading looks exactly like the one above, where the document
+            // does — which is why the side is recorded rather than worked out.
+            conflicts.push(conflict(
+                page,
+                ConflictKind::StructuralMismatch,
+                &[(right, Side::Secondary)],
+            ));
         }
     }
 
@@ -285,18 +300,25 @@ fn aligned_by_text(page: u32, primary: &[Block], secondary: &[Block]) -> Vec<Con
         return Vec::new();
     }
 
-    let variants: Vec<Variant> = [(&left, primary), (&right, secondary)]
-        .into_iter()
-        .filter_map(|(text, blocks)| {
-            blocks.first().map(|block| Variant {
-                engine: block.engine.clone(),
-                text: text.clone(),
-                // The whole side, not the first block of it: this variant is
-                // the page, and its shape is the page's.
-                shapes: Shapes::of(blocks),
-            })
+    let variants: Vec<Variant> = [
+        (&left, primary, Side::Primary),
+        (&right, secondary, Side::Secondary),
+    ]
+    .into_iter()
+    .filter_map(|(text, blocks, side)| {
+        blocks.first().map(|block| Variant {
+            engine: block.engine.clone(),
+            text: text.clone(),
+            // Paired with the list above rather than derived from the engine:
+            // which side a reading is on is a fact about this comparison, and
+            // the engine's name is only what it is called.
+            side,
+            // The whole side, not the first block of it: this variant is
+            // the page, and its shape is the page's.
+            shapes: Shapes::of(blocks),
         })
-        .collect();
+    })
+    .collect();
 
     // One side saw text and the other saw none: that is a region to one engine
     // and not to the other, which is a different finding from two readings of
@@ -320,9 +342,15 @@ fn aligned_by_text(page: u32, primary: &[Block], secondary: &[Block]) -> Vec<Con
 ///
 /// The region is the union of theirs, which is where the disagreement is
 /// whatever side is right about the edges.
-fn conflict(page: u32, kind: ConflictKind, blocks: &[&Block]) -> Conflict {
+///
+/// Each block is paired with the side it came from, and **the caller is the one
+/// that knows it**: a block carries its engine's name, and the name of the
+/// engine says nothing about whether its reading went into the document. A block
+/// the second engine found and the first did not is the case that makes this
+/// matter — see [`Side`].
+fn conflict(page: u32, kind: ConflictKind, blocks: &[(&Block, Side)]) -> Conflict {
     let mut bbox: Option<Rect> = None;
-    for block in blocks {
+    for (block, _) in blocks {
         if let Some(rect) = block.bbox {
             match &mut bbox {
                 Some(covered) => covered.union(&rect),
@@ -337,9 +365,10 @@ fn conflict(page: u32, kind: ConflictKind, blocks: &[&Block]) -> Conflict {
         kind,
         variants: blocks
             .iter()
-            .map(|block| Variant {
+            .map(|(block, side)| Variant {
                 engine: block.engine.clone(),
                 text: block_text(block),
+                side: *side,
                 shapes: Shapes::of(std::slice::from_ref(block)),
             })
             .collect(),
@@ -688,6 +717,53 @@ mod tests {
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].kind, ConflictKind::StructuralMismatch);
         assert_eq!(conflicts[0].variants.len(), 1);
+    }
+
+    /// **The pair that look identical and are not.**
+    ///
+    /// A region one engine saw and the other did not produces the same conflict
+    /// either way round: one variant, structural, with an engine's name on it.
+    /// What differs is whether the document contains it — and nothing said so
+    /// until the side was carried, which left the report unable to tell a reader
+    /// which of the two they were looking at.
+    ///
+    /// Position does not answer it either, which is the point of the second
+    /// half: in both cases the reading is `variants[0]`, and in one of them the
+    /// document does **not** contain it.
+    #[test]
+    fn a_region_only_one_engine_saw_remembers_which_one() {
+        let only_the_first = compare(0, &[at("a", "Signature", None)], &[]);
+        assert_eq!(only_the_first.len(), 1);
+        assert_eq!(only_the_first[0].variants.len(), 1);
+        assert_eq!(
+            only_the_first[0].variants[0].side,
+            Side::Primary,
+            "the document has this one"
+        );
+
+        let only_the_second = compare(0, &[], &[at("b", "Signature", None)]);
+        assert_eq!(only_the_second.len(), 1);
+        assert_eq!(only_the_second[0].variants.len(), 1);
+        assert_eq!(
+            only_the_second[0].variants[0].side,
+            Side::Secondary,
+            "the document does not have this one, and the report has to be able to say so"
+        );
+    }
+
+    /// Two readings of one region are the document's and the other engine's, in
+    /// that order — the order `compare` takes its arguments in.
+    #[test]
+    fn two_readings_of_one_region_are_the_first_engines_and_the_second() {
+        let conflicts = compare(
+            0,
+            &[at("a", "Revenue increased by 13%", None)],
+            &[at("b", "Revenue increased by 12%", None)],
+        );
+
+        assert_eq!(conflicts[0].variants.len(), 2);
+        assert_eq!(conflicts[0].variants[0].side, Side::Primary);
+        assert_eq!(conflicts[0].variants[1].side, Side::Secondary);
     }
 
     /// A table's text lives in its cells, so comparing the field alone would

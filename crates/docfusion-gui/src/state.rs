@@ -322,6 +322,17 @@ pub struct Conflict {
 pub struct Reading {
     pub engine: String,
     pub text: String,
+    /// The report's phrase for which side of the comparison this reading is on
+    /// — `in the document`, or the other engine's.
+    ///
+    /// Kept as the phrase rather than as a flag, and translated on screen the
+    /// way the kinds are: what the file says and what the window says are
+    /// allowed to differ, and a value this does not recognise is shown as it
+    /// arrived rather than dropped.
+    ///
+    /// `None` for a document read before the side was recorded, which is one
+    /// nobody has read again since.
+    pub side: Option<String>,
     /// `None` for a report that did not say — an older document, or a line this
     /// does not understand. The text is still worth showing; the shape is
     /// simply not known.

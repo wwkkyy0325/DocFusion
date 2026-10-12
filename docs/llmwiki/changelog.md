@@ -4,6 +4,71 @@ Append-only meaningful changes. Newest entries at the top.
 
 ---
 
+## 2026-10-13 — Which of the two readings is the document's, and where they differ
+
+**What:** Two questions a real conflict could not answer, both asked by the
+person looking at the panel that exists to be looked at.
+
+**The panel showed two readings and said nothing about which was the file's.**
+It labelled each with its engine and stopped there, so the answer — the document
+*is* one of them — was left to be worked out. It is now written on the engine's
+line: `· in the document` or `· the other engine's reading`, in the report, so
+the answer travels with the document rather than being recomputed on screen.
+That is the same place and the same reasoning as the shape counts.
+
+**This is not the thing §6.4 forbids, and the distinction is the whole
+argument.** That rule is about ranking — *"No reading is marked preferred… a
+report that quietly picked would be the silent resolution this exists to
+prevent"* — and nothing here ranks. Both readings are still shown in full,
+neither is called better, and the note above the panel still says the tool does
+not judge between them. What is added is a fact about the artifact, which §8.5
+had already stated: *"the primary's reading is still what the document
+contains."*
+
+**And the side cannot be worked out, only recorded.** Two plausible derivations
+were checked and both are wrong:
+
+- `engines:` in the front matter is `backend_ids()`, which returns `[vision,
+  ocr]` — the backends that are *configured*, whether or not they read the page,
+  in an order that means nothing. Taking the first for the primary is reading a
+  coincidence.
+- Position in the conflict is not an answer either, and this is the case that
+  matters. `aligned_by_position` emits a `StructuralMismatch` carrying **only
+  the second engine's** reading when it found a region the primary did not — so
+  the reading at `variants[0]` is sometimes a reading the document does not
+  contain at all. A positional guess would be wrong exactly where being right
+  matters most, which is the dropped region §8.5 calls the dangerous class.
+
+So the side is set where it is known, in `compare`, and a test pins the pair of
+one-variant conflicts that look identical and are not.
+
+**The file keeps both readings verbatim; the window marks where they part.**
+Two thousand characters of Chinese differing in a dozen recognised characters is
+not something anyone compares by eye, and the differences in the case that
+prompted this were `LCSC`/`J儿C`, `TXD0`/`TXDe`, `IO8`/`I08` — three characters
+buried in a page. The window now marks what each side has that the other does
+not, in both readings.
+
+**Whitespace is not a difference, and that is the whole trick.** One of these
+two readings is a screen of text flattened onto a single line and the other
+keeps its line breaks, so a comparison that counted whitespace would mark nearly
+every character on the page — the failure mode of the obvious implementation,
+and the one that would have shipped without the check. There is no test that can
+run the script, so the rule is pinned structurally and the behaviour was checked
+by running the functions against the real pair: it finds `儿`, `e`, `En` and the
+`O`/`0` confusions, and leaves the text both agree on alone.
+
+**One consequence, and it is the reason this is worth knowing.** The report is
+written when a document is read, so **documents already in the library keep
+their old report until they are read again**. The document that prompted this
+shows no side marker until `docfusion reindex` runs over it. That is the right
+behaviour — an absent side says nothing rather than guessing — but it is not
+obvious, and it is the first thing to explain to anybody who upgrades and looks.
+
+610 tests.
+
+---
+
 ## 2026-10-13 — 0.1.1, which is 0.1.0 with the four things it got wrong
 
 **What:** A release, because the four fixes above only exist on `main` until one

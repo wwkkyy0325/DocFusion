@@ -7,7 +7,7 @@
 use comrak::nodes::NodeValue;
 use comrak::{Arena, Options, format_commonmark, format_html, parse_document};
 
-use crate::ir::{Block, BlockKind, ConflictKind, Document};
+use crate::ir::{Block, BlockKind, ConflictKind, Document, Side};
 use crate::text::{is_cjk, needs_space};
 
 /// Characters that change the meaning of a line when they begin one.
@@ -235,14 +235,17 @@ fn conflicts_markdown(out: &mut String, document: &Document) {
         for variant in &conflict.variants {
             // The engine, and what it read the region as, on one line: it is
             // the same sentence. `rapidocr` read this, and read it as running
-            // text and nothing else.
+            // text and nothing else. The side goes after it for the reason the
+            // counts are here at all: the answer travels with the document
+            // rather than being worked out again on screen.
             out.push_str(&format!(
-                "    {} — headings {}, lists {}, tables {}, text {}\n",
+                "    {} — headings {}, lists {}, tables {}, text {} · {}\n",
                 variant.engine.as_str(),
                 variant.shapes.headings,
                 variant.shapes.lists,
                 variant.shapes.tables,
                 variant.shapes.text,
+                say_side(variant.side),
             ));
             for line in variant.text.lines() {
                 out.push_str("    ");
@@ -258,6 +261,34 @@ fn describe(kind: &ConflictKind) -> &'static str {
     match kind {
         ConflictKind::TextMismatch => "the engines read it differently",
         ConflictKind::StructuralMismatch => "one engine found text the other did not",
+    }
+}
+
+/// Which of the readings below is the one the document holds.
+///
+/// **This says where a reading is, not which one is right.** §6.4 of the design
+/// is explicit that "no reading is marked preferred — the tool has no basis for
+/// choosing, and a report that quietly picked would be the silent resolution
+/// this exists to prevent." That rule is untouched: both readings are still
+/// shown, in full, and neither is called the better one.
+///
+/// What is added is a fact about the artifact, and §8.5 already states it as
+/// one: "when the verifier recovers text the primary dropped, the primary's
+/// reading is still what the document contains." Without it the section lists
+/// two readings and leaves the reader to guess which of them they are holding —
+/// which is a question with an answer, and one nothing else in the file gives.
+///
+/// The second engine's reading is *not* in the document, and that is the more
+/// useful half of this: a region it found and the primary did not is a region
+/// the document is missing, and the file should say so rather than presenting
+/// both sides even-handedly.
+///
+/// English, like the rest of the report, which is an artifact rather than a
+/// screen — the window translates it the same way it translates the kinds.
+fn say_side(side: Side) -> &'static str {
+    match side {
+        Side::Primary => "in the document",
+        Side::Secondary => "the other engine's reading",
     }
 }
 
@@ -853,7 +884,9 @@ pub fn slug(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Conflict, DocMeta, EngineId, Page, PageProvenance, Shapes, SourceRef, Variant};
+    use crate::ir::{
+        Conflict, DocMeta, EngineId, Page, PageProvenance, Shapes, Side, SourceRef, Variant,
+    };
     use comrak::nodes::NodeValue;
     use comrak::{Arena, Options, parse_document};
     use std::path::PathBuf;
@@ -895,9 +928,17 @@ mod tests {
             kind,
             variants: readings
                 .iter()
-                .map(|(engine, text)| Variant {
+                .enumerate()
+                .map(|(at, (engine, text))| Variant {
                     engine: EngineId::from(*engine),
                     text: (*text).to_owned(),
+                    // The first reading is the one the document holds, which is
+                    // the order `compare` produces them in.
+                    side: if at == 0 {
+                        Side::Primary
+                    } else {
+                        Side::Secondary
+                    },
                     // One paragraph, which is what a reading of a few words by
                     // an engine that has no other kind of block is.
                     shapes: Shapes::of(&[Block::text(

@@ -180,6 +180,17 @@ const TEXT = {
       "the engines read it differently": "两份读法的文字不一样",
       "one engine found text the other did not": "一份读到了另一份没有的文字",
     },
+    // Which of the readings below is the one in the file. **A fact about the
+    // document, not a verdict on the readings** — the tool still does not say
+    // which is right, and the note above says so. Without it the panel listed
+    // two readings and left the reader to guess which one they were holding.
+    //
+    // Keyed on the phrase the report writes, exactly like `kinds`, so a value
+    // this does not know is shown as it arrived rather than dropped.
+    sides: {
+      "in the document": "文档里的这一份",
+      "the other engine's reading": "另一个引擎读到的",
+    },
     engine_names: {
       "openai-compatible": "云端模型",
       rapidocr: "本机识别",
@@ -560,6 +571,97 @@ function shapeLine(shapes) {
 /// settling it. Side by side is the only arrangement that makes the comparison
 /// possible, and each reading is capped in height so that a disagreement about
 /// a whole page does not become two pages of text on the screen.
+/// A reading, cut into the pieces a difference is measured in.
+///
+/// Runs of whitespace come through whole and everything else comes through a
+/// character at a time, because there are no words to cut Chinese on and a
+/// character is the unit somebody reading it is looking at.
+function tokens(text) {
+  return text.match(/\s+|[^\s]/gu) ?? [];
+}
+
+const isBlank = (token) => /^\s+$/u.test(token);
+
+/// Whether two tokens count as the same for the purpose of finding differences.
+///
+/// **Two runs of whitespace are the same however they are made.** One of these
+/// readings is a page's worth of text flattened onto one line and the other has
+/// its line breaks kept, so a difference that counted newlines would mark
+/// nearly every character on the page — on the pair of readings most in need of
+/// being told apart.
+const sameToken = (left, right) => (isBlank(left) && isBlank(right)) || left === right;
+
+/// The biggest comparison worth doing, in cells.
+///
+/// The table below is `length × length` of `Uint32` and this runs every time the
+/// panel is drawn, so the number is about not stalling the window rather than
+/// about correctness: past it, the readings are shown as they were written and
+/// nothing is claimed about where they differ. A pair this far apart shares
+/// little, and marking nearly every character says less than saying nothing.
+const MARK_LIMIT = 4_000_000;
+
+/// Which tokens each side has that the other does not.
+///
+/// `null` when there is nothing to compare — one reading means the difference is
+/// that the other engine did not see the region at all, which the line above
+/// already says — or when the pair is too large to compare.
+function onlyTokens(left, right) {
+  const [n, m] = [left.length, right.length];
+  if (n * m > MARK_LIMIT) return null;
+
+  // `best[i][j]` is the length of the longest common subsequence of `left[i..]`
+  // and `right[j..]`, filled from the far end so the walk below can go forwards.
+  const width = m + 1;
+  const best = new Uint32Array((n + 1) * width);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      best[i * width + j] = sameToken(left[i], right[j])
+        ? best[(i + 1) * width + j + 1] + 1
+        : Math.max(best[(i + 1) * width + j], best[i * width + j + 1]);
+    }
+  }
+
+  const inLeft = new Array(n).fill(false);
+  const inRight = new Array(m).fill(false);
+
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (sameToken(left[i], right[j])) {
+      i += 1;
+      j += 1;
+    } else if (best[(i + 1) * width + j] >= best[i * width + j + 1]) {
+      inLeft[i++] = true;
+    } else {
+      inRight[j++] = true;
+    }
+  }
+  while (i < n) inLeft[i++] = true;
+  while (j < m) inRight[j++] = true;
+
+  return [inLeft, inRight];
+}
+
+/// One reading, with the characters only it has marked.
+///
+/// Whitespace is never marked even when only one side has it: it is what makes
+/// the two readings look different without saying anything, and highlighting it
+/// is what turns the whole page yellow.
+function marked(text, mine) {
+  const pieces = [];
+  tokens(text).forEach((token, at) => {
+    const differ = mine[at] && !isBlank(token);
+    const last = pieces.at(-1);
+
+    if (last && last.differ === differ) last.text += token;
+    else pieces.push({ differ, text: token });
+  });
+
+  return pieces.map(({ differ, text }) =>
+    differ ? node("mark", "differ", text) : document.createTextNode(text),
+  );
+}
+
 function findings(report) {
   const box = document.createElement("section");
   box.className = "findings";
@@ -575,10 +677,17 @@ function findings(report) {
       node("p", "where", `${TEXT.page(finding.page)} · ${TEXT.kinds[finding.kind] ?? finding.kind}`),
     );
 
+    // Where the two readings part company, worked out once for the pair rather
+    // than twice per side. `null` when there is no pair, or no useful answer.
+    const differs =
+      finding.readings.length === 2
+        ? onlyTokens(tokens(finding.readings[0].text), tokens(finding.readings[1].text))
+        : null;
+
     const readings = document.createElement("div");
     readings.className = "readings";
 
-    for (const reading of finding.readings) {
+    finding.readings.forEach((reading, at) => {
       const side = document.createElement("div");
       side.className = "reading";
 
@@ -591,15 +700,27 @@ function findings(report) {
         node("span", "id", reading.engine),
       );
 
+      // Which of the two the document is holding. Said plainly, and said as a
+      // fact about the file rather than as a verdict on the readings — the note
+      // above the panel is where the tool explains that it does not judge them.
+      const said = reading.side ? (TEXT.sides[reading.side] ?? reading.side) : null;
+      if (said) label.append(node("span", "side", said));
+
+      side.append(label);
+
       // What it read, and what it read it as. The second line is the whole
       // answer to a question the first one cannot answer: two engines can
       // return the same words having read completely different things.
       const shape = shapeLine(reading.shapes);
       if (shape) side.append(node("p", "shape", shape));
 
-      side.append(node("pre", "", reading.text));
+      const text = document.createElement("pre");
+      if (differs) text.append(...marked(reading.text, differs[at]));
+      else text.textContent = reading.text;
+      side.append(text);
+
       readings.append(side);
-    }
+    });
 
     entry.append(readings);
     box.append(entry);

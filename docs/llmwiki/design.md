@@ -1723,6 +1723,46 @@ no way to tell that one of them had read a table. The counts live on the
 of the report, so the answer travels with the document rather than being
 recomputed on screen.
 
+**And a reading says which side it is on.** The second real question asked of a
+real screen: two readings of a schematic, and no way to tell which of them the
+document was holding. Neither the panel nor the file said, and the answer was
+one of the two in front of the reader.
+
+This is **not** the thing §6.4 forbids. That rule is about ranking: *"No reading
+is marked preferred — the tool has no basis for choosing, and a report that
+quietly picked would be the silent resolution this exists to prevent."* Nothing
+here picks. Both readings are still shown in full, neither is called the better
+one, and the note above the panel still says the tool does not judge between
+them. What is added is a fact about the artifact, and §8.5 already states it as
+one: *"when the verifier recovers text the primary dropped, the primary's
+reading is still what the document contains."*
+
+The second engine's reading is the more useful half of this. A region it found
+and the primary did not is a region **the document is missing** — a dropped
+block, the class §8.5 calls the dangerous one — and the report should say so
+rather than presenting both sides even-handedly. The field exists for that case
+and it is tested there.
+
+`Side` is carried on the `Variant` and written after the counts, for the reason
+the counts are: the answer travels with the document. It cannot be derived
+instead. `engines:` in the front matter is `backend_ids()` — the *configured*
+backends, in no meaningful order — and the one-variant structural conflict puts
+the second engine's reading at `variants[0]`, so position is not an answer
+either. A guess there would be wrong exactly where being right matters most.
+
+**Where the two part company is marked, in the window only.** The readings are
+drawn verbatim because that is what the file has and what §11.6 insists on —
+"both are shown as each engine wrote them" — but a page of Chinese against the
+same page with a handful of recognised characters different is not something a
+person can compare. The window compares them character by character and marks
+what each has that the other does not.
+
+**Whitespace is not a difference, and that is not a detail.** One of the two
+readings in the case that prompted this is a screen of text flattened onto one
+line and the other keeps its line breaks, so they differ in whitespace on nearly
+every token. A comparison that counted it would mark the entire panel and say
+nothing — which is the failure mode of the obvious implementation.
+
 **The local engine finds no structure, and that is what it is, not a fault.**
 `ocr.rs` produces `BlockKind::Paragraph` and only that: a text detector finds
 boxes and a recogniser reads them, and neither knows what a table is. The

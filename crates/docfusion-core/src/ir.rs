@@ -266,11 +266,35 @@ pub enum ConflictKind {
     StructuralMismatch,
 }
 
+/// Which of the two engines a reading came from.
+///
+/// The words `compare` already uses for its arguments, because this is the same
+/// distinction and naming it twice would be naming it two ways.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Side {
+    /// The engine that read the page. Its reading is what the document holds.
+    Primary,
+    /// The engine that was asked to check it. Its reading is recorded and is
+    /// **not** in the document — which is the whole reason this is carried.
+    Secondary,
+}
+
 /// One engine's version of a disputed region.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Variant {
     pub engine: EngineId,
     pub text: String,
+    /// Which side of the comparison this reading is.
+    ///
+    /// **Not inferable from anything else, and a guess would be wrong.** The
+    /// document holds the primary's reading, so "which of these two am I
+    /// looking at" has an answer — but not one a reader can derive. The
+    /// front matter's `engines:` is the *configured* backends, in no order that
+    /// means anything, and the one place a region was found by the second
+    /// engine alone produces a conflict carrying a single variant that the
+    /// document does **not** contain. So `variants[0]` is not the answer, and
+    /// this field is.
+    pub side: Side,
     /// What this reading was made of, which its text cannot say.
     ///
     /// "The engines read it differently" is the same eight words whether the
@@ -549,6 +573,7 @@ mod tests {
                     Variant {
                         engine: pdfium,
                         text: "Annual Report".into(),
+                        side: Side::Primary,
                         shapes: Shapes::of(&[Block::text(
                             BlockKind::Heading { level: 1 },
                             "Annual Report",
@@ -558,6 +583,7 @@ mod tests {
                     Variant {
                         engine: glm,
                         text: "Annual Reports".into(),
+                        side: Side::Secondary,
                         shapes: Shapes::of(&[Block::text(
                             BlockKind::Paragraph,
                             "Annual Reports",

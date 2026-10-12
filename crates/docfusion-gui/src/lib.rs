@@ -715,11 +715,12 @@ fn conflicts_of(report: &str) -> Vec<Conflict> {
             return;
         };
 
-        let (engine, shapes) = engine_and_shapes(&open.engine);
+        let (engine, shapes, side) = engine_and_shapes(&open.engine);
 
         conflict.readings.push(Reading {
             engine,
             text: open.lines.join("\n"),
+            side,
             shapes,
         });
     }
@@ -760,16 +761,33 @@ fn conflicts_of(report: &str) -> Vec<Conflict> {
     conflicts
 }
 
-/// `rapidocr — headings 0, lists 0, tables 0, text 12` — the name of an engine
-/// and what it read the region as.
+/// `rapidocr — headings 0, lists 0, tables 0, text 12 · in the document` — the
+/// name of an engine, what it read the region as, and which side of the
+/// comparison it is on.
 ///
 /// The counts are kept out of the name rather than folded into it, because the
 /// name is what everything else calls this engine and the counts are about one
 /// reading. A line that named an engine and then said something this does not
 /// understand keeps the name: the name is the part worth having.
-fn engine_and_shapes(line: &str) -> (String, Option<Shapes>) {
-    let Some((engine, counts)) = line.split_once(" — ") else {
-        return (line.to_owned(), None);
+///
+/// The side is `None` for a report written before it was recorded — a document
+/// nobody has read again since. Absent says nothing, which is the only safe
+/// thing to say about a report that did not say: the alternative is deciding
+/// from the order of the lines, and the order is not the answer (see
+/// `ir::Side`).
+fn engine_and_shapes(line: &str) -> (String, Option<Shapes>, Option<String>) {
+    let Some((engine, rest)) = line.split_once(" — ") else {
+        return (line.to_owned(), None, None);
+    };
+
+    // The side comes off **first**, and that order is the whole of this. The
+    // counts are found by prefix across the whole remainder, so leaving
+    // ` · in the document` attached makes the text count `1 · in the document`,
+    // which does not parse — and all four counts or none means the shapes come
+    // back silently absent, on every reading of every new report.
+    let (counts, side) = match rest.split_once(" · ") {
+        Some((counts, side)) => (counts, Some(side.trim().to_owned())),
+        None => (rest, None),
     };
 
     let count = |label: &str| -> Option<u32> {
@@ -790,7 +808,7 @@ fn engine_and_shapes(line: &str) -> (String, Option<Shapes>) {
         })
     })();
 
-    (engine.to_owned(), shapes)
+    (engine.to_owned(), shapes, side)
 }
 
 /// `Page 12: the engines read it differently.` — the line that starts a finding.
@@ -1981,6 +1999,45 @@ code
         );
     }
 
+    /// **A difference that counted whitespace would mark the whole page.**
+    ///
+    /// One of the two readings in the panel is a screen of text flattened onto a
+    /// single line and the other keeps its line breaks, so they differ in
+    /// whitespace nearly everywhere — and marking all of it would make the panel
+    /// unreadable while saying nothing about where the engines actually
+    /// disagreed. The second rule is the same kind of thing: two readings that
+    /// share almost nothing cannot be compared cell by cell without stalling the
+    /// window that is drawing them.
+    ///
+    /// Nothing here can run the script, so this pins the two rules that make the
+    /// marking usable rather than the marking itself. The behaviour was checked
+    /// by running the functions against a real pair of readings.
+    #[test]
+    fn the_marking_skips_whitespace_and_is_bounded() {
+        let js = include_str!("../ui/app.js");
+
+        let body = |name: &str| -> &str {
+            let start = js
+                .find(&format!("function {name}("))
+                .unwrap_or_else(|| panic!("`{name}` is not in the script"));
+            let rest = &js[start..];
+            let end = rest.find("\n}").expect("the function never closes") + 2;
+            &rest[..end]
+        };
+
+        assert!(
+            body("marked").contains("!isBlank("),
+            "the marking would highlight differences in whitespace, which is every character \
+             on a page whose line breaks one engine kept and the other did not"
+        );
+
+        assert!(
+            body("onlyTokens").contains("MARK_LIMIT"),
+            "the comparison is unbounded, so a pair sharing almost nothing would be compared \
+             cell by cell while the window waits"
+        );
+    }
+
     /// The outcome is a name on the wire, and the window decides what to say by
     /// matching it.
     ///
@@ -2500,13 +2557,48 @@ code
         assert_eq!(readings[0].text, "Revenue increased by 13%");
         assert_eq!(readings[1].engine, "rapidocr");
         assert_eq!(readings[1].text, "Revenue increased by 12%");
+
+        // And which of the two the document is holding, which is the question
+        // the panel could not answer before: the two readings were labelled
+        // with their engines and nothing else.
+        assert_eq!(readings[0].side.as_deref(), Some("in the document"));
+        assert_eq!(
+            readings[1].side.as_deref(),
+            Some("the other engine's reading")
+        );
+    }
+
+    /// **A document read before this was recorded still draws.** Absent says
+    /// nothing; it does not guess from the order of the lines, and it does not
+    /// fail to parse. That is what keeps every document already on disk working
+    /// until `reindex` reads it again.
+    #[test]
+    fn a_report_with_no_side_still_reads() {
+        let report = "\nPage 1: the engines read it differently.\n\n    vision — headings 0, lists 0, tables 0, text 1\n    Revenue increased by 13%\n\n";
+
+        let conflicts = conflicts_of(report);
+
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].readings.len(), 1);
+        assert_eq!(conflicts[0].readings[0].engine, "vision");
+        assert_eq!(conflicts[0].readings[0].text, "Revenue increased by 13%");
+        assert_eq!(
+            conflicts[0].readings[0].shapes,
+            Some(Shapes {
+                headings: 0,
+                lists: 0,
+                tables: 0,
+                text: 1,
+            })
+        );
+        assert_eq!(conflicts[0].readings[0].side, None);
     }
 
     /// The line that names an engine also says what it read the region as, and
     /// that is the only place the shape of a reading is written down.
     #[test]
     fn a_reading_line_gives_the_engine_and_what_it_read() {
-        let (engine, shapes) =
+        let (engine, shapes, side) =
             engine_and_shapes("rapidocr — headings 0, lists 0, tables 0, text 12");
 
         assert_eq!(engine, "rapidocr");
@@ -2519,6 +2611,32 @@ code
                 text: 12,
             })
         );
+        assert_eq!(side, None, "a line written before the side was recorded");
+    }
+
+    /// **This is the test for a parse that goes quietly wrong.** The counts are
+    /// found by prefix across everything after the dash, so a side left attached
+    /// to them turns the text count into `12 · in the document`, which does not
+    /// parse — and "all four counts or none" then returns *no shapes at all*, on
+    /// every reading of every newly written report, without failing anything.
+    #[test]
+    fn the_side_is_not_read_as_one_of_the_counts() {
+        let (engine, shapes, side) = engine_and_shapes(
+            "rapidocr — headings 0, lists 0, tables 0, text 12 · in the document",
+        );
+
+        assert_eq!(engine, "rapidocr");
+        assert_eq!(
+            shapes,
+            Some(Shapes {
+                headings: 0,
+                lists: 0,
+                tables: 0,
+                text: 12,
+            }),
+            "the side leaked into the counts"
+        );
+        assert_eq!(side.as_deref(), Some("in the document"));
     }
 
     /// An engine name is not lost to a line this cannot read. The name is what
@@ -2526,12 +2644,15 @@ code
     #[test]
     fn an_engine_named_on_a_line_this_cannot_read_is_still_named() {
         // No dash at all: an older document, or another program's report.
-        assert_eq!(engine_and_shapes("rapidocr"), ("rapidocr".to_owned(), None));
+        assert_eq!(
+            engine_and_shapes("rapidocr"),
+            ("rapidocr".to_owned(), None, None)
+        );
 
         // A dash, and something after it that is not all four counts. Half a
         // shape is worse than none: the zeroes nobody wrote would be a claim
         // about the reading rather than a reading of the line.
-        let (engine, shapes) = engine_and_shapes("rapidocr — headings 0, lists 0");
+        let (engine, shapes, _) = engine_and_shapes("rapidocr — headings 0, lists 0");
         assert_eq!(engine, "rapidocr");
         assert_eq!(shapes, None);
     }
@@ -2583,12 +2704,13 @@ code
     fn disagreeing_document() -> docfusion_core::ir::Document {
         use docfusion_core::ir::{
             Block, BlockKind, Conflict, ConflictKind, Document, EngineId, Page, PageProvenance,
-            SourceRef, Variant,
+            Side, SourceRef, Variant,
         };
 
-        let variant = |engine: &str, text: &str| Variant {
+        let variant = |engine: &str, text: &str, side: Side| Variant {
             engine: EngineId::from(engine),
             text: text.to_owned(),
+            side,
             // One paragraph each, which is what these two readings are.
             shapes: Shapes::of(&[Block::text(
                 BlockKind::Paragraph,
@@ -2625,8 +2747,8 @@ code
                 bbox: None,
                 kind: ConflictKind::TextMismatch,
                 variants: vec![
-                    variant("deepseek", "Revenue increased by 13%"),
-                    variant("rapidocr", "Revenue increased by 12%"),
+                    variant("deepseek", "Revenue increased by 13%", Side::Primary),
+                    variant("rapidocr", "Revenue increased by 12%", Side::Secondary),
                 ],
                 resolved: None,
             }],
